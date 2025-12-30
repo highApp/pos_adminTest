@@ -9,8 +9,8 @@ import 'package:intl/intl.dart';
 import '../models/seller.dart';
 import '../services/seller_service.dart';
 import '../services/csv_export_service.dart';
-// Web download helper - conditional import
-import 'dart:html' as html if (dart.library.io) '../utils/html_stub.dart';
+// Web download helper - use stub on mobile
+import '../utils/html_stub.dart' as html;
 import 'seller_history_screen.dart';
 
 class SellersScreen extends StatefulWidget {

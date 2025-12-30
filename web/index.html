@@ -55,6 +55,16 @@
     // Initialize Firebase
     firebase.initializeApp(firebaseConfig);
   </script>
+  
+  <!-- Web Bluetooth API for printer support -->
+  <script src="bluetooth_printer.js"></script>
+  <!-- Web USB API for printer support -->
+  <script src="usb_printer.js"></script>
+  <script>
+    // Ensure functions are available on window
+    console.log('Bluetooth printer script loaded');
+    console.log('requestBluetoothDeviceWithCallback available:', typeof window.requestBluetoothDeviceWithCallback !== 'undefined');
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>

@@ -1711,7 +1711,7 @@ class _RevenueCard extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       formatter.format(isTodaySelected 
-                          ? todayRevenue - todayRecoveryBalance  // Today's revenue (already includes credit reductions) - recovery
+                          ? todayRevenue  // Today's revenue from today's sales only (already excludes recovery, change, returns, and credit reductions)
                           : revenue - recoveryBalance), // Cash revenue only (excluding recovery, credit not included in revenue)
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.9),
