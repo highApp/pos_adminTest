@@ -1147,17 +1147,15 @@ class PrinterService {
     // Print items with better formatting
     int itemNumber = 1;
     for (var item in sale.items) {
-      // Product name with item number (may wrap if too long)
-      final productName = item.productName.length > 22 
-          ? '${item.productName.substring(0, 19)}...' 
-          : item.productName;
-      _addText(commands, '$itemNumber. $productName\n');
-      
-      // Quantity, price, and subtotal aligned
-      final qty = item.quantity.toStringAsFixed(0);
+      // Product name with item number, qty, price, and subtotal on one line
+      final productName = item.productName;
+      // Format quantity: show decimals if needed (e.g., 0.100), otherwise whole number
+      final qty = item.quantity % 1 == 0 
+          ? item.quantity.toStringAsFixed(0) 
+          : item.quantity.toStringAsFixed(3);
       final price = item.price.toStringAsFixed(2);
       final subtotal = item.subtotal.toStringAsFixed(2);
-      final itemLine = '  $qty x $price = $subtotal';
+      final itemLine = '$itemNumber. $productName $qty*$price = $subtotal';
       _addText(commands, '$itemLine\n');
       itemNumber++;
     }
