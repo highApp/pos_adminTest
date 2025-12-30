@@ -218,12 +218,12 @@ class _POSScreenState extends State<POSScreen> {
                       }
 
                       return GridView.builder(
-                        padding: const EdgeInsets.all(16),
+                        padding: const EdgeInsets.all(12),
                         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 3,
-                          childAspectRatio: 0.75,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
+                          childAspectRatio: 0.62,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
                         ),
                         itemCount: availableProducts.length,
                         itemBuilder: (context, index) {
@@ -2568,119 +2568,115 @@ class _ProductCard extends StatelessWidget {
             Expanded(
               flex: 2,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
+                  mainAxisSize: MainAxisSize.max,
                   children: [
-                    // Product name and category
+                    // Product name
                     Flexible(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
+                      flex: 2,
+                      child: Text(
+                        product.name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 11,
+                          height: 1.1,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    // Category badges
+                    Flexible(
+                      flex: 1,
+                      child: Wrap(
+                        spacing: 2,
+                        runSpacing: 2,
                         children: [
-                          Text(
-                            product.name,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 3,
+                              vertical: 1,
                             ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(height: 4),
-                          Wrap(
-                            spacing: 4,
-                            runSpacing: 4,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[100],
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  product.category,
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: Colors.grey[700],
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                            decoration: BoxDecoration(
+                              color: Colors.grey[100],
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                            child: Text(
+                              product.category,
+                              style: TextStyle(
+                                fontSize: 7,
+                                color: Colors.grey[700],
+                                fontWeight: FontWeight.w500,
                               ),
-                              if (product.formattedSize.isNotEmpty)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.blue[50],
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    product.formattedSize,
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.blue[700],
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                            ],
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
+                          if (product.formattedSize.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.blue[50],
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                product.formattedSize,
+                                style: TextStyle(
+                                  fontSize: 7,
+                                  color: Colors.blue[700],
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const Spacer(),
                     // Price and add button
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: CrossAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Flexible(
+                        Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              if (isWholesale && hasWholesalePrice) ...[
+                              if (isWholesale && hasWholesalePrice)
                                 Text(
-                                  'Wholesale',
+                                  'W',
                                   style: TextStyle(
-                                    fontSize: 9,
+                                    fontSize: 6,
                                     color: Colors.blue[700],
                                     fontWeight: FontWeight.w600,
                                   ),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),
-                                const SizedBox(height: 2),
-                              ],
-                              if (isWholesale && !hasWholesalePrice) ...[
+                              if (isWholesale && !hasWholesalePrice)
                                 Text(
-                                  'Not Available',
+                                  'N/A',
                                   style: TextStyle(
-                                    fontSize: 9,
+                                    fontSize: 6,
                                     color: Colors.red[700],
                                     fontWeight: FontWeight.w600,
                                   ),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),
-                                const SizedBox(height: 2),
-                              ],
                               Text(
                                 formatter.format(displayPrice),
                                 style: TextStyle(
                                   fontWeight: FontWeight.bold,
-                                  fontSize: 16,
+                                  fontSize: 11,
                                   color: canAddToCart ? Colors.green : Colors.grey,
                                 ),
                                 maxLines: 1,
@@ -2689,17 +2685,17 @@ class _ProductCard extends StatelessWidget {
                             ],
                           ),
                         ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 4),
                         Container(
-                          padding: const EdgeInsets.all(6),
+                          padding: const EdgeInsets.all(3),
                           decoration: BoxDecoration(
                             color: canAddToCart ? Colors.green : Colors.grey,
-                            borderRadius: BorderRadius.circular(8),
+                            borderRadius: BorderRadius.circular(4),
                           ),
                           child: const Icon(
                             Icons.add_shopping_cart,
                             color: Colors.white,
-                            size: 18,
+                            size: 12,
                           ),
                         ),
                       ],

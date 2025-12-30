@@ -1029,10 +1029,10 @@ class PrinterService {
           // Connect only if not already connected
           if (!isConnected) {
             debugPrint('Bluetooth not connected, connecting...');
-            final connected = await connectBluetoothDevice();
-            if (!connected) {
-              debugPrint('Failed to connect to Bluetooth device');
-              return false;
+          final connected = await connectBluetoothDevice();
+          if (!connected) {
+            debugPrint('Failed to connect to Bluetooth device');
+            return false;
             }
           } else {
             debugPrint('Bluetooth already connected, reusing connection');
@@ -1115,15 +1115,15 @@ class PrinterService {
     // Set alignment to center
     commands.addAll([esc, 0x61, 0x01]); // ESC a 1 - Center align
 
-    // Set text size (double width and height)
-    commands.addAll([gs, 0x21, 0x11]); // GS ! 11 - Double width and height
+    // Set text size to normal (smaller than previous double size)
+    commands.addAll([gs, 0x21, 0x00]); // GS ! 00 - Normal size
+    
+    // Enable condensed mode for smaller text
+    commands.addAll([esc, 0x21, 0x01]); // ESC ! 1 - Condensed mode
 
     // Print header
-    _addText(commands, 'AR KARAYANA STORE\n');
+    _addText(commands, 'AR\'S TRADERS\n');
     _addText(commands, '${_repeatChar('-', 32)}\n');
-
-    // Reset text size to normal
-    commands.addAll([gs, 0x21, 0x00]); // GS ! 00 - Normal size
 
     // Set alignment to left
     commands.addAll([esc, 0x61, 0x00]); // ESC a 0 - Left align
@@ -1145,12 +1145,13 @@ class PrinterService {
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
     // Print items with better formatting
+    int itemNumber = 1;
     for (var item in sale.items) {
-      // Product name (may wrap if too long)
-      final productName = item.productName.length > 24 
-          ? '${item.productName.substring(0, 21)}...' 
+      // Product name with item number (may wrap if too long)
+      final productName = item.productName.length > 22 
+          ? '${item.productName.substring(0, 19)}...' 
           : item.productName;
-      _addText(commands, '$productName\n');
+      _addText(commands, '$itemNumber. $productName\n');
       
       // Quantity, price, and subtotal aligned
       final qty = item.quantity.toStringAsFixed(0);
@@ -1158,8 +1159,12 @@ class PrinterService {
       final subtotal = item.subtotal.toStringAsFixed(2);
       final itemLine = '  $qty x $price = $subtotal';
       _addText(commands, '$itemLine\n');
+      itemNumber++;
     }
 
+    _addText(commands, '${_repeatChar('-', 32)}\n');
+    // Total items count
+    _addText(commands, _formatLine('Total Items:', sale.items.length.toString()));
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
     // Print totals with right alignment for amounts
@@ -1190,6 +1195,9 @@ class PrinterService {
     commands.addAll([esc, 0x61, 0x01]); // Center align
     _addText(commands, 'Thank You!\n');
     _addText(commands, 'Visit Again\n');
+    // Developer info (condensed mode already enabled)
+    _addText(commands, 'Software developed by HighApp Solution\n');
+    _addText(commands, '+923015384952, +923234471436\n');
     commands.addAll([esc, 0x61, 0x00]); // Left align
 
     // Feed paper (multiple line feeds for better spacing)
