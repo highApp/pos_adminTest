@@ -237,6 +237,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     double borrowProfit,
     double realProfitFromPaid,
     double totalCreditReductions,
+    double todayCreditReductions, // Today's credit reductions (for breakdown when "Today" is selected)
   ) {
     try {
       final startDate = _getStartDate();
@@ -449,6 +450,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           : grossRevenue - totalExpenses - totalCreditReductions; // Revenue after returns, expenses, and credit reductions for date range
       
       // Total revenue including recovery balance AND wholesale orders
+      // Revenue = sales (cash) + recovery + wholesale
+      // NOTE: Credit used is NOT included in revenue (it's money already received when credit was given)
       // NOTE: This excludes borrow payments completely - they are NOT included in revenue
       // Borrow payments are tracked separately in the borrow section only
       final totalRevenueWithRecovery = netRevenue + totalRecoveryBalance + wholesaleRevenue;
@@ -468,15 +471,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         debugPrint('NOTE: "Today" selected - showing OVERALL total revenue (all time)');
       }
       debugPrint('Note: Recovery balance is NOT double-counted (excluded from sale revenue)');
-      debugPrint('Note: Credit is tracked separately and NOT included in revenue');
+      debugPrint('Note: Credit used is tracked separately and NOT included in revenue (already counted when credit was given)');
       debugPrint('Borrow payments are EXCLUDED from revenue');
       debugPrint('==========================');
       
       // Calculate today's revenue for breakdown (when "Today" is selected)
-      // Credit reductions should be subtracted from revenue breakdown
+      // Revenue should include: today's sales (POS), manual sales, etc.
+      // Credit used is NOT included (it's money already received when credit was given)
+      // Subtract today's credit reductions (payments made today to reduce credit balance)
       final todayRevenueForBreakdown = (_selectedDays == 0) 
-          ? todayRevenue - totalCreditReductions  // Today's revenue minus all credit reductions
+          ? todayRevenue - todayCreditReductions  // Today's revenue = cash sales - today's credit reductions
           : netRevenue;   // Filtered revenue for date range (already includes credit reductions)
+      
+      if (_selectedDays == 0) {
+        debugPrint('Today Revenue Breakdown: $todayRevenueForBreakdown (cash sales - today credit reductions: $todayCreditReductions)');
+      }
       
       // Calculate today's recovery balance for breakdown (when "Today" is selected)
       final todayRecoveryForBreakdown = (_selectedDays == 0)
@@ -695,18 +704,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                           
                                                           debugPrint('Dashboard - Total Credit Reductions: $totalCreditReductions');
 
-                                                          // Calculate stats from stream data
-                                                          final stats = _calculateCombinedStats(
-                                                            salesSnapshot.data!,
-                                                            expensesSnapshot.data!,
-                                                            borrowsSnapshot.data!,
-                                                            sellerOrdersSnapshot.data!,
-                                                            unpaidSnapshot.data!,
-                                                            borrowProfitSnapshot.data!,
-                                                            realProfitSnapshot.data!,
-                                                            totalCreditReductions,
-                                                          );
-                                                          final formatter = NumberFormat.currency(symbol: 'Rs. ');
+                                                          // Get today's credit reductions if "Today" is selected
+                                                          // For date ranges, today's credit reductions = 0 (not needed)
+                                                          final now = DateTime.now();
+                                                          final todayStart = DateTime(now.year, now.month, now.day);
+                                                          final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+                                                          
+                                                          return FutureBuilder<double>(
+                                                            future: (_selectedDays == 0) 
+                                                                ? sellerService.getTotalCreditReductionsByDateRange(todayStart, todayEnd)
+                                                                : Future.value(0.0),
+                                                            builder: (context, todayCreditReductionsSnapshot) {
+                                                              if (!todayCreditReductionsSnapshot.hasData && _selectedDays == 0) {
+                                                                return const Center(
+                                                                  child: Padding(
+                                                                    padding: EdgeInsets.all(40.0),
+                                                                    child: CircularProgressIndicator(),
+                                                                  ),
+                                                                );
+                                                              }
+                                                              
+                                                              final todayCreditReductions = todayCreditReductionsSnapshot.data ?? 0.0;
+                                                              debugPrint('Dashboard - Today Credit Reductions: $todayCreditReductions');
+
+                                                              // Calculate stats from stream data
+                                                              final stats = _calculateCombinedStats(
+                                                                salesSnapshot.data!,
+                                                                expensesSnapshot.data!,
+                                                                borrowsSnapshot.data!,
+                                                                sellerOrdersSnapshot.data!,
+                                                                unpaidSnapshot.data!,
+                                                                borrowProfitSnapshot.data!,
+                                                                realProfitSnapshot.data!,
+                                                                totalCreditReductions,
+                                                                todayCreditReductions,
+                                                              );
+                                                              final formatter = NumberFormat.currency(symbol: 'Rs. ');
 
                                                           return Column(
                                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -882,6 +915,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                   ),
                                                 ],
                                               );
+                                                            },
+                                                          );
                                                     },
                                                   );
                                                 },
@@ -1614,7 +1649,7 @@ class _RevenueCard extends StatelessWidget {
   final double revenue; // Total revenue including recovery balance (credit is tracked separately, not included)
   final double recoveryBalance;
   final double creditUsed; // Credit balance used from sellers
-  final double todayRevenue; // Today's revenue for breakdown (when "Today" is selected, already includes credit reductions)
+  final double todayRevenue; // Today's revenue for breakdown (when "Today" is selected, cash sales only, excludes credit used)
   final double todayRecoveryBalance; // Today's recovery balance for breakdown (when "Today" is selected)
   final double todayCreditUsed; // Today's credit used for breakdown (when "Today" is selected)
   final double totalCreditReductions; // Total credit reductions (for display)
@@ -1711,7 +1746,7 @@ class _RevenueCard extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       formatter.format(isTodaySelected 
-                          ? todayRevenue  // Today's revenue from today's sales only (already excludes recovery, change, returns, and credit reductions)
+                          ? todayRevenue  // Today's revenue = cash sales only (includes manual sales, excludes credit used)
                           : revenue - recoveryBalance), // Cash revenue only (excluding recovery, credit not included in revenue)
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.9),
