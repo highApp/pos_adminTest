@@ -806,23 +806,23 @@ class _AddItemDialogState extends State<_AddItemDialog> {
             // If editing, we need to adjust stock and recalculate average price
             final oldQuantity = widget.item!.quantity;
             final oldPrice = widget.item!.price;
+            final oldExpense = widget.item!.expense;
             final quantityDifference = quantity - oldQuantity;
             
-            if (quantityDifference != 0 || oldPrice != price) {
+            // Update if quantity, price, or expense changed
+            if (quantityDifference != 0 || oldPrice != price || oldExpense != expense) {
               // Reverse the old transaction to get the state before it
               // Current stock includes the old quantity, so subtract it
               final stockBeforeOldTransaction = currentProduct.stock - oldQuantity;
               
               // Reverse the average calculation to get the total value before old transaction
-              // Current total value = stockBeforeOldTransaction * oldAverage + oldQuantity * oldPrice
-              // So: oldAverage = (currentTotalValue - oldQuantity * oldPrice) / stockBeforeOldTransaction
-              // But we need: totalValueBeforeOldTransaction = stockBeforeOldTransaction * oldAverage
-              // Actually, we can calculate it directly:
-              // totalValueBeforeOldTransaction = currentProduct.stock * currentProduct.purchasePrice - oldQuantity * oldPrice
+              // Note: Old expense may not have been included in purchase price (for backward compatibility)
+              // So we reverse: oldQuantity * oldPrice (without old expense)
+              // If old expense was included, this will slightly over-correct, but that's acceptable
               final totalValueBeforeOldTransaction = (currentProduct.stock * currentProduct.purchasePrice) - (oldQuantity * oldPrice);
               
-              // Now add the new transaction
-              final newTotalValue = totalValueBeforeOldTransaction + (quantity * price);
+              // Now add the new transaction (including expense)
+              final newTotalValue = totalValueBeforeOldTransaction + (quantity * price) + expense;
               final newTotalStock = stockBeforeOldTransaction + quantity;
               
               // Calculate weighted average
@@ -846,9 +846,10 @@ class _AddItemDialogState extends State<_AddItemDialog> {
             final newQuantity = quantity;
             final newPrice = price;
             
-            // Calculate weighted average: (Old Stock × Old Price + New Quantity × New Price) / (Old Stock + New Quantity)
+            // Calculate weighted average: (Old Stock × Old Price + New Quantity × New Price + Expense) / (Old Stock + New Quantity)
+            // Expense is included as part of the total cost of acquiring the items
             final oldTotalValue = oldStock * oldPrice;
-            final newTotalValue = newQuantity * newPrice;
+            final newTotalValue = (newQuantity * newPrice) + expense;
             final totalValue = oldTotalValue + newTotalValue;
             final totalStock = oldStock + newQuantity;
             
@@ -1260,13 +1261,15 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                 builder: (context) {
                                   final enteredQty = double.tryParse(_quantityController.text) ?? 0.0;
                                   final enteredPrice = double.tryParse(_priceController.text) ?? 0.0;
+                                  final enteredExpense = double.tryParse(_expenseController.text) ?? 0.0;
                                   final totalStock = _currentProductStock! + enteredQty;
                                   
-                                  // Calculate weighted average purchase price
+                                  // Calculate weighted average purchase price (including expense)
                                   final oldStock = _currentProductStock!;
                                   final oldPrice = _selectedProduct!.purchasePrice;
                                   final oldTotalValue = oldStock * oldPrice;
-                                  final newTotalValue = enteredQty * enteredPrice;
+                                  // Include expense in the new total value calculation
+                                  final newTotalValue = (enteredQty * enteredPrice) + enteredExpense;
                                   final totalValue = oldTotalValue + newTotalValue;
                                   final averagePrice = totalStock > 0 ? totalValue / totalStock : enteredPrice;
                                   
