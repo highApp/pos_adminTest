@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/sale.dart';
 import '../models/seller.dart';
+import '../models/product.dart';
+import 'product_service.dart';
 
 // Web-specific imports for JavaScript interop
 // Note: Conditional imports don't work well for dart:js on mobile
@@ -30,6 +32,7 @@ class PrinterService {
   static const String _bluetoothDeviceNameKey = 'bluetooth_device_name';
   static const String _usbDeviceIdKey = 'usb_device_id';
   static const String _usbDeviceNameKey = 'usb_device_name';
+  static const String _receiptLanguageKey = 'receipt_language';
   static const String _defaultPort = '9100';
   static const Duration _connectionTimeout = Duration(seconds: 5);
   
@@ -208,6 +211,29 @@ class PrinterService {
       debugPrint('USB device saved: $deviceName ($deviceId)');
     } catch (e) {
       debugPrint('Error saving USB device: $e');
+      rethrow;
+    }
+  }
+
+  // Get receipt language preference
+  Future<String> getReceiptLanguage() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString(_receiptLanguageKey) ?? 'en';
+    } catch (e) {
+      debugPrint('Error getting receipt language: $e');
+      return 'en';
+    }
+  }
+
+  // Set receipt language preference
+  Future<void> setReceiptLanguage(String languageCode) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_receiptLanguageKey, languageCode);
+      debugPrint('Receipt language saved: $languageCode');
+    } catch (e) {
+      debugPrint('Error saving receipt language: $e');
       rethrow;
     }
   }
@@ -968,10 +994,13 @@ class PrinterService {
   }
 
   // Print receipt to thermal printer
-  Future<bool> printReceipt(Sale sale, double existingDueTotal, Seller? seller) async {
+  Future<bool> printReceipt(Sale sale, double existingDueTotal, Seller? seller, {String? languageCode}) async {
     try {
+      // Get language preference if not provided
+      final lang = languageCode ?? await getReceiptLanguage();
+      
       // Generate ESC/POS commands for thermal printer
-      final receiptData = _generateReceiptData(sale, existingDueTotal, seller);
+      final receiptData = await _generateReceiptData(sale, existingDueTotal, seller, languageCode: lang);
 
       if (kIsWeb) {
         // Web platform: Use Bluetooth or USB
@@ -1099,8 +1128,33 @@ class PrinterService {
   }
 
   // Generate ESC/POS receipt data optimized for SpeedX SP-90A
-  Uint8List _generateReceiptData(Sale sale, double existingDueTotal, Seller? seller) {
+  Future<Uint8List> _generateReceiptData(Sale sale, double existingDueTotal, Seller? seller, {String languageCode = 'en'}) async {
     final List<int> commands = [];
+    
+    // Fetch products to get language-specific names
+    final productService = ProductService();
+    final Map<String, String> productNamesMap = {};
+    
+    // Fetch all products for this sale
+    for (var item in sale.items) {
+      try {
+        final product = await productService.getProductById(item.productId);
+        if (product != null) {
+          // Get name in selected language, fallback to English or displayName
+          final name = product.getName(languageCode) ?? 
+                      (languageCode == 'en' ? product.name : product.getName('en')) ?? 
+                      product.name;
+          productNamesMap[item.productId] = name;
+        } else {
+          // Fallback to stored productName if product not found
+          productNamesMap[item.productId] = item.productName;
+        }
+      } catch (e) {
+        debugPrint('Error fetching product ${item.productId}: $e');
+        // Fallback to stored productName
+        productNamesMap[item.productId] = item.productName;
+      }
+    }
 
     // Initialize printer (ESC @)
     commands.addAll([esc, 0x40]);
@@ -1148,7 +1202,8 @@ class PrinterService {
     int itemNumber = 1;
     for (var item in sale.items) {
       // Product name with item number, qty, price, and subtotal on one line
-      final productName = item.productName;
+      // Use language-specific name if available, otherwise fallback to stored name
+      final productName = productNamesMap[item.productId] ?? item.productName;
       // Format quantity: show decimals if needed (e.g., 0.100), otherwise whole number
       final qty = item.quantity % 1 == 0 
           ? item.quantity.toStringAsFixed(0) 

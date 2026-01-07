@@ -39,9 +39,30 @@ class ProductService {
     
     return products.where((product) {
       final searchQuery = query.toLowerCase();
-      return product.name.toLowerCase().contains(searchQuery) ||
-          (product.barcode?.toLowerCase().contains(searchQuery) ?? false) ||
-          (product.description?.toLowerCase().contains(searchQuery) ?? false);
+      
+      // Search in display name (backward compatible)
+      if (product.displayName.toLowerCase().contains(searchQuery)) {
+        return true;
+      }
+      
+      // Search in all language names
+      if (product.names != null) {
+        for (final name in product.names!.values) {
+          if (name.toLowerCase().contains(searchQuery)) {
+            return true;
+          }
+        }
+      }
+      
+      // Search in barcode and description
+      if (product.barcode?.toLowerCase().contains(searchQuery) ?? false) {
+        return true;
+      }
+      if (product.description?.toLowerCase().contains(searchQuery) ?? false) {
+        return true;
+      }
+      
+      return false;
     }).toList();
   }
 
@@ -76,7 +97,7 @@ class ProductService {
     final product = Product.fromMap(doc.data()!);
     final newStock = product.stock + quantity;
     
-    print('Updating stock for ${product.name}: ${product.stock} + $quantity = $newStock');
+    print('Updating stock for ${product.displayName}: ${product.stock} + $quantity = $newStock');
     
     final updatedProduct = product.copyWith(
       stock: newStock,

@@ -23,7 +23,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   final _productService = ProductService();
   final _categoryService = CategoryService();
 
-  late TextEditingController _nameController;
+  late TextEditingController _nameEnController;
+  late TextEditingController _nameUrController;
+  late TextEditingController _nameArController;
   late TextEditingController _purchasePriceController;
   late TextEditingController _salePriceController;
   late TextEditingController _percentageController;
@@ -46,7 +48,17 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   @override
   void initState() {
     super.initState();
-    _nameController = TextEditingController(text: widget.product?.name ?? '');
+    // Initialize name controllers from product names or fallback to old name field
+    final productNames = widget.product?.names;
+    _nameEnController = TextEditingController(
+      text: productNames?['en'] ?? widget.product?.name ?? ''
+    );
+    _nameUrController = TextEditingController(
+      text: productNames?['ur'] ?? ''
+    );
+    _nameArController = TextEditingController(
+      text: productNames?['ar'] ?? ''
+    );
     _purchasePriceController =
         TextEditingController(text: widget.product?.purchasePrice.toString() ?? '');
     _salePriceController =
@@ -69,7 +81,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _isCategoryFieldEnabled = widget.product == null;
     
     foundation.debugPrint('=== Edit Product Screen Initialized ===');
-    foundation.debugPrint('Product: ${widget.product?.name}');
+    foundation.debugPrint('Product: ${widget.product?.displayName}');
     foundation.debugPrint('Image URL from database: $_imageUrl');
     
     // Add listeners to auto-update sale price
@@ -87,7 +99,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
 
   @override
   void dispose() {
-    _nameController.dispose();
+    _nameEnController.dispose();
+    _nameUrController.dispose();
+    _nameArController.dispose();
     _purchasePriceController.dispose();
     _salePriceController.dispose();
     _percentageController.dispose();
@@ -459,9 +473,22 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         return; // Don't save product if image upload fails
       }
       
+      // Build names map from the three language fields
+      final Map<String, String> namesMap = {};
+      if (_nameEnController.text.trim().isNotEmpty) {
+        namesMap['en'] = _nameEnController.text.trim();
+      }
+      if (_nameUrController.text.trim().isNotEmpty) {
+        namesMap['ur'] = _nameUrController.text.trim();
+      }
+      if (_nameArController.text.trim().isNotEmpty) {
+        namesMap['ar'] = _nameArController.text.trim();
+      }
+      
       final product = Product(
         id: productId,
-        name: _nameController.text.trim(),
+        names: namesMap.isNotEmpty ? namesMap : null,
+        name: namesMap.isNotEmpty ? null : _nameEnController.text.trim(), // Fallback for backward compatibility
         description: widget.product?.description,
         purchasePrice: double.parse(_purchasePriceController.text),
         salePrice: double.parse(_salePriceController.text),
@@ -532,19 +559,69 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            TextFormField(
-              controller: _nameController,
-              decoration: const InputDecoration(
-                labelText: 'Product Name *',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.shopping_bag),
+            // Product Names Section
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(8),
               ),
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Please enter product name';
-                }
-                return null;
-              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.language, color: Colors.grey),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Product Names *',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _nameEnController,
+                    decoration: const InputDecoration(
+                      labelText: 'Product Name (English) *',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.language, color: Colors.blue),
+                      helperText: 'Required',
+                    ),
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Please enter English name';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _nameUrController,
+                    decoration: const InputDecoration(
+                      labelText: 'Product Name (Urdu)',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.language, color: Colors.green),
+                      helperText: 'Optional',
+                    ),
+                    textDirection: TextDirection.rtl,
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _nameArController,
+                    decoration: const InputDecoration(
+                      labelText: 'Product Name (Arabic)',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.language, color: Colors.orange),
+                      helperText: 'Optional',
+                    ),
+                    textDirection: TextDirection.rtl,
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 16),
             

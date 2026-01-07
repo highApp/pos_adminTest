@@ -1,6 +1,7 @@
 class Product {
   final String id;
-  final String name;
+  final String? _name; // Internal field for backward compatibility with old data
+  final Map<String, String>? names; // Language -> Name mapping (e.g., {'en': 'Product', 'ur': 'پروڈکٹ', 'ar': 'منتج'})
   final String? description;
   final double purchasePrice; // Buying/cost price
   final double salePrice; // Selling price
@@ -16,7 +17,8 @@ class Product {
 
   Product({
     required this.id,
-    required this.name,
+    String? name,
+    this.names,
     this.description,
     required this.purchasePrice,
     required this.salePrice,
@@ -29,13 +31,35 @@ class Product {
     this.imageUrl,
     required this.createdAt,
     required this.updatedAt,
-  });
+  }) : _name = name;
+
+  // Getter for name with backward compatibility
+  // Returns English name if available, otherwise first available name, otherwise old name field
+  String get name {
+    if (names != null && names!.isNotEmpty) {
+      // Try to get English name first
+      if (names!.containsKey('en') && names!['en']!.trim().isNotEmpty) {
+        return names!['en']!;
+      }
+      // Otherwise return first available name
+      return names!.values.firstWhere((n) => n.trim().isNotEmpty, orElse: () => names!.values.first);
+    }
+    // Fallback to old name field for backward compatibility
+    return _name ?? '';
+  }
+
+  // Alias for name (for clarity)
+  String get displayName => name;
+
+  // Get name in specific language
+  String? getName(String languageCode) {
+    return names?[languageCode];
+  }
 
   // Convert Product to Map for Firebase
   Map<String, dynamic> toMap() {
-    return {
+    final map = {
       'id': id,
-      'name': name,
       'description': description,
       'purchasePrice': purchasePrice,
       'salePrice': salePrice,
@@ -49,6 +73,21 @@ class Product {
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
     };
+    
+    // Save names map if available, otherwise save name for backward compatibility
+    if (names != null && names!.isNotEmpty) {
+      map['names'] = names;
+      // Also save English name as 'name' for backward compatibility
+      if (names!.containsKey('en') && names!['en']!.trim().isNotEmpty) {
+        map['name'] = names!['en'];
+      } else {
+        map['name'] = names!.values.firstWhere((n) => n.trim().isNotEmpty, orElse: () => '');
+      }
+    } else if (_name != null) {
+      map['name'] = _name;
+    }
+    
+    return map;
   }
 
   // Create Product from Firebase Map
@@ -61,10 +100,30 @@ class Product {
         ? (map['salePrice'] as num).toDouble()
         : (map['price'] ?? 0).toDouble();
     
+    // Handle names: prefer names map, fallback to name field for backward compatibility
+    Map<String, String>? namesMap;
+    String? nameValue;
+    
+    if (map['names'] != null) {
+      // New format with multiple names
+      final namesData = map['names'];
+      if (namesData is Map) {
+        namesMap = Map<String, String>.from(
+          namesData.map((key, value) => MapEntry(key.toString(), value.toString()))
+        );
+      }
+    }
+    
+    // For backward compatibility, if no names map exists, use name field
+    if (namesMap == null || namesMap.isEmpty) {
+      nameValue = map['name']?.toString() ?? '';
+    }
+    
     return Product(
       id: map['id'] ?? '',
-      name: map['name'] ?? '',
-      description: map['description'],
+      name: nameValue,
+      names: namesMap,
+      description: map['description']?.toString(),
       purchasePrice: purchasePriceValue,
       salePrice: salePriceValue,
       wholesalePrice: map['wholesalePrice'] != null 
@@ -73,9 +132,9 @@ class Product {
       stock: (map['stock'] ?? 0).toDouble(),
       unit: map['unit'] ?? 'pieces',
       value: map['value'] != null ? (map['value'] as num).toDouble() : null,
-      barcode: map['barcode'],
+      barcode: map['barcode']?.toString(),
       category: map['category'] ?? 'General',
-      imageUrl: map['imageUrl'],
+      imageUrl: map['imageUrl']?.toString(),
       createdAt: map['createdAt'] != null
           ? DateTime.parse(map['createdAt'])
           : DateTime.now(),
@@ -89,6 +148,7 @@ class Product {
   Product copyWith({
     String? id,
     String? name,
+    Map<String, String>? names,
     String? description,
     double? purchasePrice,
     double? salePrice,
@@ -104,7 +164,8 @@ class Product {
   }) {
     return Product(
       id: id ?? this.id,
-      name: name ?? this.name,
+      name: name ?? this._name,
+      names: names ?? this.names,
       description: description ?? this.description,
       purchasePrice: purchasePrice ?? this.purchasePrice,
       salePrice: salePrice ?? this.salePrice,

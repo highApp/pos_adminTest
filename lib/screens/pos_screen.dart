@@ -554,14 +554,19 @@ class _POSScreenState extends State<POSScreen> {
     }
   }
 
-  void _showReceiptDialog(BuildContext context, Sale sale, double existingDueTotal) {
+  void _showReceiptDialog(BuildContext context, Sale sale, double existingDueTotal) async {
     final formatter = NumberFormat.currency(symbol: 'Rs. ');
     final dateFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
+    
+    // Load current language preference
+    final printerService = PrinterService();
+    String selectedLanguage = await printerService.getReceiptLanguage();
 
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => Dialog(
+      builder: (context) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => Dialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         child: Stack(
           children: [
@@ -721,8 +726,11 @@ class _POSScreenState extends State<POSScreen> {
                             debugPrint('Seller fetched: ${seller?.name ?? 'null'}');
                           }
 
+                          // Get current language preference
+                          final currentLanguage = await printerService.getReceiptLanguage();
+                          
                           // Print directly to thermal printer
-                          final success = await printerService.printReceipt(sale, existingDueTotal, seller);
+                          final success = await printerService.printReceipt(sale, existingDueTotal, seller, languageCode: currentLanguage);
                           
                           if (success && context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -920,6 +928,84 @@ class _POSScreenState extends State<POSScreen> {
                 ),
               ),
             ),
+            // Language Selector Icon Button (between refresh and eye)
+            Positioned(
+              top: 8,
+              right: 56,
+              child: PopupMenuButton<String>(
+                icon: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.language,
+                    color: Colors.blue,
+                  ),
+                ),
+                tooltip: 'Select Receipt Language',
+                onSelected: (String language) async {
+                  setDialogState(() {
+                    selectedLanguage = language;
+                  });
+                  await printerService.setReceiptLanguage(language);
+                  if (dialogContext.mounted) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      SnackBar(
+                        content: Text('Receipt language set to: ${_getLanguageName(language)}'),
+                        duration: const Duration(seconds: 2),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  }
+                },
+                itemBuilder: (BuildContext context) => [
+                  PopupMenuItem<String>(
+                    value: 'en',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.check,
+                          size: 16,
+                          color: selectedLanguage == 'en' ? Colors.green : Colors.transparent,
+                        ),
+                        const SizedBox(width: 8),
+                        const Text('English'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'ur',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.check,
+                          size: 16,
+                          color: selectedLanguage == 'ur' ? Colors.green : Colors.transparent,
+                        ),
+                        const SizedBox(width: 8),
+                        const Text('Urdu'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'ar',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.check,
+                          size: 16,
+                          color: selectedLanguage == 'ar' ? Colors.green : Colors.transparent,
+                        ),
+                        const SizedBox(width: 8),
+                        const Text('Arabic'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
             // Eye Icon Button at Top Right
             Positioned(
               top: 8,
@@ -927,7 +1013,7 @@ class _POSScreenState extends State<POSScreen> {
               child: IconButton(
                 onPressed: () {
                   Navigator.pop(context); // Close the success dialog first
-                  _showPrintPreview(context, sale, existingDueTotal);
+                  _showPrintPreview(context, sale, existingDueTotal, languageCode: selectedLanguage);
                 },
                 icon: const Icon(
                   Icons.visibility,
@@ -943,10 +1029,24 @@ class _POSScreenState extends State<POSScreen> {
           ],
         ),
       ),
+        ),
     );
   }
 
-  Future<void> _showPrintPreview(BuildContext context, Sale sale, double existingDueTotal) async {
+  String _getLanguageName(String code) {
+    switch (code) {
+      case 'en':
+        return 'English';
+      case 'ur':
+        return 'Urdu';
+      case 'ar':
+        return 'Arabic';
+      default:
+        return 'English';
+    }
+  }
+
+  Future<void> _showPrintPreview(BuildContext context, Sale sale, double existingDueTotal, {String? languageCode}) async {
     try {
       debugPrint('=== Starting Print Preview ===');
       
@@ -1004,7 +1104,8 @@ class _POSScreenState extends State<POSScreen> {
                     child: PdfPreview(
                       build: (format) async {
                         try {
-                          return await _generateReceiptPDF(sale, existingDueTotal, seller);
+                          final lang = languageCode ?? await PrinterService().getReceiptLanguage();
+                          return await _generateReceiptPDF(sale, existingDueTotal, seller, languageCode: lang);
                         } catch (e) {
                           debugPrint('PDF Generation Error: $e');
                           rethrow;
@@ -1029,7 +1130,8 @@ class _POSScreenState extends State<POSScreen> {
                       ElevatedButton.icon(
                         onPressed: () async {
                           try {
-                            final pdf = await _generateReceiptPDF(sale, existingDueTotal, seller);
+                            final lang = languageCode ?? await PrinterService().getReceiptLanguage();
+                            final pdf = await _generateReceiptPDF(sale, existingDueTotal, seller, languageCode: lang);
                             await Printing.layoutPdf(
                               onLayout: (format) async => pdf,
                             );
@@ -1094,8 +1196,12 @@ class _POSScreenState extends State<POSScreen> {
         seller = await sellerService.getSellerById(sale.sellerId!);
       }
 
+      // Get current language preference
+      final printerService = PrinterService();
+      final currentLanguage = await printerService.getReceiptLanguage();
+      
       // Generate PDF
-      final pdfBytes = await _generateReceiptPDF(sale, existingDueTotal, seller);
+      final pdfBytes = await _generateReceiptPDF(sale, existingDueTotal, seller, languageCode: currentLanguage);
 
       // Get seller phone number
       String? phoneNumber = seller?.phone;
@@ -1238,11 +1344,36 @@ class _POSScreenState extends State<POSScreen> {
     }
   }
 
-  Future<Uint8List> _generateReceiptPDF(Sale sale, double existingDueTotal, Seller? seller) async {
+  Future<Uint8List> _generateReceiptPDF(Sale sale, double existingDueTotal, Seller? seller, {String languageCode = 'en'}) async {
     try {
       final pdf = pw.Document();
       final formatter = NumberFormat.currency(symbol: 'Rs. ', decimalDigits: 2);
       final dateFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
+      
+      // Fetch products to get language-specific names
+      final productService = ProductService();
+      final Map<String, String> productNamesMap = {};
+      
+      // Fetch all products for this sale
+      for (var item in sale.items) {
+        try {
+          final product = await productService.getProductById(item.productId);
+          if (product != null) {
+            // Get name in selected language, fallback to English or displayName
+            final name = product.getName(languageCode) ?? 
+                        (languageCode == 'en' ? product.name : product.getName('en')) ?? 
+                        product.name;
+            productNamesMap[item.productId] = name;
+          } else {
+            // Fallback to stored productName if product not found
+            productNamesMap[item.productId] = item.productName;
+          }
+        } catch (e) {
+          debugPrint('Error fetching product ${item.productId}: $e');
+          // Fallback to stored productName
+          productNamesMap[item.productId] = item.productName;
+        }
+      }
 
       // Use monospace Courier font for receipt (standard receipt printer style)
       final font = pw.Font.courier();
@@ -1391,7 +1522,7 @@ class _POSScreenState extends State<POSScreen> {
                         pw.Expanded(
                           flex: 4,
                           child: pw.Text(
-                            item.productName,
+                            productNamesMap[item.productId] ?? item.productName,
                             style: textStyle(fontSize: 6),
                             maxLines: 2,
                             textAlign: pw.TextAlign.left,
