@@ -130,79 +130,85 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
   }
 
   Future<void> _saveBill() async {
+    // Validate form first (includes bill number validation)
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    // Check if items are empty
     if (_items.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please add at least one item'),
+          content: Text('Please add at least one item to create a bill'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
+    // Validate bill number is not empty (double check)
+    final billNumber = _billNumberController.text.trim();
+    if (billNumber.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a bill number'),
           backgroundColor: Colors.orange,
         ),
       );
       return;
     }
 
-    if (_formKey.currentState!.validate()) {
-      setState(() {
-        _isLoading = true;
-      });
+    setState(() {
+      _isLoading = true;
+    });
 
-      try {
-        final billNumber = _billNumberController.text.trim();
-        if (billNumber.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Please enter a bill number'),
-              backgroundColor: Colors.orange,
+    try {
+      final bill = BuyerBill(
+        id: widget.bill?.id ?? const Uuid().v4(),
+        buyerId: widget.buyer.id,
+        buyerName: widget.buyer.name,
+        items: _items,
+        total: _total,
+        totalExpense: _totalExpense,
+        finalPrice: _finalPrice,
+        amountPaid: widget.bill?.amountPaid ?? 0.0, // Keep existing or default to 0
+        change: widget.bill?.change ?? 0.0, // Keep existing or default to 0
+        createdAt: widget.bill?.createdAt ?? DateTime.now(),
+        paymentMethod: widget.bill?.paymentMethod ?? 'cash', // Keep existing or default to cash
+        notes: _notes?.trim().isEmpty == true ? null : _notes,
+        billNumber: billNumber.isEmpty ? null : billNumber,
+      );
+
+      await _billService.addBill(bill);
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.bill == null
+                  ? 'Bill created successfully'
+                  : 'Bill updated successfully',
             ),
-          );
-          return;
-        }
-
-        final bill = BuyerBill(
-          id: widget.bill?.id ?? const Uuid().v4(),
-          buyerId: widget.buyer.id,
-          buyerName: widget.buyer.name,
-          items: _items,
-          total: _total,
-          totalExpense: _totalExpense,
-          finalPrice: _finalPrice,
-          amountPaid: widget.bill?.amountPaid ?? 0.0, // Keep existing or default to 0
-          change: widget.bill?.change ?? 0.0, // Keep existing or default to 0
-          createdAt: widget.bill?.createdAt ?? DateTime.now(),
-          paymentMethod: widget.bill?.paymentMethod ?? 'cash', // Keep existing or default to cash
-          notes: _notes?.trim().isEmpty == true ? null : _notes,
-          billNumber: billNumber.isEmpty ? null : billNumber,
+            backgroundColor: Colors.green,
+          ),
         );
-
-        await _billService.addBill(bill);
-
-        if (mounted) {
-          Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                widget.bill == null
-                    ? 'Bill created successfully'
-                    : 'Bill updated successfully',
-              ),
-              backgroundColor: Colors.green,
-            ),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      } finally {
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-          });
-        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
       }
     }
   }
@@ -267,6 +273,12 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                     ),
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Please enter a bill number';
+                      }
+                      return null;
+                    },
                   ),
                 ],
               ),

@@ -12,6 +12,7 @@ import 'create_edit_buyer_bill_screen.dart';
 import 'add_payment_dialog.dart';
 import 'buyer_payment_history_screen.dart';
 import 'manual_payment_dialog.dart';
+import 'manual_bill_dialog.dart';
 
 class BuyerBillsScreen extends StatefulWidget {
   final Buyer buyer;
@@ -201,6 +202,17 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.receipt_long),
+                    color: Colors.purple.shade700,
+                    onPressed: () => _showManualBillDialog(context),
+                    tooltip: 'Add Manual Bill',
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.purple.shade100,
+                      padding: const EdgeInsets.all(8),
+                    ),
+                  ),
                 ],
               ),
             );
@@ -329,6 +341,13 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                     );
                   },
                 ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.receipt_long),
+                color: Colors.purple.shade700,
+                onPressed: () => _showManualBillDialog(context),
+                tooltip: 'Add Manual Bill',
               ),
               const SizedBox(width: 8),
               IconButton(
@@ -536,6 +555,25 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                       ? 'Try adjusting your date filter'
                       : 'Create your first bill',
                   style: const TextStyle(color: Colors.grey),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () => _showManualBillDialog(context),
+                      icon: const Icon(Icons.receipt_long),
+                      label: const Text('Add Manual Bill'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.purple,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1078,6 +1116,16 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
           ],
         );
       },
+    );
+  }
+
+  void _showManualBillDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => ManualBillDialog(
+        buyer: widget.buyer,
+        currencyFormatter: _currencyFormatter,
+      ),
     );
   }
 
