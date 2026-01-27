@@ -18,20 +18,20 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="HA App Locker - Web Admin Dashboard">
+  <meta name="description" content="ARS Traders - Web Admin Dashboard">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="HA App Locker">
+  <meta name="apple-mobile-web-app-title" content="ARS Traders">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>HA App Locker - Web Admin</title>
+  <title>ARS Traders - Web Admin</title>
   <link rel="manifest" href="manifest.json">
 
   <!-- Firebase SDK -->
@@ -42,6 +42,11 @@
   <script src="https://www.gstatic.com/firebasejs/12.6.0/firebase-storage-compat.js"></script>
   
   <script>
+    // Error handling for script loading
+    window.addEventListener('error', function(e) {
+      console.error('Script loading error:', e.filename, e.message, e.lineno, e.colno);
+    }, true);
+
     // Your web app's Firebase configuration
     const firebaseConfig = {
       apiKey: "AIzaSyC1ajnBdt9UNcVH3yYAQBnCGBdH17fd6L0",
@@ -51,19 +56,34 @@
       messagingSenderId: "964648041395",
       appId: "1:964648041395:web:df093429c506acb143a9c6",
       measurementId: "G-9QJW7JKPV2"
-};
-    // Initialize Firebase
-    firebase.initializeApp(firebaseConfig);
+    };
+    
+    // Initialize Firebase with error handling
+    try {
+      if (typeof firebase !== 'undefined') {
+        firebase.initializeApp(firebaseConfig);
+        console.log('Firebase initialized successfully');
+      } else {
+        console.error('Firebase SDK not loaded');
+      }
+    } catch (error) {
+      console.error('Firebase initialization error:', error);
+    }
   </script>
   
   <!-- Web Bluetooth API for printer support -->
-  <script src="bluetooth_printer.js"></script>
+  <script src="bluetooth_printer.js" onerror="console.error('Failed to load bluetooth_printer.js')"></script>
   <!-- Web USB API for printer support -->
-  <script src="usb_printer.js"></script>
+  <script src="usb_printer.js" onerror="console.error('Failed to load usb_printer.js')"></script>
   <script>
     // Ensure functions are available on window
-    console.log('Bluetooth printer script loaded');
-    console.log('requestBluetoothDeviceWithCallback available:', typeof window.requestBluetoothDeviceWithCallback !== 'undefined');
+    window.addEventListener('load', function() {
+      console.log('Page loaded, checking printer scripts...');
+      console.log('Bluetooth printer script loaded');
+      console.log('requestBluetoothDeviceWithCallback available:', typeof window.requestBluetoothDeviceWithCallback !== 'undefined');
+      console.log('USB printer script loaded');
+      console.log('isUsbAvailable available:', typeof window.isUsbAvailable !== 'undefined');
+    });
   </script>
 </head>
 <body>

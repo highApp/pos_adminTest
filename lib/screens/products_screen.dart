@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:intl/intl.dart';
 import '../models/product.dart';
 import '../services/product_service.dart';
@@ -18,6 +19,8 @@ class _ProductsScreenState extends State<ProductsScreen> {
   final TextEditingController _searchController = TextEditingController();
   List<Product>? _searchResults;
   String _selectedCategory = 'All';
+  int _currentPage = 1;
+  static const int _itemsPerPage = 12;
   
   // Average Calculator Controllers
   final TextEditingController _oldTotalItemController = TextEditingController();
@@ -48,6 +51,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
     if (query.isEmpty) {
       setState(() {
         _searchResults = null;
+        _currentPage = 1; // Reset to first page when search is cleared
       });
       return;
     }
@@ -55,6 +59,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
     final results = await _productService.searchProducts(query);
     setState(() {
       _searchResults = results;
+      _currentPage = 1; // Reset to first page when searching
     });
   }
 
@@ -97,7 +102,6 @@ class _ProductsScreenState extends State<ProductsScreen> {
           Container(
             height: 60,
             color: Colors.white,
-            padding: const EdgeInsets.only(bottom: 8),
             child: StreamBuilder(
               stream: _categoryService.getCategoriesStream(),
               builder: (context, snapshot) {
@@ -111,35 +115,53 @@ class _ProductsScreenState extends State<ProductsScreen> {
                 // Always include 'All' as first option
                 final allCategories = ['All', ...categoryNames];
 
-                return ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  itemCount: allCategories.length,
-                  itemBuilder: (context, index) {
-                    final category = allCategories[index];
-                    final isSelected = _selectedCategory == category;
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: ChoiceChip(
-                        label: Text(category),
-                        selected: isSelected,
+                return ScrollConfiguration(
+                  behavior: ScrollConfiguration.of(context).copyWith(
+                    scrollbars: true,
+                    dragDevices: {
+                      PointerDeviceKind.mouse,
+                      PointerDeviceKind.touch,
+                      PointerDeviceKind.stylus,
+                      PointerDeviceKind.trackpad,
+                    },
+                  ),
+                  child: Scrollbar(
+                    thumbVisibility: true,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      physics: const AlwaysScrollableScrollPhysics(
+                        parent: BouncingScrollPhysics(),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      itemCount: allCategories.length,
+                      itemBuilder: (context, index) {
+                        final category = allCategories[index];
+                        final isSelected = _selectedCategory == category;
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: ChoiceChip(
+                            label: Text(category),
+                            selected: isSelected,
                         onSelected: (selected) {
                           setState(() {
                             _selectedCategory = category;
                             // Clear search when category changes
                             _searchController.clear();
                             _searchResults = null;
+                            _currentPage = 1; // Reset to first page when category changes
                           });
                         },
-                        selectedColor: Colors.green,
-                        labelStyle: TextStyle(
-                          color: isSelected ? Colors.white : Colors.black87,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                      ),
-                    );
-                  },
+                            selectedColor: Colors.green,
+                            labelStyle: TextStyle(
+                              color: isSelected ? Colors.white : Colors.black87,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
                 );
               },
             ),
@@ -384,11 +406,30 @@ class _ProductsScreenState extends State<ProductsScreen> {
                   );
                 }
 
-                return ListView.builder(
-                  padding: const EdgeInsets.all(8),
-                  itemCount: products.length,
-                  itemBuilder: (context, index) {
-                    final product = products[index];
+                // Calculate pagination
+                final totalPages = (products.length / _itemsPerPage).ceil();
+                final startIndex = (_currentPage - 1) * _itemsPerPage;
+                final endIndex = (startIndex + _itemsPerPage).clamp(0, products.length);
+                final paginatedProducts = products.sublist(startIndex, endIndex);
+
+                // Reset to first page if current page is out of bounds
+                if (_currentPage > totalPages && totalPages > 0) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    setState(() {
+                      _currentPage = 1;
+                    });
+                  });
+                }
+
+                return Column(
+                  children: [
+                    // Products List
+                    Expanded(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(8),
+                        itemCount: paginatedProducts.length,
+                        itemBuilder: (context, index) {
+                          final product = paginatedProducts[index];
                     return Card(
                       margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                       elevation: 2,
@@ -554,7 +595,141 @@ class _ProductsScreenState extends State<ProductsScreen> {
                         ),
                       ),
                     );
-                  },
+                        },
+                      ),
+                    ),
+                    // Pagination Controls
+                    if (totalPages > 1)
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.grey.withOpacity(0.1),
+                              spreadRadius: 1,
+                              blurRadius: 2,
+                              offset: const Offset(0, -2),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            // Previous Button
+                            IconButton(
+                              icon: const Icon(Icons.chevron_left),
+                              onPressed: _currentPage > 1
+                                  ? () {
+                                      setState(() {
+                                        _currentPage--;
+                                      });
+                                    }
+                                  : null,
+                              tooltip: 'Previous',
+                            ),
+                            const SizedBox(width: 8),
+                            // Page Numbers
+                            ...List.generate(
+                              totalPages > 7 ? 7 : totalPages,
+                              (index) {
+                                int pageNumber;
+                                if (totalPages <= 7) {
+                                  pageNumber = index + 1;
+                                } else {
+                                  // Show first, last, and pages around current
+                                  if (_currentPage <= 4) {
+                                    pageNumber = index + 1;
+                                  } else if (_currentPage >= totalPages - 3) {
+                                    pageNumber = totalPages - 6 + index;
+                                  } else {
+                                    pageNumber = _currentPage - 3 + index;
+                                  }
+                                }
+                                
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                                  child: InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        _currentPage = pageNumber;
+                                      });
+                                    },
+                                    child: Container(
+                                      width: 40,
+                                      height: 40,
+                                      decoration: BoxDecoration(
+                                        color: _currentPage == pageNumber
+                                            ? Colors.blue
+                                            : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: _currentPage == pageNumber
+                                              ? Colors.blue
+                                              : Colors.grey[300]!,
+                                        ),
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          '$pageNumber',
+                                          style: TextStyle(
+                                            color: _currentPage == pageNumber
+                                                ? Colors.white
+                                                : Colors.black87,
+                                            fontWeight: _currentPage == pageNumber
+                                                ? FontWeight.bold
+                                                : FontWeight.normal,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                            const SizedBox(width: 8),
+                            // Next Button
+                            IconButton(
+                              icon: const Icon(Icons.chevron_right),
+                              onPressed: _currentPage < totalPages
+                                  ? () {
+                                      setState(() {
+                                        _currentPage++;
+                                      });
+                                    }
+                                  : null,
+                              tooltip: 'Next',
+                            ),
+                          ],
+                        ),
+                      ),
+                    // Page Info
+                    if (totalPages > 1)
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                        color: Colors.grey[50],
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Page $_currentPage of $totalPages',
+                              style: TextStyle(
+                                color: Colors.grey[700],
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Text(
+                              'Showing ${startIndex + 1}-${startIndex + paginatedProducts.length} of ${products.length} products',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
                 );
               },
             ),
