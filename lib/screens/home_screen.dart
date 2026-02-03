@@ -13,6 +13,7 @@ import 'admin_seller_orders_screen.dart';
 import 'create_manager_screen.dart';
 import '../services/auth_service.dart';
 import '../models/user.dart';
+import '../widgets/reminder_alert_listener.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -197,7 +198,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         drawer: _buildDrawer(),
-        body: const POSScreen(),
+        body: const ReminderAlertListener(child: POSScreen()),
       );
     }
 
@@ -233,7 +234,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       drawer: _buildDrawer(),
-      body: _screens[_selectedIndex],
+      body: ReminderAlertListener(child: _screens[_selectedIndex]),
     );
   }
 

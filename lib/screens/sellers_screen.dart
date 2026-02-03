@@ -7,7 +7,9 @@ import 'package:crypto/crypto.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../models/seller.dart';
+import '../models/seller_reminder.dart';
 import '../services/seller_service.dart';
+import '../services/seller_reminder_service.dart';
 import '../services/csv_export_service.dart';
 // Web download helper - use stub on mobile
 import '../utils/html_stub.dart' as html;
@@ -22,7 +24,9 @@ class SellersScreen extends StatefulWidget {
 
 class _SellersScreenState extends State<SellersScreen> {
   final SellerService _sellerService = SellerService();
+  final SellerReminderService _reminderService = SellerReminderService();
   final CsvExportService _csvExportService = CsvExportService();
+  bool _reminderBannerDismissed = false;
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -178,45 +182,74 @@ class _SellersScreenState extends State<SellersScreen> {
   }
 
   void _showCsvDialog(BuildContext context, String csvString, String filename) {
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('CSV Export'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('CSV data generated. Copy the content below:'),
-            const SizedBox(height: 16),
-            Expanded(
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  csvString,
-                  style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.8,
+        ),
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: csvString));
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('CSV data copied to clipboard'),
-                  backgroundColor: Colors.green,
+              const SizedBox(height: 20),
+              const Text('CSV Export', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text('CSV data generated. Copy the content below:'),
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 300,
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    csvString,
+                    style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                  ),
                 ),
-              );
-            },
-            child: const Text('Copy to Clipboard'),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Close'),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: csvString));
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('CSV data copied to clipboard'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    },
+                    child: const Text('Copy to Clipboard'),
+                  ),
+                ],
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -385,6 +418,82 @@ class _SellersScreenState extends State<SellersScreen> {
               onChanged: _searchSellers,
             ),
           ),
+          // Alert reminder banner for today's reminders
+          if (!_reminderBannerDismissed)
+            StreamBuilder<List<SellerReminder>>(
+              stream: _reminderService.getRemindersDueTodayStream(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                final reminders = snapshot.data!;
+                return Material(
+                  color: Colors.amber.shade50,
+                  child: SafeArea(
+                    top: false,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.notifications_active,
+                            color: Colors.amber.shade800,
+                            size: 28,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  '${reminders.length} reminder${reminders.length > 1 ? 's' : ''} due today',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.amber.shade900,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  reminders
+                                      .take(2)
+                                      .map((r) => r.message)
+                                      .join(' • '),
+                                  style: TextStyle(
+                                    color: Colors.amber.shade800,
+                                    fontSize: 13,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () {
+                              setState(() => _reminderBannerDismissed = true);
+                            },
+                            icon: const Icon(Icons.close),
+                            iconSize: 24,
+                            padding: const EdgeInsets.all(8),
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
+                            ),
+                            tooltip: 'Dismiss',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
           // Sellers List
           Expanded(
             child: StreamBuilder<List<Seller>>(
@@ -535,45 +644,109 @@ class _SellersScreenState extends State<SellersScreen> {
                           }
                           
                           if (totalDue > 0) {
-                            return Container(
-                              margin: const EdgeInsets.only(right: 8),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.orange.shade50,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: Colors.orange.shade200,
-                                  width: 1,
+                            return InkWell(
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => SellerHistoryScreen(seller: seller),
                                 ),
                               ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    'Due',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.orange.shade700,
-                                      fontWeight: FontWeight.w500,
-                                    ),
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                margin: const EdgeInsets.only(right: 8),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.shade50,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: Colors.orange.shade200,
+                                    width: 1,
                                   ),
-                                  SelectableText(
-                                    _currencyFormatter.format(totalDue),
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.orange.shade700,
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      'Due',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.orange.shade700,
+                                        fontWeight: FontWeight.w500,
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                    SelectableText(
+                                      _currencyFormatter.format(totalDue),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.orange.shade700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             );
                           }
                           return const SizedBox.shrink();
+                        },
+                      ),
+                      StreamBuilder<List<SellerReminder>>(
+                        stream: _reminderService.getRemindersForSellerStream(seller.id),
+                        builder: (context, snapshot) {
+                          final activeReminders = (snapshot.data ?? [])
+                              .where((r) => !r.isCompleted)
+                              .toList();
+                          final hasReminders = activeReminders.isNotEmpty;
+                          return Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  Icons.notifications,
+                                  color: hasReminders ? Colors.amber.shade700 : Colors.grey.shade600,
+                                ),
+                                onPressed: () => _showReminderDialog(seller),
+                                tooltip: hasReminders
+                                    ? '${activeReminders.length} reminder(s)'
+                                    : 'Add reminder',
+                                iconSize: 24,
+                                padding: const EdgeInsets.all(10),
+                                constraints: const BoxConstraints(
+                                  minWidth: 48,
+                                  minHeight: 48,
+                                ),
+                              ),
+                              if (hasReminders)
+                                Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: BoxDecoration(
+                                      color: Colors.amber.shade700,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    constraints: const BoxConstraints(
+                                      minWidth: 18,
+                                      minHeight: 18,
+                                    ),
+                                    child: Text(
+                                      '${activeReminders.length}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          );
                         },
                       ),
                       IconButton(
@@ -772,24 +945,49 @@ class _SellersScreenState extends State<SellersScreen> {
     final formKey = GlobalKey<FormState>();
     bool obscurePassword = true;
 
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Row(
-            children: [
-              Icon(Icons.person_add, color: Colors.blue[700]),
-              const SizedBox(width: 12),
-              const Text('Add Seller'),
-            ],
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.9,
           ),
-          content: SingleChildScrollView(
-            child: Form(
-              key: formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextFormField(
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: StatefulBuilder(
+            builder: (context, setDialogState) => SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.grey[300],
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Icon(Icons.person_add, color: Colors.blue[700], size: 28),
+                          const SizedBox(width: 12),
+                          const Text('Add Seller', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                      TextFormField(
                     controller: nameController,
                     decoration: const InputDecoration(
                       labelText: 'Seller Name *',
@@ -844,83 +1042,80 @@ class _SellersScreenState extends State<SellersScreen> {
                       hintText: 'Optional',
                     ),
                   ),
-                ],
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton.icon(
+                            onPressed: () async {
+                              if (formKey.currentState!.validate()) {
+                                try {
+                                  final sellerName = nameController.text.trim();
+                                  final nameExists = await _sellerService.sellerNameExists(sellerName);
+                                  if (nameExists) {
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Seller name "$sellerName" is already registered'),
+                                          backgroundColor: Colors.orange,
+                                        ),
+                                      );
+                                    }
+                                    return;
+                                  }
+                                  final passwordHash = passwordController.text.trim().isNotEmpty
+                                      ? _hashPassword(passwordController.text.trim())
+                                      : null;
+                                  final seller = Seller(
+                                    id: const Uuid().v4(),
+                                    name: sellerName,
+                                    phone: phoneController.text.trim().isEmpty ? null : phoneController.text.trim(),
+                                    location: locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+                                    passwordHash: passwordHash,
+                                    createdAt: DateTime.now(),
+                                  );
+                                  await _sellerService.addSeller(seller);
+                                  if (context.mounted) {
+                                    Navigator.pop(context);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Seller "$sellerName" added successfully'),
+                                        backgroundColor: Colors.green,
+                                      ),
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Error adding seller: $e'),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                  }
+                                }
+                              }
+                            },
+                            icon: const Icon(Icons.check),
+                            label: const Text('Add Seller'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton.icon(
-              onPressed: () async {
-                if (formKey.currentState!.validate()) {
-                  try {
-                    final sellerName = nameController.text.trim();
-                    
-                    // Check if seller name already exists
-                    final nameExists = await _sellerService.sellerNameExists(sellerName);
-                    if (nameExists) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Seller name "$sellerName" is already registered'),
-                            backgroundColor: Colors.orange,
-                          ),
-                        );
-                      }
-                      return;
-                    }
-
-                    final passwordHash = passwordController.text.trim().isNotEmpty
-                        ? _hashPassword(passwordController.text.trim())
-                        : null;
-
-                    final seller = Seller(
-                      id: const Uuid().v4(),
-                      name: sellerName,
-                      phone: phoneController.text.trim().isEmpty
-                          ? null
-                          : phoneController.text.trim(),
-                      location: locationController.text.trim().isEmpty
-                          ? null
-                          : locationController.text.trim(),
-                      passwordHash: passwordHash,
-                      createdAt: DateTime.now(),
-                    );
-
-                    await _sellerService.addSeller(seller);
-
-                    if (context.mounted) {
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Seller "$sellerName" added successfully'),
-                          backgroundColor: Colors.green,
-                        ),
-                      );
-                    }
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Error adding seller: $e'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  }
-                }
-              },
-              icon: const Icon(Icons.check),
-              label: const Text('Add Seller'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -934,24 +1129,49 @@ class _SellersScreenState extends State<SellersScreen> {
     final formKey = GlobalKey<FormState>();
     bool obscurePassword = true;
 
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Row(
-            children: [
-              Icon(Icons.edit, color: Colors.blue[700]),
-              const SizedBox(width: 12),
-              const Text('Edit Seller'),
-            ],
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.9,
           ),
-          content: SingleChildScrollView(
-            child: Form(
-              key: formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextFormField(
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: StatefulBuilder(
+            builder: (context, setDialogState) => SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.grey[300],
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Icon(Icons.edit, color: Colors.blue[700], size: 28),
+                          const SizedBox(width: 12),
+                          const Text('Edit Seller', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                      TextFormField(
                     controller: nameController,
                     decoration: const InputDecoration(
                       labelText: 'Seller Name *',
@@ -1007,114 +1227,428 @@ class _SellersScreenState extends State<SellersScreen> {
                       helperText: 'Enter new password to update',
                     ),
                   ),
-                ],
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton.icon(
+                            onPressed: () async {
+                              if (formKey.currentState!.validate()) {
+                                try {
+                                  final passwordHash = passwordController.text.trim().isNotEmpty
+                                      ? _hashPassword(passwordController.text.trim())
+                                      : seller.passwordHash;
+                                  final updatedSeller = Seller(
+                                    id: seller.id,
+                                    name: nameController.text.trim(),
+                                    phone: phoneController.text.trim().isEmpty ? null : phoneController.text.trim(),
+                                    location: locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+                                    passwordHash: passwordHash,
+                                    createdAt: seller.createdAt,
+                                    isActive: seller.isActive,
+                                  );
+                                  await _sellerService.updateSeller(updatedSeller);
+                                  if (context.mounted) {
+                                    Navigator.pop(context);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Seller updated successfully'),
+                                        backgroundColor: Colors.green,
+                                      ),
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Error updating seller: $e'),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                  }
+                                }
+                              }
+                            },
+                            icon: const Icon(Icons.check),
+                            label: const Text('Update'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton.icon(
-              onPressed: () async {
-                if (formKey.currentState!.validate()) {
-                  try {
-                    // Only update password if a new one is provided
-                    final passwordHash = passwordController.text.trim().isNotEmpty
-                        ? _hashPassword(passwordController.text.trim())
-                        : seller.passwordHash;
+        ),
+      ),
+    );
+  }
 
-                    final updatedSeller = Seller(
-                      id: seller.id,
-                      name: nameController.text.trim(),
-                      phone: phoneController.text.trim().isEmpty
-                          ? null
-                          : phoneController.text.trim(),
-                      location: locationController.text.trim().isEmpty
-                          ? null
-                          : locationController.text.trim(),
-                      passwordHash: passwordHash,
-                      createdAt: seller.createdAt,
-                      isActive: seller.isActive,
-                    );
+  void _showReminderDialog(Seller seller) {
+    final TextEditingController messageController = TextEditingController();
+    DateTime selectedDate = DateTime.now();
+    final formKey = GlobalKey<FormState>();
 
-                    await _sellerService.updateSeller(updatedSeller);
-
-                    if (context.mounted) {
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Seller updated successfully'),
-                          backgroundColor: Colors.green,
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: StatefulBuilder(
+            builder: (context, setDialogState) => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 8),
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Row(
+                    children: [
+                      Icon(Icons.notifications, color: Colors.amber[700], size: 28),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Reminders - ${seller.name}',
+                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                          overflow: TextOverflow.ellipsis,
                         ),
-                      );
-                    }
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Error updating seller: $e'),
-                          backgroundColor: Colors.red,
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Form(
+                    key: formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text(
+                          'Add new reminder',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
                         ),
-                      );
-                    }
-                  }
-                }
-              },
-              icon: const Icon(Icons.check),
-              label: const Text('Update'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: messageController,
+                          decoration: const InputDecoration(
+                            labelText: 'Reminder message',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.message),
+                            hintText: 'e.g., Follow up on payment',
+                          ),
+                          maxLines: 2,
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Enter a message';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.calendar_today),
+                          title: const Text('Reminder date'),
+                          subtitle: Text(
+                            DateFormat('EEE, MMM d, y').format(selectedDate),
+                            style: TextStyle(
+                              fontWeight: FontWeight.w500,
+                              color: Colors.blue[700],
+                            ),
+                          ),
+                          trailing: TextButton.icon(
+                            onPressed: () async {
+                              final picked = await showDatePicker(
+                                context: context,
+                                initialDate: selectedDate,
+                                firstDate: DateTime.now(),
+                                lastDate: DateTime.now().add(const Duration(days: 365)),
+                              );
+                              if (picked != null) {
+                                setDialogState(() => selectedDate = picked);
+                              }
+                            },
+                            icon: const Icon(Icons.edit_calendar, size: 20),
+                            label: const Text('Change'),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 48,
+                          child: ElevatedButton.icon(
+                            onPressed: () async {
+                              if (formKey.currentState!.validate()) {
+                                try {
+                                  await _reminderService.createReminder(
+                                    sellerId: seller.id,
+                                    message: messageController.text.trim(),
+                                    reminderDate: selectedDate,
+                                  );
+                                  if (context.mounted) {
+                                    Navigator.pop(context);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Reminder added'),
+                                        backgroundColor: Colors.green,
+                                      ),
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Error: $e'),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                  }
+                                }
+                              }
+                            },
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add Reminder'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.amber.shade700,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  const Text(
+                    'Your reminders',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: StreamBuilder<List<SellerReminder>>(
+                      stream: _reminderService.getRemindersForSellerStream(seller.id),
+                      builder: (context, snapshot) {
+                        if (!snapshot.hasData) {
+                          return const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(24),
+                              child: CircularProgressIndicator(),
+                            ),
+                          );
+                        }
+                        final reminders = snapshot.data!;
+                        if (reminders.isEmpty) {
+                          return Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              'No reminders yet',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 14,
+                              ),
+                            ),
+                          );
+                        }
+                        return ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: reminders.length,
+                          itemBuilder: (context, index) {
+                            final r = reminders[index];
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              color: r.isCompleted
+                                  ? Colors.grey.shade100
+                                  : Colors.amber.shade50,
+                              child: ListTile(
+                                leading: Icon(
+                                  r.isCompleted
+                                      ? Icons.check_circle
+                                      : Icons.notifications_active,
+                                  color: r.isCompleted
+                                      ? Colors.grey
+                                      : Colors.amber.shade700,
+                                  size: 28,
+                                ),
+                                title: Text(
+                                  r.message,
+                                  style: TextStyle(
+                                    decoration: r.isCompleted
+                                        ? TextDecoration.lineThrough
+                                        : null,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  DateFormat('MMM d, y').format(r.reminderDate),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (!r.isCompleted)
+                                      IconButton(
+                                        icon: const Icon(Icons.check),
+                                        onPressed: () async {
+                                          await _reminderService.updateReminder(
+                                            r.copyWith(isCompleted: true),
+                                          );
+                                          if (context.mounted) {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              const SnackBar(
+                                                content: Text('Marked complete'),
+                                                backgroundColor: Colors.green,
+                                              ),
+                                            );
+                                          }
+                                        },
+                                        tooltip: 'Mark complete',
+                                      ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                      onPressed: () async {
+                                        await _reminderService.deleteReminder(r.id);
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            const SnackBar(
+                                              content: Text('Reminder removed'),
+                                              backgroundColor: Colors.orange,
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      tooltip: 'Delete',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 
   void _confirmDeleteSeller(Seller seller) {
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Seller'),
-        content: Text('Are you sure you want to delete "${seller.name}"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              try {
-                await _sellerService.deleteSeller(seller.id);
-                
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Seller deleted successfully'),
-                      backgroundColor: Colors.orange,
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Error deleting seller: $e'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
-                }
-              }
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
-          ),
-        ],
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text('Delete Seller', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Text('Are you sure you want to delete "${seller.name}"?'),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 12),
+                TextButton(
+                  onPressed: () async {
+                    try {
+                      await _sellerService.deleteSeller(seller.id);
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Seller deleted successfully'),
+                            backgroundColor: Colors.orange,
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Error deleting seller: $e'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    }
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('Delete'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1126,80 +1660,118 @@ class _SellersScreenState extends State<SellersScreen> {
     importController.text = 'Seller Name,Phone Number,Location\n'
         'ABDUL HAMEED S/O BADSHA KHAN CHACK 54,0321456987,CHACK 54/10R';
 
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.upload_file, color: Colors.green[700]),
-            const SizedBox(width: 12),
-            const Text('Batch Import Sellers'),
-          ],
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
         ),
-        content: SingleChildScrollView(
-          child: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Enter seller data in CSV format (one per line):',
-                  style: TextStyle(fontWeight: FontWeight.w500),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Format: Seller Name,Phone Number,Location',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: importController,
-                  decoration: const InputDecoration(
-                    labelText: 'Seller Data',
-                    border: OutlineInputBorder(),
-                    hintText: 'Seller Name,Phone Number,Location',
-                    helperText: 'Each line represents one seller',
+              ),
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.upload_file, color: Colors.green[700], size: 28),
+                          const SizedBox(width: 12),
+                          const Text(
+                            'Batch Import Sellers',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Enter seller data in CSV format (one per line):',
+                        style: TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Format: Seller Name,Phone Number,Location',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: importController,
+                        decoration: const InputDecoration(
+                          labelText: 'Seller Data',
+                          border: OutlineInputBorder(),
+                          hintText: 'Seller Name,Phone Number,Location',
+                          helperText: 'Each line represents one seller',
+                        ),
+                        maxLines: 10,
+                        minLines: 5,
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Please enter seller data';
+                          }
+                          final lines = value.trim().split('\n');
+                          if (lines.isEmpty) {
+                            return 'Please enter at least one seller';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton.icon(
+                            onPressed: () async {
+                              if (formKey.currentState!.validate()) {
+                                Navigator.pop(context);
+                                await _importSellers(importController.text.trim());
+                              }
+                            },
+                            icon: const Icon(Icons.upload),
+                            label: const Text('Import'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                  maxLines: 10,
-                  minLines: 5,
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Please enter seller data';
-                    }
-                    final lines = value.trim().split('\n');
-                    if (lines.isEmpty) {
-                      return 'Please enter at least one seller';
-                    }
-                    return null;
-                  },
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () async {
-              if (formKey.currentState!.validate()) {
-                await _importSellers(importController.text.trim());
-                if (context.mounted) {
-                  Navigator.pop(context);
-                }
-              }
-            },
-            icon: const Icon(Icons.upload),
-            label: const Text('Import'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -1229,12 +1801,19 @@ class _SellersScreenState extends State<SellersScreen> {
       int errorCount = 0;
       final errors = <String>[];
 
-      // Show progress dialog
-      showDialog(
+      // Show progress sheet
+      showModalBottomSheet(
         context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: Column(
+        isDismissible: false,
+        enableDrag: false,
+        backgroundColor: Colors.transparent,
+        builder: (context) => Container(
+          padding: const EdgeInsets.all(32),
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const CircularProgressIndicator(),
@@ -1306,40 +1885,56 @@ class _SellersScreenState extends State<SellersScreen> {
             '✓ Successfully added: $successCount\n'
             '✗ Errors: $errorCount';
         
-        showDialog(
+        showModalBottomSheet(
           context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Import Results'),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(message),
-                  if (errors.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Errors:',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    ...errors.map((error) => Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(
-                        '• $error',
-                        style: const TextStyle(fontSize: 12, color: Colors.red),
-                      ),
-                    )),
-                  ],
-                ],
-              ),
+          backgroundColor: Colors.transparent,
+          builder: (context) => Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('OK'),
-              ),
-            ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 8),
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text('Import Results', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(message),
+                      if (errors.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        const Text('Errors:', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        ...errors.map((error) => Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Text('• $error', style: const TextStyle(fontSize: 12, color: Colors.red)),
+                        )),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
           ),
         );
 

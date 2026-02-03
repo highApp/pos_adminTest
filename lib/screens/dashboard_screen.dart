@@ -12,6 +12,10 @@ import '../models/sale.dart';
 import '../models/expense.dart';
 import '../models/borrow.dart';
 import '../models/seller_order.dart';
+import '../models/seller.dart';
+import '../models/seller_reminder.dart';
+import '../services/seller_reminder_service.dart';
+import 'sellers_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -27,6 +31,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final borrowService = BorrowService();
   final sellerService = SellerService();
   final sellerOrderService = SellerOrderService();
+  final sellerReminderService = SellerReminderService();
   int? _selectedDays = 0; // 0 = Today, null = custom date range
   DateTime? _customStartDate;
   DateTime? _customEndDate;
@@ -934,6 +939,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             },
                           );
                         },
+                      ),
+
+                      const SizedBox(height: 32),
+
+                      // Today's Alert Sellers & Upcoming Sellers
+                      _SellerReminderAlerts(
+                        reminderService: sellerReminderService,
+                        sellerService: sellerService,
                       ),
 
                       const SizedBox(height: 32),
@@ -2220,6 +2233,273 @@ class _CustomBarChart extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _SellerReminderAlerts extends StatelessWidget {
+  final SellerReminderService reminderService;
+  final SellerService sellerService;
+
+  const _SellerReminderAlerts({
+    required this.reminderService,
+    required this.sellerService,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<Seller>>(
+      stream: sellerService.getSellersStream(),
+      builder: (context, sellersSnapshot) {
+        final sellersMap = <String, Seller>{};
+        if (sellersSnapshot.hasData) {
+          for (final s in sellersSnapshot.data!) {
+            sellersMap[s.id] = s;
+          }
+        }
+        final getSellerName = (String id) => sellersMap[id]?.name ?? 'Unknown';
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Today's Alert Sellers
+            Text(
+              'Today\'s Alert Sellers',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 22,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            StreamBuilder<List<SellerReminder>>(
+              stream: reminderService.getRemindersDueTodayStream(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const SizedBox(
+                    height: 80,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final reminders = snapshot.data!;
+                if (reminders.isEmpty) {
+                  return _EmptyReminderCard(
+                    icon: Icons.check_circle_outline,
+                    message: 'No reminders due today',
+                    color: Colors.green,
+                  );
+                }
+                return _ReminderList(
+                  reminders: reminders,
+                  getSellerName: getSellerName,
+                  isToday: true,
+                  onTap: () => _navigateToSellers(context),
+                );
+              },
+            ),
+            const SizedBox(height: 24),
+            // Upcoming Sellers
+            Text(
+              'Upcoming Sellers',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 22,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            StreamBuilder<List<SellerReminder>>(
+              stream: reminderService.getUpcomingRemindersStream(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const SizedBox(
+                    height: 80,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final reminders = snapshot.data!;
+                if (reminders.isEmpty) {
+                  return _EmptyReminderCard(
+                    icon: Icons.event_available,
+                    message: 'No upcoming reminders',
+                    color: Colors.blue,
+                  );
+                }
+                return _ReminderList(
+                  reminders: reminders,
+                  getSellerName: getSellerName,
+                  isToday: false,
+                  onTap: () => _navigateToSellers(context),
+                );
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _navigateToSellers(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const SellersScreen(),
+      ),
+    );
+  }
+}
+
+class _EmptyReminderCard extends StatelessWidget {
+  final IconData icon;
+  final String message;
+  final MaterialColor color;
+
+  const _EmptyReminderCard({
+    required this.icon,
+    required this.message,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: color.shade50,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: color.shade600, size: 32),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReminderList extends StatelessWidget {
+  final List<SellerReminder> reminders;
+  final String Function(String) getSellerName;
+  final bool isToday;
+  final VoidCallback onTap;
+
+  const _ReminderList({
+    required this.reminders,
+    required this.getSellerName,
+    required this.isToday,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: reminders.length,
+      itemBuilder: (context, index) {
+        final r = reminders[index];
+        final sellerName = getSellerName(r.sellerId);
+        return InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isToday ? Colors.amber.shade200 : Colors.blue.shade100,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isToday ? Colors.amber.shade50 : Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    isToday ? Icons.notifications_active : Icons.schedule,
+                    color: isToday ? Colors.amber.shade700 : Colors.blue.shade700,
+                    size: 28,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        sellerName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        r.message,
+                        style: TextStyle(
+                          color: Colors.grey[700],
+                          fontSize: 14,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        r.reminderDate.hour == 0 && r.reminderDate.minute == 0
+                            ? DateFormat('MMM d, y').format(r.reminderDate)
+                            : DateFormat('MMM d, y • h:mm a').format(r.reminderDate),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.arrow_forward_ios,
+                  size: 16,
+                  color: Colors.grey[400],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

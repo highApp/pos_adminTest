@@ -8,6 +8,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import '../models/product.dart';
 import '../services/product_service.dart';
 import '../services/category_service.dart';
+import '../utils/urdu_input_hint_stub.dart' if (dart.library.html) '../utils/urdu_input_hint_web.dart' as urdu_hint;
 
 class AddEditProductScreen extends StatefulWidget {
   final Product? product;
@@ -26,6 +27,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   late TextEditingController _nameEnController;
   late TextEditingController _nameUrController;
   late TextEditingController _nameArController;
+  late FocusNode _nameUrFocusNode;
   late TextEditingController _purchasePriceController;
   late TextEditingController _salePriceController;
   late TextEditingController _percentageController;
@@ -84,6 +86,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     foundation.debugPrint('Product: ${widget.product?.displayName}');
     foundation.debugPrint('Image URL from database: $_imageUrl');
     
+    _nameUrFocusNode = FocusNode();
+    _nameUrFocusNode.addListener(_onUrduFieldFocusChange);
+
     // Add listeners to auto-update sale price
     _purchasePriceController.addListener(_updateSalePriceFromPercentage);
     _percentageController.addListener(_updateSalePriceFromPercentage);
@@ -97,8 +102,18 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _wholesalePriceController.addListener(_updatePercentageFromWholesalePrice);
   }
 
+  void _onUrduFieldFocusChange() {
+    if (_nameUrFocusNode.hasFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        urdu_hint.setUrduInputHint();
+      });
+    }
+  }
+
   @override
   void dispose() {
+    _nameUrFocusNode.removeListener(_onUrduFieldFocusChange);
+    _nameUrFocusNode.dispose();
     _nameEnController.dispose();
     _nameUrController.dispose();
     _nameArController.dispose();
@@ -601,13 +616,15 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _nameUrController,
+                    focusNode: _nameUrFocusNode,
                     decoration: const InputDecoration(
                       labelText: 'Product Name (Urdu)',
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.language, color: Colors.green),
-                      helperText: 'Optional',
+                      helperText: 'Optional. Tap here then switch to Urdu keyboard (e.g. globe key) to type in Urdu.',
                     ),
                     textDirection: TextDirection.rtl,
+                    autocorrect: false,
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
