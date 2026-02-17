@@ -10,10 +10,39 @@ class CategoriesScreen extends StatefulWidget {
   State<CategoriesScreen> createState() => _CategoriesScreenState();
 }
 
+class _FilterState {
+  final String query;
+  final int page;
+  const _FilterState({this.query = '', this.page = 1});
+}
+
 class _CategoriesScreenState extends State<CategoriesScreen> {
   final CategoryService _categoryService = CategoryService();
-  int _currentPage = 1;
+  final TextEditingController _searchController = TextEditingController();
+  final ValueNotifier<_FilterState> _filterNotifier =
+      ValueNotifier(const _FilterState());
   static const int _itemsPerPage = 12;
+
+  void _onSearchChanged() {
+    _filterNotifier.value = _FilterState(
+      query: _searchController.text.trim().toLowerCase(),
+      page: 1,
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    _searchController.removeListener(_onSearchChanged);
+    _searchController.dispose();
+    _filterNotifier.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,54 +73,87 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
 
           final categories = snapshot.data ?? [];
 
-          if (categories.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+          return ValueListenableBuilder<_FilterState>(
+            valueListenable: _filterNotifier,
+            builder: (context, filter, _) {
+              final searchQuery = filter.query;
+              final filteredCategories = searchQuery.isEmpty
+                  ? categories
+                  : categories.where((c) {
+                      final nameMatch =
+                          c.name.toLowerCase().contains(searchQuery);
+                      final descMatch = c.description != null &&
+                          c.description!.toLowerCase().contains(searchQuery);
+                      return nameMatch || descMatch;
+                    }).toList();
+
+              if (filteredCategories.isEmpty) {
+                return Column(
+                  children: [
+                    _buildSearchBar(filter),
+                    const SizedBox(height: 16),
+                    Expanded(
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              searchQuery.isEmpty
+                                  ? Icons.category_outlined
+                                  : Icons.search_off,
+                              size: 80,
+                              color: Colors.grey[300],
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              searchQuery.isEmpty
+                                  ? 'No categories yet'
+                                  : 'No matching categories',
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              searchQuery.isEmpty
+                                  ? 'Tap the + button to add your first category'
+                                  : 'Try a different search term',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey[500],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }
+
+              final totalPages =
+                  (filteredCategories.length / _itemsPerPage).ceil();
+              final safePage = filter.page.clamp(1, totalPages);
+              if (safePage != filter.page && totalPages > 0) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _filterNotifier.value =
+                      _FilterState(query: filter.query, page: 1);
+                });
+              }
+              final startIndex = (safePage - 1) * _itemsPerPage;
+              final endIndex = (startIndex + _itemsPerPage)
+                  .clamp(0, filteredCategories.length);
+              final paginatedCategories =
+                  filteredCategories.sublist(startIndex, endIndex);
+
+              return Column(
                 children: [
-                  Icon(Icons.category_outlined, size: 80, color: Colors.grey[300]),
+                  _buildSearchBar(filter),
                   const SizedBox(height: 16),
-                  Text(
-                    'No categories yet',
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: Colors.grey[600],
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Tap the + button to add your first category',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[500],
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          // Calculate pagination
-          final totalPages = (categories.length / _itemsPerPage).ceil();
-          final startIndex = (_currentPage - 1) * _itemsPerPage;
-          final endIndex = (startIndex + _itemsPerPage).clamp(0, categories.length);
-          final paginatedCategories = categories.sublist(startIndex, endIndex);
-
-          // Reset to first page if current page is out of bounds
-          if (_currentPage > totalPages && totalPages > 0) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              setState(() {
-                _currentPage = 1;
-              });
-            });
-          }
-
-          return Column(
-            children: [
-              // Categories List
-              Expanded(
-                child: ListView.builder(
+                  Expanded(
+                    child: ListView.builder(
                   padding: const EdgeInsets.all(16),
                   itemCount: paginatedCategories.length,
                   itemBuilder: (context, index) {
@@ -190,11 +252,10 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                       // Previous Button
                       IconButton(
                         icon: const Icon(Icons.chevron_left),
-                        onPressed: _currentPage > 1
+                        onPressed: safePage > 1
                             ? () {
-                                setState(() {
-                                  _currentPage--;
-                                });
+                                _filterNotifier.value = _FilterState(
+                                    query: filter.query, page: safePage - 1);
                               }
                             : null,
                         tooltip: 'Previous',
@@ -208,34 +269,31 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                           if (totalPages <= 7) {
                             pageNumber = index + 1;
                           } else {
-                            // Show first, last, and pages around current
-                            if (_currentPage <= 4) {
+                            if (safePage <= 4) {
                               pageNumber = index + 1;
-                            } else if (_currentPage >= totalPages - 3) {
+                            } else if (safePage >= totalPages - 3) {
                               pageNumber = totalPages - 6 + index;
                             } else {
-                              pageNumber = _currentPage - 3 + index;
+                              pageNumber = safePage - 3 + index;
                             }
                           }
-                          
                           return Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 4),
                             child: InkWell(
                               onTap: () {
-                                setState(() {
-                                  _currentPage = pageNumber;
-                                });
+                                _filterNotifier.value = _FilterState(
+                                    query: filter.query, page: pageNumber);
                               },
                               child: Container(
                                 width: 40,
                                 height: 40,
                                 decoration: BoxDecoration(
-                                  color: _currentPage == pageNumber
+                                  color: safePage == pageNumber
                                       ? Colors.blue
                                       : Colors.transparent,
                                   borderRadius: BorderRadius.circular(8),
                                   border: Border.all(
-                                    color: _currentPage == pageNumber
+                                    color: safePage == pageNumber
                                         ? Colors.blue
                                         : Colors.grey[300]!,
                                   ),
@@ -244,10 +302,10 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                                   child: Text(
                                     '$pageNumber',
                                     style: TextStyle(
-                                      color: _currentPage == pageNumber
+                                      color: safePage == pageNumber
                                           ? Colors.white
                                           : Colors.black87,
-                                      fontWeight: _currentPage == pageNumber
+                                      fontWeight: safePage == pageNumber
                                           ? FontWeight.bold
                                           : FontWeight.normal,
                                     ),
@@ -262,11 +320,10 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                       // Next Button
                       IconButton(
                         icon: const Icon(Icons.chevron_right),
-                        onPressed: _currentPage < totalPages
+                        onPressed: safePage < totalPages
                             ? () {
-                                setState(() {
-                                  _currentPage++;
-                                });
+                                _filterNotifier.value = _FilterState(
+                                    query: filter.query, page: safePage + 1);
                               }
                             : null,
                         tooltip: 'Next',
@@ -283,7 +340,7 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
-                        'Page $_currentPage of $totalPages',
+                        'Page $safePage of $totalPages',
                         style: TextStyle(
                           color: Colors.grey[700],
                           fontSize: 12,
@@ -291,7 +348,7 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                       ),
                       const SizedBox(width: 16),
                       Text(
-                        'Showing ${startIndex + 1}-${startIndex + paginatedCategories.length} of ${categories.length} categories',
+                        'Showing ${startIndex + 1}-${startIndex + paginatedCategories.length} of ${filteredCategories.length} categories',
                         style: TextStyle(
                           color: Colors.grey[600],
                           fontSize: 12,
@@ -300,9 +357,39 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                     ],
                   ),
                 ),
-            ],
+              ],
+            );
+            },
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildSearchBar(_FilterState filter) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: TextField(
+        controller: _searchController,
+        decoration: InputDecoration(
+          hintText: 'Search categories...',
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: filter.query.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.clear),
+                  onPressed: () {
+                    _searchController.clear();
+                    _filterNotifier.value = const _FilterState();
+                  },
+                  tooltip: 'Clear search',
+                )
+              : null,
+          border: const OutlineInputBorder(),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 12,
+          ),
+        ),
       ),
     );
   }

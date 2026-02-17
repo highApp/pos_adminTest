@@ -1,14 +1,23 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:cross_file/cross_file.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../utils/whatsapp_share_stub.dart' if (dart.library.io) '../utils/whatsapp_share_native.dart' as whatsapp_share;
 import '../models/seller.dart';
 import '../models/sale.dart';
 import '../models/sale_item.dart';
 import '../models/credit_history.dart';
 import '../services/seller_service.dart';
 import '../services/sales_service.dart';
+import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
 
 class SellerHistoryScreen extends StatefulWidget {
   final Seller seller;
@@ -588,6 +597,524 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                 ),
               ),
             ),
+          ),
+          const SizedBox(width: 12),
+          ElevatedButton.icon(
+            onPressed: _isGeneratingPdf ? null : () => _createAndShowPdf(context),
+            icon: _isGeneratingPdf
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.picture_as_pdf, size: 20),
+            label: Text(_isGeneratingPdf ? 'Generating...' : 'Create PDF'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red.shade700,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _isGeneratingPdf = false;
+
+  Future<void> _createAndShowPdf(BuildContext context) async {
+    if (_startDate == null || _endDate == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select both Start Date and End Date'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    if (_startDate!.isAfter(_endDate!)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Start date must be before end date'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isGeneratingPdf = true);
+
+    try {
+      final history = await _fetchFilteredHistory();
+      final pdfBytes = await _generateSellerHistoryPdf(history);
+
+      if (!context.mounted) return;
+      setState(() => _isGeneratingPdf = false);
+
+      await _showPdfOptionsDialog(context, pdfBytes);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isGeneratingPdf = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error generating PDF: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchFilteredHistory() async {
+    final snapshot = await FirebaseFirestore.instance
+        .collection('seller_history')
+        .where('sellerId', isEqualTo: widget.seller.id)
+        .get();
+
+    var records = snapshot.docs.map((doc) {
+      final data = doc.data();
+      return {...data, 'id': doc.id};
+    }).toList();
+
+    final startOnly = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+    final endOnly = DateTime(_endDate!.year, _endDate!.month, _endDate!.day);
+
+    records = records.where((record) {
+      final saleDateStr = record['saleDate'];
+      if (saleDateStr == null) return false;
+      final saleDate = DateTime.parse(saleDateStr);
+      final saleDateOnly = DateTime(saleDate.year, saleDate.month, saleDate.day);
+      return !saleDateOnly.isBefore(startOnly) && !saleDateOnly.isAfter(endOnly);
+    }).toList();
+
+    // Sort by date ASCENDING (oldest first) - day-wise for easy checking
+    records.sort((a, b) {
+      final aDate = a['saleDate'] != null ? DateTime.parse(a['saleDate']) : DateTime(1970);
+      final bDate = b['saleDate'] != null ? DateTime.parse(b['saleDate']) : DateTime(1970);
+      return aDate.compareTo(bDate); // Ascending: Day 1, Day 2, Day 3
+    });
+
+    return records;
+  }
+
+  Future<Uint8List> _generateSellerHistoryPdf(List<Map<String, dynamic>> history) async {
+    final pdf = pw.Document();
+    final dateRangeStr = '${_dateFormatter.format(_startDate!)} - ${_dateFormatter.format(_endDate!)}';
+
+    // Resolve record types for existing data: isManual=true can be Sale (manual sale) or Payment (manual due payment)
+    final resolvedTypes = <int, bool>{}; // index -> isPayment (true = payment, false = sale)
+    for (int i = 0; i < history.length; i++) {
+      final record = history[i];
+      final isManual = record['isManual'] == true;
+      final duePayment = (record['duePayment'] ?? 0).toDouble();
+      final saleAmount = (record['saleAmount'] ?? 0).toDouble();
+      final amountPaid = (record['amountPaid'] ?? 0).toDouble();
+      final saleId = record['saleId'] as String?;
+
+      bool isPayment = false;
+      if (isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0 && saleId != null && saleId.isNotEmpty) {
+        try {
+          final saleDoc = await FirebaseFirestore.instance.collection('sales').doc(saleId).get();
+          if (saleDoc.exists) {
+            final saleData = saleDoc.data();
+            final saleTotal = (saleData?['total'] ?? 0).toDouble();
+            final items = saleData?['items'] as List<dynamic>?;
+            // Manual payment: Sale has total=0, no items (recovery only)
+            isPayment = saleTotal == 0 && (items == null || items.isEmpty);
+          }
+        } catch (_) {
+          // On error, treat as Sale for safety
+        }
+      }
+
+      resolvedTypes[i] = isPayment;
+    }
+
+    double totalSalesAmount = 0;
+    double totalPaymentsReceived = 0;
+    double totalDueOutstanding = 0;
+
+    final tableRows = <pw.TableRow>[
+      pw.TableRow(
+        decoration: const pw.BoxDecoration(color: PdfColors.grey300),
+        children: [
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Date', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Type', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Sale ID', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Sale Amount', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Paid', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Due', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Ref', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+        ],
+      ),
+    ];
+
+    for (int i = 0; i < history.length; i++) {
+      final record = history[i];
+      final saleAmount = (record['saleAmount'] ?? 0).toDouble();
+      final amountPaid = (record['amountPaid'] ?? 0).toDouble();
+      final duePayment = (record['duePayment'] ?? 0).toDouble();
+      final saleId = record['saleId'] ?? '';
+      final saleDateStr = record['saleDate'];
+      final saleDate = saleDateStr != null ? DateTime.parse(saleDateStr) : null;
+      final referenceNumber = record['referenceNumber'] as String?;
+      final isPaymentRecord = resolvedTypes[i] ?? false;
+
+      if (isPaymentRecord) {
+        // Manual payment (money received to reduce dues)
+        totalPaymentsReceived += saleAmount;
+        tableRows.add(
+          pw.TableRow(
+            decoration: const pw.BoxDecoration(color: PdfColors.green50),
+            children: [
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text('Payment', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text('-', style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text('-', style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(_currencyFormatter.format(saleAmount), style: pw.TextStyle(fontSize: 9, color: PdfColors.green800)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text('Applied to dues', style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(referenceNumber ?? '-', style: const pw.TextStyle(fontSize: 9)),
+              ),
+            ],
+          ),
+        );
+      } else {
+        // SALE record
+        totalSalesAmount += saleAmount;
+        totalDueOutstanding += duePayment;
+        tableRows.add(
+          pw.TableRow(
+            children: [
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text('Sale', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(saleId.length >= 8 ? saleId.substring(0, 8).toUpperCase() : saleId, style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(_currencyFormatter.format(saleAmount), style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(_currencyFormatter.format(amountPaid), style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(_currencyFormatter.format(duePayment), style: const pw.TextStyle(fontSize: 9)),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.all(6),
+                child: pw.Text(referenceNumber ?? '-', style: const pw.TextStyle(fontSize: 9)),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(24),
+        build: (context) => [
+          pw.Header(
+            level: 0,
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('Seller History Report (Date-wise)', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 4),
+                pw.Text(widget.seller.name, style: const pw.TextStyle(fontSize: 14)),
+                pw.Text('Date Range: $dateRangeStr', style: const pw.TextStyle(fontSize: 10)),
+                if (widget.seller.phone != null && widget.seller.phone!.isNotEmpty)
+                  pw.Text('Phone: ${widget.seller.phone}', style: const pw.TextStyle(fontSize: 10)),
+                pw.SizedBox(height: 6),
+                pw.Text(
+                  'Sales and payments in chronological order. "Payment" = manual payment received (reduces due).',
+                  style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 16),
+          pw.Table(
+            border: pw.TableBorder.all(color: PdfColors.grey400),
+            columnWidths: {
+              0: const pw.FlexColumnWidth(1.8),
+              1: const pw.FlexColumnWidth(1),
+              2: const pw.FlexColumnWidth(1.1),
+              3: const pw.FlexColumnWidth(1.2),
+              4: const pw.FlexColumnWidth(1.2),
+              5: const pw.FlexColumnWidth(1.2),
+              6: const pw.FlexColumnWidth(1),
+            },
+            children: tableRows,
+          ),
+          pw.SizedBox(height: 16),
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.grey200,
+              borderRadius: pw.BorderRadius.circular(4),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('Summary (Filtered Period)', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)),
+                pw.SizedBox(height: 8),
+                pw.Text('Total Sales: ${_currencyFormatter.format(totalSalesAmount)}', style: const pw.TextStyle(fontSize: 11)),
+                pw.Text('Total Payments Received: ${_currencyFormatter.format(totalPaymentsReceived)}', style: const pw.TextStyle(fontSize: 11)),
+                pw.Text('Outstanding Due: ${_currencyFormatter.format(totalDueOutstanding)}', style: const pw.TextStyle(fontSize: 11)),
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  'Note: Sales show current Paid/Due. Payments are separate entries when you add manual payment.',
+                  style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 20),
+          pw.Text(
+            'Generated on ${_dateTimeFormatter.format(DateTime.now())} | ARS Traders',
+            style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+          ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  String _formatPhoneForWhatsApp(String? phone) {
+    if (phone == null || phone.trim().isEmpty) return '';
+    String cleaned = phone.replaceAll(RegExp(r'[^\d+]'), '');
+    if (cleaned.startsWith('+92')) {
+      return cleaned.substring(1); // Remove + for wa.me
+    }
+    if (cleaned.startsWith('92')) {
+      return cleaned;
+    }
+    if (cleaned.startsWith('0')) {
+      return '92${cleaned.substring(1)}';
+    }
+    return '92$cleaned';
+  }
+
+  Future<void> _sendPdfViaWhatsApp(
+    BuildContext context,
+    BuildContext dialogContext,
+    Uint8List pdfBytes,
+    String filename,
+  ) async {
+    final sellerPhone = _formatPhoneForWhatsApp(widget.seller.phone);
+    if (sellerPhone.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Seller phone number not found. Cannot send via WhatsApp.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    Navigator.pop(dialogContext);
+
+    try {
+      final whatsappUrl = Uri.parse('https://wa.me/$sellerPhone');
+
+      if (kIsWeb) {
+        // Chrome/Web: Share first (Web Share API shows share sheet with file), then open seller chat
+        final xFile = XFile.fromData(
+          pdfBytes,
+          mimeType: 'application/pdf',
+          name: filename,
+        );
+        await Share.shareXFiles(
+          [xFile],
+          text: 'Seller History Report - ${widget.seller.name}',
+        );
+        try {
+          await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
+        } catch (_) {}
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Share sheet shown. Pick WhatsApp to send PDF with file attached. Seller chat opens next.',
+              ),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+      } else {
+        // Android/iOS: Share PDF directly to seller's WhatsApp with file pre-attached
+        final success = await whatsapp_share.sharePdfToWhatsAppContact(
+          sellerPhone,
+          pdfBytes,
+          filename,
+          widget.seller.name,
+        );
+        if (success) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('WhatsApp opened with PDF attached to seller\'s chat.'),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        } else {
+          // Fallback: WhatsApp not installed - use generic share + wa.me
+          final xFile = XFile.fromData(
+            pdfBytes,
+            mimeType: 'application/pdf',
+            name: filename,
+          );
+          await Share.shareXFiles(
+            [xFile],
+            text: 'Seller History Report - ${widget.seller.name}',
+          );
+          if (await canLaunchUrl(whatsappUrl)) {
+            await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
+          }
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Share sheet shown. Select WhatsApp to send. Opening seller chat...'),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 4),
+              ),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _showPdfOptionsDialog(BuildContext context, Uint8List pdfBytes) async {
+    final filename = 'seller_history_${widget.seller.name.replaceAll(' ', '_')}_${_dateFormatter.format(_startDate!)}_${_dateFormatter.format(_endDate!)}.pdf'
+        .replaceAll(RegExp(r'[^\w\-\.]'), '_');
+
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.picture_as_pdf, color: Colors.red),
+            SizedBox(width: 12),
+            Text('PDF Ready'),
+          ],
+        ),
+        content: const Text(
+          'Seller history PDF has been generated. View or download it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+          if (widget.seller.phone != null && widget.seller.phone!.trim().isNotEmpty)
+            OutlinedButton.icon(
+              onPressed: () => _sendPdfViaWhatsApp(context, dialogContext, pdfBytes, filename),
+              icon: const Icon(Icons.chat, size: 18),
+              label: const Text('Send WhatsApp'),
+            ),
+          OutlinedButton.icon(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await Printing.layoutPdf(onLayout: (_) async => pdfBytes);
+            },
+            icon: const Icon(Icons.visibility, size: 18),
+            label: const Text('View'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              if (kIsWeb) {
+                pdf_download.downloadPdf(pdfBytes, filename);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Downloaded: $filename'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              } else {
+                final xFile = XFile.fromData(
+                  pdfBytes,
+                  mimeType: 'application/pdf',
+                  name: filename,
+                );
+                await Share.shareXFiles([xFile], text: 'Seller History Report');
+              }
+            },
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text('Download'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
           ),
         ],
       ),

@@ -680,6 +680,12 @@
       "languageVersion": "3.4"
     },
     {
+      "name": "whatsapp_share2",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/whatsapp_share2-2.1.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.0"
+    },
+    {
       "name": "win32",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/win32-5.15.0",
       "packageUri": "lib/",

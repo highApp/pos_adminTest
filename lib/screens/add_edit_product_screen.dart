@@ -37,6 +37,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   late TextEditingController _valueController;
   late TextEditingController _unitController;
   late TextEditingController _barcodeController;
+  late TextEditingController _categoryController;
   String _selectedCategory = 'General';
   bool _usePercentage = false; // Toggle between manual and percentage mode for sale price
   bool _useWholesalePercentage = false; // Toggle between manual and percentage mode for wholesale price
@@ -78,6 +79,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _barcodeController =
         TextEditingController(text: widget.product?.barcode ?? '');
     _selectedCategory = widget.product?.category ?? 'General';
+    _categoryController = TextEditingController(text: _selectedCategory);
     _imageUrl = widget.product?.imageUrl;
     // Category field is disabled by default when editing a product
     _isCategoryFieldEnabled = widget.product == null;
@@ -126,6 +128,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _valueController.dispose();
     _unitController.dispose();
     _barcodeController.dispose();
+    _categoryController.dispose();
     super.dispose();
   }
 
@@ -452,6 +455,93 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         _isCategoryFieldEnabled = true;
       });
     }
+  }
+
+  void _showCategorySearchSheet(
+    BuildContext context,
+    List<String> allCategoryNames,
+    List<String> categoryNames,
+  ) {
+    final searchController = TextEditingController();
+    String searchQuery = '';
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final filtered = searchQuery.isEmpty
+                ? allCategoryNames
+                : allCategoryNames
+                    .where((c) =>
+                        c.toLowerCase().contains(searchQuery.toLowerCase()))
+                    .toList();
+
+            return DraggableScrollableSheet(
+              initialChildSize: 0.6,
+              minChildSize: 0.4,
+              maxChildSize: 0.9,
+              expand: false,
+              builder: (context, scrollController) {
+                return Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: TextField(
+                        controller: searchController,
+                        decoration: InputDecoration(
+                          hintText: 'Search categories...',
+                          prefixIcon: const Icon(Icons.search),
+                          border: const OutlineInputBorder(),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                        ),
+                        onChanged: (value) {
+                          setSheetState(() {
+                            searchQuery = value;
+                          });
+                        },
+                        autofocus: true,
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        controller: scrollController,
+                        itemCount: filtered.length,
+                        itemBuilder: (context, index) {
+                          final name = filtered[index];
+                          final isSelected = name == _selectedCategory;
+                          return ListTile(
+                            leading: Icon(
+                              isSelected ? Icons.check_circle : Icons.category_outlined,
+                              color: isSelected ? Theme.of(context).primaryColor : null,
+                            ),
+                            title: Text(name),
+                            onTap: () {
+                              setState(() {
+                                _selectedCategory = name;
+                                _categoryController.text = name;
+                              });
+                              Navigator.of(sheetContext).pop();
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    ).then((_) {
+      searchController.dispose();
+    });
   }
 
   Future<void> _saveProduct() async {
@@ -849,8 +939,20 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                 // Only set default if this is a new product and no categories exist
                 if (widget.product == null && categoryNames.isNotEmpty && !categoryNames.contains(_selectedCategory)) {
                   _selectedCategory = categoryNames.first;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted && _categoryController.text != _selectedCategory) {
+                      _categoryController.text = _selectedCategory;
+                      setState(() {});
+                    }
+                  });
                 } else if (widget.product == null && categoryNames.isEmpty) {
                   _selectedCategory = 'General';
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted && _categoryController.text != _selectedCategory) {
+                      _categoryController.text = _selectedCategory;
+                      setState(() {});
+                    }
+                  });
                 }
 
                 // If no categories exist, allow manual entry for backward compatibility
@@ -907,55 +1009,40 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                   );
                 }
 
-                // Build dropdown with existing category included if not in list
-                final allCategoryNames = categoryNames.contains(_selectedCategory)
-                    ? categoryNames
-                    : [_selectedCategory, ...categoryNames];
+                // Build searchable category field - tap to open, shows all then filter
+                final allCategoryNames = <String>{...categoryNames};
+                if (!allCategoryNames.contains('General')) {
+                  allCategoryNames.add('General');
+                }
+                if (!allCategoryNames.contains(_selectedCategory)) {
+                  allCategoryNames.add(_selectedCategory);
+                }
+                final allCategoryNamesList = allCategoryNames.toList()..sort();
 
                 return Stack(
                   children: [
-                    DropdownButtonFormField<String>(
-                      value: _selectedCategory,
+                    TextFormField(
+                      controller: _categoryController,
+                      readOnly: true,
+                      onTap: _isCategoryFieldEnabled
+                          ? () => _showCategorySearchSheet(context, allCategoryNamesList, categoryNames)
+                          : () => _showCategoryPasswordDialog(),
                       decoration: InputDecoration(
                         labelText: 'Category *',
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.category),
                         suffixIcon: _isCategoryFieldEnabled
-                            ? const Icon(Icons.lock_open, color: Colors.green)
+                            ? const Icon(Icons.arrow_drop_down, color: Colors.grey)
                             : const Icon(Icons.lock, color: Colors.grey),
-                        hintText: _isCategoryFieldEnabled ? null : 'Click anywhere to enable',
+                        hintText: _isCategoryFieldEnabled
+                            ? 'Tap to search & select category'
+                            : 'Click anywhere to enable',
+                        helperText: _isCategoryFieldEnabled
+                            ? 'Shows all categories, type to filter'
+                            : null,
                       ),
-                      items: allCategoryNames.map<DropdownMenuItem<String>>((category) {
-                        return DropdownMenuItem<String>(
-                          value: category,
-                          child: Row(
-                            children: [
-                              Text(category),
-                              if (!categoryNames.contains(category))
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 8),
-                                  child: Text(
-                                    '(Legacy)',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey[600],
-                                      fontStyle: FontStyle.italic,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: _isCategoryFieldEnabled
-                          ? (value) {
-                              setState(() {
-                                _selectedCategory = value!;
-                              });
-                            }
-                          : null,
                       validator: (value) {
-                        if (value == null || value.isEmpty) {
+                        if (value == null || value.trim().isEmpty) {
                           return 'Please select a category';
                         }
                         return null;
@@ -967,9 +1054,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                           color: Colors.transparent,
                           child: InkWell(
                             borderRadius: BorderRadius.circular(4),
-                            onTap: () {
-                              _showCategoryPasswordDialog();
-                            },
+                            onTap: () => _showCategoryPasswordDialog(),
                           ),
                         ),
                       ),
