@@ -646,13 +646,27 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     setState(() => _isGeneratingPdf = true);
 
     try {
-      final history = await _fetchFilteredHistory();
-      final pdfBytes = await _generateSellerHistoryPdf(history);
+      Uint8List pdfBytes;
+      final isCreditTab = _tabController.index == 1;
+
+      if (isCreditTab) {
+        // Credit History tab: generate separate Credit History PDF
+        final creditHistory = await _sellerService.getCreditHistory(
+          widget.seller.id,
+          startDate: _startDate,
+          endDate: _endDate,
+        );
+        pdfBytes = await _generateCreditHistoryPdf(creditHistory);
+      } else {
+        // Sales History tab: generate Seller/Sales History PDF
+        final history = await _fetchFilteredHistory();
+        pdfBytes = await _generateSellerHistoryPdf(history);
+      }
 
       if (!context.mounted) return;
       setState(() => _isGeneratingPdf = false);
 
-      await _showPdfOptionsDialog(context, pdfBytes);
+      await _showPdfOptionsDialog(context, pdfBytes, isCreditHistory: isCreditTab);
     } catch (e) {
       if (mounted) {
         setState(() => _isGeneratingPdf = false);
@@ -934,6 +948,188 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     return pdf.save();
   }
 
+  Future<Uint8List> _generateCreditHistoryPdf(List<CreditHistory> creditHistory) async {
+    final pdf = pw.Document();
+    final dateRangeStr = '${_dateFormatter.format(_startDate!)} - ${_dateFormatter.format(_endDate!)}';
+
+    final creditBalance = await _sellerService.getCreditBalance(widget.seller.id);
+    double totalAdded = 0;
+    double totalReduced = 0;
+    for (final h in creditHistory) {
+      if (h.amount > 0) {
+        totalAdded += h.amount;
+      } else {
+        totalReduced += h.amount.abs();
+      }
+    }
+
+    final tableRows = <pw.TableRow>[
+      pw.TableRow(
+        decoration: const pw.BoxDecoration(color: PdfColors.grey300),
+        children: [
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Date & Time', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Type', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Before', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('After', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Amount', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(6),
+            child: pw.Text('Description', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+          ),
+        ],
+      ),
+    ];
+
+    for (final h in creditHistory) {
+      final isPositive = h.amount > 0;
+      final typeLabel = isPositive ? 'Credit Added' : 'Credit Reduced';
+      tableRows.add(
+        pw.TableRow(
+          decoration: pw.BoxDecoration(
+            color: isPositive ? PdfColors.green50 : PdfColors.orange50,
+          ),
+          children: [
+            pw.Padding(
+              padding: const pw.EdgeInsets.all(6),
+              child: pw.Text(_dateTimeFormatter.format(h.createdAt), style: const pw.TextStyle(fontSize: 9)),
+            ),
+            pw.Padding(
+              padding: const pw.EdgeInsets.all(6),
+              child: pw.Text(
+                typeLabel,
+                style: pw.TextStyle(
+                  fontSize: 9,
+                  fontWeight: pw.FontWeight.bold,
+                  color: isPositive ? PdfColors.green800 : PdfColors.orange800,
+                ),
+              ),
+            ),
+            pw.Padding(
+              padding: const pw.EdgeInsets.all(6),
+              child: pw.Text(_currencyFormatter.format(h.balanceBefore), style: const pw.TextStyle(fontSize: 9)),
+            ),
+            pw.Padding(
+              padding: const pw.EdgeInsets.all(6),
+              child: pw.Text(_currencyFormatter.format(h.balanceAfter), style: const pw.TextStyle(fontSize: 9)),
+            ),
+            pw.Padding(
+              padding: const pw.EdgeInsets.all(6),
+              child: pw.Text(
+                '${isPositive ? '+' : '-'}${_currencyFormatter.format(h.amount.abs())}',
+                style: pw.TextStyle(
+                  fontSize: 9,
+                  fontWeight: pw.FontWeight.bold,
+                  color: isPositive ? PdfColors.green800 : PdfColors.orange800,
+                ),
+              ),
+            ),
+            pw.Padding(
+              padding: const pw.EdgeInsets.all(6),
+              child: pw.Text(h.description ?? '-', style: const pw.TextStyle(fontSize: 9)),
+            ),
+          ],
+        ),
+      );
+    }
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(24),
+        build: (context) => [
+          pw.Header(
+            level: 0,
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('Credit History Report', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 4),
+                pw.Text(widget.seller.name, style: const pw.TextStyle(fontSize: 14)),
+                pw.Text('Date Range: $dateRangeStr', style: const pw.TextStyle(fontSize: 10)),
+                if (widget.seller.phone != null && widget.seller.phone!.isNotEmpty)
+                  pw.Text('Phone: ${widget.seller.phone}', style: const pw.TextStyle(fontSize: 10)),
+                pw.SizedBox(height: 6),
+                pw.Text(
+                  'Credit transactions (added/reduced) in chronological order.',
+                  style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 16),
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.grey200,
+              borderRadius: pw.BorderRadius.circular(4),
+            ),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+              children: [
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text('Credit Balance', style: pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+                    pw.Text(_currencyFormatter.format(creditBalance), style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+                  ],
+                ),
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text('Total Added (Period)', style: pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+                    pw.Text(_currencyFormatter.format(totalAdded), style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)),
+                  ],
+                ),
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text('Total Reduced (Period)', style: pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+                    pw.Text(_currencyFormatter.format(totalReduced), style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.orange800)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 16),
+          pw.Table(
+            border: pw.TableBorder.all(color: PdfColors.grey400),
+            columnWidths: {
+              0: const pw.FlexColumnWidth(2),
+              1: const pw.FlexColumnWidth(1.2),
+              2: const pw.FlexColumnWidth(1.2),
+              3: const pw.FlexColumnWidth(1.2),
+              4: const pw.FlexColumnWidth(1.2),
+              5: const pw.FlexColumnWidth(2),
+            },
+            children: tableRows,
+          ),
+          pw.SizedBox(height: 20),
+          pw.Text(
+            'Generated on ${_dateTimeFormatter.format(DateTime.now())} | ARS Traders',
+            style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+          ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
   String _formatPhoneForWhatsApp(String? phone) {
     if (phone == null || phone.trim().isEmpty) return '';
     String cleaned = phone.replaceAll(RegExp(r'[^\d+]'), '');
@@ -953,8 +1149,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     BuildContext context,
     BuildContext dialogContext,
     Uint8List pdfBytes,
-    String filename,
-  ) async {
+    String filename, {
+    bool isCreditHistory = false,
+  }) async {
     final sellerPhone = _formatPhoneForWhatsApp(widget.seller.phone);
     if (sellerPhone.isEmpty) {
       if (context.mounted) {
@@ -980,9 +1177,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           mimeType: 'application/pdf',
           name: filename,
         );
+        final reportLabel = isCreditHistory ? 'Credit History Report' : 'Seller History Report';
         await Share.shareXFiles(
           [xFile],
-          text: 'Seller History Report - ${widget.seller.name}',
+          text: '$reportLabel - ${widget.seller.name}',
         );
         try {
           await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
@@ -1000,11 +1198,13 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         }
       } else {
         // Android/iOS: Share PDF directly to seller's WhatsApp with file pre-attached
+        final reportLabel = isCreditHistory ? 'Credit History Report' : 'Seller History Report';
         final success = await whatsapp_share.sharePdfToWhatsAppContact(
           sellerPhone,
           pdfBytes,
           filename,
           widget.seller.name,
+          reportLabel: reportLabel,
         );
         if (success) {
           if (context.mounted) {
@@ -1025,7 +1225,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           );
           await Share.shareXFiles(
             [xFile],
-            text: 'Seller History Report - ${widget.seller.name}',
+            text: '$reportLabel - ${widget.seller.name}',
           );
           if (await canLaunchUrl(whatsappUrl)) {
             await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
@@ -1053,8 +1253,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     }
   }
 
-  Future<void> _showPdfOptionsDialog(BuildContext context, Uint8List pdfBytes) async {
-    final filename = 'seller_history_${widget.seller.name.replaceAll(' ', '_')}_${_dateFormatter.format(_startDate!)}_${_dateFormatter.format(_endDate!)}.pdf'
+  Future<void> _showPdfOptionsDialog(BuildContext context, Uint8List pdfBytes, {bool isCreditHistory = false}) async {
+    final prefix = isCreditHistory ? 'credit_history' : 'seller_history';
+    final filename = '${prefix}_${widget.seller.name.replaceAll(' ', '_')}_${_dateFormatter.format(_startDate!)}_${_dateFormatter.format(_endDate!)}.pdf'
         .replaceAll(RegExp(r'[^\w\-\.]'), '_');
 
     if (!context.mounted) return;
@@ -1068,8 +1269,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             Text('PDF Ready'),
           ],
         ),
-        content: const Text(
-          'Seller history PDF has been generated. View or download it.',
+        content: Text(
+          isCreditHistory
+              ? 'Credit history PDF has been generated. View or download it.'
+              : 'Seller history PDF has been generated. View or download it.',
         ),
         actions: [
           TextButton(
@@ -1078,7 +1281,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           ),
           if (widget.seller.phone != null && widget.seller.phone!.trim().isNotEmpty)
             OutlinedButton.icon(
-              onPressed: () => _sendPdfViaWhatsApp(context, dialogContext, pdfBytes, filename),
+              onPressed: () => _sendPdfViaWhatsApp(context, dialogContext, pdfBytes, filename, isCreditHistory: isCreditHistory),
               icon: const Icon(Icons.chat, size: 18),
               label: const Text('Send WhatsApp'),
             ),
@@ -1109,7 +1312,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                   mimeType: 'application/pdf',
                   name: filename,
                 );
-                await Share.shareXFiles([xFile], text: 'Seller History Report');
+                await Share.shareXFiles([xFile], text: isCreditHistory ? 'Credit History Report' : 'Seller History Report');
               }
             },
             icon: const Icon(Icons.download, size: 18),

@@ -604,6 +604,39 @@ class SellerService {
     }
   }
 
+  /// Fetch credit history for a seller with optional date range (for PDF export).
+  Future<List<CreditHistory>> getCreditHistory(
+    String sellerId, {
+    DateTime? startDate,
+    DateTime? endDate,
+  }) async {
+    final snapshot = await _firestore
+        .collection('credit_history')
+        .where('sellerId', isEqualTo: sellerId)
+        .get();
+
+    var list = snapshot.docs.map((doc) => CreditHistory.fromMap(doc.data())).toList();
+
+    if (startDate != null || endDate != null) {
+      list = list.where((record) {
+        final d = record.createdAt;
+        final recordDate = DateTime(d.year, d.month, d.day);
+        if (startDate != null) {
+          final start = DateTime(startDate.year, startDate.month, startDate.day);
+          if (recordDate.isBefore(start)) return false;
+        }
+        if (endDate != null) {
+          final end = DateTime(endDate.year, endDate.month, endDate.day);
+          if (recordDate.isAfter(end)) return false;
+        }
+        return true;
+      }).toList();
+    }
+
+    list.sort((a, b) => a.createdAt.compareTo(b.createdAt)); // Oldest first for PDF
+    return list;
+  }
+
   // Get credit history stream for a seller
   // Uses in-memory sorting to avoid requiring a composite index
   Stream<List<CreditHistory>> getCreditHistoryStream(String sellerId) {

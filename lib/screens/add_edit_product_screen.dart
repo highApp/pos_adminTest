@@ -522,11 +522,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                             ),
                             title: Text(name),
                             onTap: () {
-                              setState(() {
-                                _selectedCategory = name;
-                                _categoryController.text = name;
-                              });
-                              Navigator.of(sheetContext).pop();
+                              Navigator.of(sheetContext).pop(name);
                             },
                           );
                         },
@@ -539,8 +535,14 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
           },
         );
       },
-    ).then((_) {
+    ).then((selectedName) {
       searchController.dispose();
+      if (selectedName != null && mounted) {
+        setState(() {
+          _selectedCategory = selectedName as String;
+          _categoryController.text = selectedName;
+        });
+      }
     });
   }
 

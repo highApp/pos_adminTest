@@ -5,6 +5,9 @@ class BuyerPayment {
   final String paymentType; // 'cash' or 'bank_transfer'
   final double amount;
   
+  /// Short 4-digit ID (e.g. PAY-1234) shown on success and in payment history
+  final String? paymentNumber;
+  
   // Bank transfer fields (only if paymentType is 'bank_transfer')
   final String? accountTitle;
   final String? bankName;
@@ -19,6 +22,7 @@ class BuyerPayment {
     required this.paymentDate,
     required this.paymentType,
     required this.amount,
+    this.paymentNumber,
     this.accountTitle,
     this.bankName,
     this.accountHolderName,
@@ -33,6 +37,7 @@ class BuyerPayment {
       'paymentDate': paymentDate.toIso8601String(),
       'paymentType': paymentType,
       'amount': amount,
+      'paymentNumber': paymentNumber,
       'accountTitle': accountTitle,
       'bankName': bankName,
       'accountHolderName': accountHolderName,
@@ -50,6 +55,7 @@ class BuyerPayment {
           : DateTime.now(),
       paymentType: map['paymentType'] ?? 'cash',
       amount: (map['amount'] ?? 0).toDouble(),
+      paymentNumber: map['paymentNumber'],
       accountTitle: map['accountTitle'],
       bankName: map['bankName'],
       accountHolderName: map['accountHolderName'],

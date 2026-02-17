@@ -118,6 +118,7 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
 
         // Allocate payment to bills (oldest first)
         double remainingAmount = amount;
+        final paymentIds = <String>[];
         for (var billData in billsWithBalance) {
           if (remainingAmount <= 0) break;
           
@@ -125,12 +126,15 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
           final balance = billData['balance'] as double;
           final paymentAmount = remainingAmount > balance ? balance : remainingAmount;
           
+          final paymentNumber = await widget.paymentService.getNextPaymentNumber();
+          paymentIds.add(paymentNumber);
           final payment = BuyerPayment(
             id: const Uuid().v4(),
             billId: bill.id,
             paymentDate: _paymentDate!,
             paymentType: _paymentType,
             amount: paymentAmount,
+            paymentNumber: paymentNumber,
             accountTitle: _paymentType == 'bank_transfer' && _accountTitleController.text.trim().isNotEmpty
                 ? _accountTitleController.text.trim()
                 : null,
@@ -152,10 +156,14 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
 
         if (mounted) {
           Navigator.pop(context);
+          final idText = paymentIds.length == 1
+              ? 'ID: ${paymentIds.first}'
+              : 'IDs: ${paymentIds.join(", ")}';
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Payment of ${widget.currencyFormatter.format(amount)} added successfully'),
+              content: Text('Payment(s) added successfully. $idText'),
               backgroundColor: Colors.green,
+              duration: const Duration(seconds: 4),
             ),
           );
         }

@@ -4,6 +4,22 @@ import '../models/buyer_payment.dart';
 class BuyerPaymentService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String _collection = 'buyer_payments';
+  static const String _counterDoc = 'counters/buyer_payment';
+
+  /// Returns next 4-digit payment number (e.g. PAY-0001, PAY-0002)
+  Future<String> getNextPaymentNumber() async {
+    return _firestore.runTransaction<String>((tx) async {
+      final ref = _firestore.doc(_counterDoc);
+      final snapshot = await tx.get(ref);
+      int last = 0;
+      if (snapshot.exists && snapshot.data() != null) {
+        last = (snapshot.data()!['lastNumber'] ?? 0) as int;
+      }
+      final next = last >= 9999 ? 1 : last + 1; // 1-9999
+      tx.set(ref, {'lastNumber': next});
+      return 'PAY-${next.toString().padLeft(4, '0')}';
+    });
+  }
 
   // Add payment
   Future<void> addPayment(BuyerPayment payment) async {

@@ -62,6 +62,16 @@ After building, the APK will be located at:
    adb install build/app/outputs/flutter-apk/app-debug.apk
    ```
 
+## WhatsApp Dependency (whatsapp_share2)
+
+The app uses whatsapp_share2 for sharing PDFs to WhatsApp. Android configuration is already set:
+
+- **FileProvider** – configured for sharing files
+- **Package visibility** – `com.whatsapp` and `com.whatsapp.w4b` declared for Android 11+
+- **provider_paths.xml** – cache and external paths
+
+No extra steps needed for the APK build.
+
 ## Troubleshooting
 
 ### If Flutter command not found:

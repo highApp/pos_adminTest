@@ -95,12 +95,14 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
       });
 
       try {
+        final paymentNumber = await _paymentService.getNextPaymentNumber();
         final payment = BuyerPayment(
           id: const Uuid().v4(),
           billId: widget.billId,
           paymentDate: _paymentDate!,
           paymentType: _paymentType,
           amount: amount,
+          paymentNumber: paymentNumber,
           accountTitle: _paymentType == 'bank_transfer' && _accountTitleController.text.trim().isNotEmpty
               ? _accountTitleController.text.trim()
               : null,
@@ -119,11 +121,12 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
         await _paymentService.addPayment(payment);
 
         if (mounted) {
-          Navigator.pop(context);
+          Navigator.pop(context, paymentNumber);
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Payment added successfully'),
+            SnackBar(
+              content: Text('Payment added successfully. ID: $paymentNumber'),
               backgroundColor: Colors.green,
+              duration: const Duration(seconds: 4),
             ),
           );
         }

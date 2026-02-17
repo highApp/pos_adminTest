@@ -7,18 +7,20 @@ Future<bool> sharePdfToWhatsAppContact(
   String phone,
   Uint8List pdfBytes,
   String filename,
-  String sellerName,
-) async {
+  String sellerName, {
+  String? reportLabel,
+}) async {
   final installed = await WhatsappShare.isInstalled(package: Package.whatsapp);
   if (!installed) return false;
 
   final dir = await getTemporaryDirectory();
   final file = File('${dir.path}/$filename');
   await file.writeAsBytes(pdfBytes);
+  final text = reportLabel != null ? '$reportLabel - $sellerName' : 'Seller History Report - $sellerName';
   await WhatsappShare.shareFile(
     phone: phone,
     filePath: [file.path],
-    text: 'Seller History Report - $sellerName',
+    text: text,
   );
   return true;
 }
