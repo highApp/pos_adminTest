@@ -3580,12 +3580,12 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   }
 
   void _filterSellers() {
-    // Don't close dropdown when filtering - let user select
-    if (!_isDropdownOpen && _sellerSearchController.text.isNotEmpty) {
-      setState(() {
+    // Real-time update: rebuild when search text changes so filtered list updates as user types
+    setState(() {
+      if (!_isDropdownOpen && _sellerSearchController.text.isNotEmpty) {
         _isDropdownOpen = true;
-      });
-    }
+      }
+    });
   }
 
   @override
@@ -4003,22 +4003,12 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                           ? []
                           : allSellers
                               .where((seller) {
-                                // Only show sellers that have at least phone or location (name is always required)
-                                final hasPhone = seller.phone != null && seller.phone!.isNotEmpty;
-                                final hasLocation = seller.location != null && seller.location!.isNotEmpty;
-                                
-                                // Must have at least phone or location to be shown
-                                if (!hasPhone && !hasLocation) {
-                                  return false;
-                                }
-                                
-                                // Check if search query matches name, phone, or location
+                                // Search by name or code only
                                 final nameMatches = seller.name.toLowerCase().contains(query);
-                                final phoneMatches = hasPhone && seller.phone!.toLowerCase().contains(query);
-                                final locationMatches = hasLocation && seller.location!.toLowerCase().contains(query);
-                                
-                                // Only show if query matches at least one field
-                                return nameMatches || phoneMatches || locationMatches;
+                                final codeMatches = seller.code != null &&
+                                    seller.code!.isNotEmpty &&
+                                    seller.code!.toLowerCase().contains(query);
+                                return nameMatches || codeMatches;
                               })
                               .toList();
 
@@ -4030,7 +4020,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                             decoration: InputDecoration(
                               hintText: _selectedSeller != null
                                   ? _selectedSeller!.name
-                                  : 'Search seller by name, phone, or location...',
+                                  : 'Search seller by name or code...',
                               prefixIcon: const Icon(Icons.person_search),
                               suffixIcon: _selectedSeller != null
                                   ? IconButton(

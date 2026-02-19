@@ -67,12 +67,8 @@ class _SellersScreenState extends State<SellersScreen> {
     
     return sellers.where((seller) {
       final name = seller.name.toLowerCase();
-      final phone = seller.phone?.toLowerCase() ?? '';
-      final location = seller.location?.toLowerCase() ?? '';
-      
-      return name.contains(_searchQuery) ||
-          phone.contains(_searchQuery) ||
-          location.contains(_searchQuery);
+      final code = seller.code?.toLowerCase() ?? '';
+      return name.contains(_searchQuery) || code.contains(_searchQuery);
     }).toList();
   }
 
@@ -397,7 +393,7 @@ class _SellersScreenState extends State<SellersScreen> {
             child: TextField(
               controller: _searchController,
               decoration: InputDecoration(
-                hintText: 'Search sellers by name, phone, or location...',
+                hintText: 'Search sellers by name or code...',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _searchQuery.isNotEmpty
                     ? IconButton(
@@ -595,6 +591,22 @@ class _SellersScreenState extends State<SellersScreen> {
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (seller.code != null)
+                        Row(
+                          children: [
+                            const Icon(Icons.tag, size: 14, color: Colors.grey),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: SelectableText(
+                                seller.code!,
+                                style: TextStyle(
+                                  color: Colors.blue[700],
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       if (seller.phone != null)
                         Row(
                           children: [
@@ -615,6 +627,19 @@ class _SellersScreenState extends State<SellersScreen> {
                             Expanded(
                               child: SelectableText(
                                 seller.location!,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      if (seller.reference != null && seller.reference!.isNotEmpty)
+                        Row(
+                          children: [
+                            const Icon(Icons.receipt_long, size: 14, color: Colors.grey),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: SelectableText(
+                                'Reference: ${seller.reference!}',
                                 style: const TextStyle(fontSize: 12),
                               ),
                             ),
@@ -939,8 +964,10 @@ class _SellersScreenState extends State<SellersScreen> {
 
   void _showAddSellerDialog() {
     final TextEditingController nameController = TextEditingController();
+    final TextEditingController codeController = TextEditingController();
     final TextEditingController phoneController = TextEditingController();
     final TextEditingController locationController = TextEditingController();
+    final TextEditingController referenceController = TextEditingController();
     final TextEditingController passwordController = TextEditingController();
     final formKey = GlobalKey<FormState>();
     bool obscurePassword = true;
@@ -1003,6 +1030,16 @@ class _SellersScreenState extends State<SellersScreen> {
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
+                    controller: codeController,
+                    decoration: const InputDecoration(
+                      labelText: 'Seller Code',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.tag),
+                      hintText: 'e.g., SEL001',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
                     controller: phoneController,
                     decoration: const InputDecoration(
                       labelText: 'Phone Number',
@@ -1019,6 +1056,16 @@ class _SellersScreenState extends State<SellersScreen> {
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.location_on),
                       hintText: 'e.g., Shop 1, Market Street',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: referenceController,
+                    decoration: const InputDecoration(
+                      labelText: 'Reference',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.receipt_long),
+                      hintText: 'Optional reference (e.g. DFS)',
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -1074,8 +1121,10 @@ class _SellersScreenState extends State<SellersScreen> {
                                   final seller = Seller(
                                     id: const Uuid().v4(),
                                     name: sellerName,
+                                    code: codeController.text.trim().isEmpty ? null : codeController.text.trim(),
                                     phone: phoneController.text.trim().isEmpty ? null : phoneController.text.trim(),
                                     location: locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+                                    reference: referenceController.text.trim().isEmpty ? null : referenceController.text.trim(),
                                     passwordHash: passwordHash,
                                     createdAt: DateTime.now(),
                                   );
@@ -1123,8 +1172,10 @@ class _SellersScreenState extends State<SellersScreen> {
 
   void _showEditSellerDialog(Seller seller) {
     final TextEditingController nameController = TextEditingController(text: seller.name);
+    final TextEditingController codeController = TextEditingController(text: seller.code ?? '');
     final TextEditingController phoneController = TextEditingController(text: seller.phone ?? '');
     final TextEditingController locationController = TextEditingController(text: seller.location ?? '');
+    final TextEditingController referenceController = TextEditingController(text: seller.reference ?? '');
     final TextEditingController passwordController = TextEditingController();
     final formKey = GlobalKey<FormState>();
     bool obscurePassword = true;
@@ -1187,6 +1238,16 @@ class _SellersScreenState extends State<SellersScreen> {
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
+                    controller: codeController,
+                    decoration: const InputDecoration(
+                      labelText: 'Seller Code',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.tag),
+                      hintText: 'e.g., SEL001',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
                     controller: phoneController,
                     decoration: const InputDecoration(
                       labelText: 'Phone Number',
@@ -1203,6 +1264,16 @@ class _SellersScreenState extends State<SellersScreen> {
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.location_on),
                       hintText: 'e.g., Shop 1, Market Street',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: referenceController,
+                    decoration: const InputDecoration(
+                      labelText: 'Reference',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.receipt_long),
+                      hintText: 'Optional reference (e.g. DFS)',
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -1246,8 +1317,10 @@ class _SellersScreenState extends State<SellersScreen> {
                                   final updatedSeller = Seller(
                                     id: seller.id,
                                     name: nameController.text.trim(),
+                                    code: codeController.text.trim().isEmpty ? null : codeController.text.trim(),
                                     phone: phoneController.text.trim().isEmpty ? null : phoneController.text.trim(),
                                     location: locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+                                    reference: referenceController.text.trim().isEmpty ? null : referenceController.text.trim(),
                                     passwordHash: passwordHash,
                                     createdAt: seller.createdAt,
                                     isActive: seller.isActive,
@@ -1657,8 +1730,8 @@ class _SellersScreenState extends State<SellersScreen> {
     final TextEditingController importController = TextEditingController();
     final formKey = GlobalKey<FormState>();
     
-    importController.text = 'Seller Name,Phone Number,Location\n'
-        'ABDUL HAMEED S/O BADSHA KHAN CHACK 54,0321456987,CHACK 54/10R';
+    importController.text = 'No.,Seller Name,Phone Number,Location, Reference, Due,Credit Balance,Status,Created Date\n'
+        '1,IRFAN,0321456987,JAHANIAN,DFS,500.00,0.00,Active,2026-02-19 11:17:55';
 
     showModalBottomSheet(
       context: context,
@@ -1715,8 +1788,13 @@ class _SellersScreenState extends State<SellersScreen> {
                       ),
                       const SizedBox(height: 8),
                       const Text(
-                        'Format: Seller Name,Phone Number,Location',
+                        'Format: No., Name, Phone, "Location, Reference, Due", Credit, Status, Date',
                         style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Combined column: Location,Reference,Due (e.g. JAHANIAN,DFS,500.00). Date: yyyy-MM-dd HH:mm:ss',
+                        style: TextStyle(fontSize: 11, color: Colors.grey[600]),
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
@@ -1724,8 +1802,8 @@ class _SellersScreenState extends State<SellersScreen> {
                         decoration: const InputDecoration(
                           labelText: 'Seller Data',
                           border: OutlineInputBorder(),
-                          hintText: 'Seller Name,Phone Number,Location',
-                          helperText: 'Each line represents one seller',
+                          hintText: '1,IRFAN,0321456987,JAHANIAN,DFS,500.00,0.00,Active,2026-02-19 11:17:55',
+                          helperText: 'Each line represents one seller. Header row optional.',
                         ),
                         maxLines: 10,
                         minLines: 5,
@@ -1838,15 +1916,93 @@ class _SellersScreenState extends State<SellersScreen> {
             continue;
           }
 
-          final sellerName = parts[0].trim();
+          // Detect format: 7 cols with leading number = "No., Name, Phone, Location,Reference,Due, Credit, Status, Date"
+          final bool combinedFormatWithNo = parts.length == 7 && int.tryParse(parts[0].trim()) != null;
+          final bool combinedFormatNoNo = parts.length == 6 && parts.length > 2 && parts[2].contains(',');
+          final bool useCombinedFormat = combinedFormatWithNo || combinedFormatNoNo;
+
+          String sellerName;
+          String phone;
+          String location;
+          String reference;
+          double dueAmount;
+          int creditIdx, statusIdx, dateIdx;
+
+          if (useCombinedFormat) {
+            if (combinedFormatWithNo) {
+              sellerName = parts[1].trim();
+              phone = parts.length > 2 ? parts[2].trim() : '';
+              final parsed = _parseLocationReferenceDue(parts[3]);
+              location = parsed.$1;
+              reference = parsed.$2;
+              dueAmount = parsed.$3;
+              creditIdx = 4;
+              statusIdx = 5;
+              dateIdx = 6;
+            } else {
+              sellerName = parts[0].trim();
+              phone = parts.length > 1 ? parts[1].trim() : '';
+              final parsed = _parseLocationReferenceDue(parts[2]);
+              location = parsed.$1;
+              reference = parsed.$2;
+              dueAmount = parsed.$3;
+              creditIdx = 3;
+              statusIdx = 4;
+              dateIdx = 5;
+            }
+          } else {
+            sellerName = parts[0].trim();
+            phone = parts.length > 1 ? parts[1].trim() : '';
+            location = parts.length > 2 ? parts[2].trim() : '';
+            final bool hasReferenceColumn = parts.length > 7;
+            reference = hasReferenceColumn ? parts[3].trim() : '';
+            dueAmount = 0.0;
+            int dueIdx = hasReferenceColumn ? 4 : 3;
+            creditIdx = hasReferenceColumn ? 5 : 4;
+            statusIdx = hasReferenceColumn ? 6 : 4;
+            dateIdx = hasReferenceColumn ? 7 : 5;
+            if (parts.length > dueIdx) {
+              final dueStr = parts[dueIdx].trim();
+              if (dueStr.isNotEmpty) dueAmount = double.tryParse(dueStr) ?? 0.0;
+            }
+            if (parts.length > creditIdx) {
+              final possibleCredit = parts[creditIdx].trim();
+              final parsedCredit = double.tryParse(possibleCredit);
+              if (!hasReferenceColumn && (possibleCredit.isEmpty || parsedCredit != null)) {
+                statusIdx = 5;
+                dateIdx = 6;
+              }
+            }
+          }
+
           if (sellerName.isEmpty) {
             errorCount++;
             errors.add('Line ${i + 1}: Seller name is required');
             continue;
           }
 
-          final phone = parts.length > 1 ? parts[1].trim() : '';
-          final location = parts.length > 2 ? parts[2].trim() : '';
+          double creditBalance = 0.0;
+          if (parts.length > creditIdx) {
+            final possibleCredit = parts[creditIdx].trim();
+            final parsedCredit = double.tryParse(possibleCredit);
+            creditBalance = parsedCredit ?? 0.0;
+          }
+
+          bool isActive = true;
+          if (parts.length > statusIdx) {
+            final statusStr = parts[statusIdx].trim().toLowerCase();
+            isActive = statusStr != 'inactive' && statusStr != '0' && statusStr != 'no';
+          }
+
+          DateTime createdAt = DateTime.now();
+          if (parts.length > dateIdx) {
+            final dateStr = parts[dateIdx].trim();
+            if (dateStr.isNotEmpty) {
+              final isoStr = dateStr.replaceFirst(' ', 'T');
+              final parsed = DateTime.tryParse(isoStr) ?? DateTime.tryParse(dateStr);
+              if (parsed != null) createdAt = parsed;
+            }
+          }
 
           // Check if seller name already exists
           final nameExists = await _sellerService.sellerNameExists(sellerName);
@@ -1862,10 +2018,32 @@ class _SellersScreenState extends State<SellersScreen> {
             name: sellerName,
             phone: phone.isEmpty ? null : phone,
             location: location.isEmpty ? null : location,
-            createdAt: DateTime.now(),
+            reference: reference.isEmpty ? null : reference,
+            createdAt: createdAt,
+            isActive: isActive,
           );
 
           await _sellerService.addSeller(seller);
+
+          // If due amount provided, add opening-due record (reference stored in seller_history.referenceNumber)
+          if (dueAmount > 0) {
+            await _sellerService.addOpeningDueToSellerHistory(
+              sellerId: seller.id,
+              dueAmount: dueAmount,
+              date: createdAt,
+              referenceNumber: reference.isEmpty ? null : reference,
+            );
+          }
+
+          // If credit balance provided, add to seller (shows in History as Credit Balance)
+          if (creditBalance > 0) {
+            await _sellerService.addCreditBalance(
+              seller.id,
+              creditBalance,
+              description: 'Import',
+            );
+          }
+
           successCount++;
 
         } catch (e) {
@@ -1963,6 +2141,32 @@ class _SellersScreenState extends State<SellersScreen> {
   }
 
   // Parse CSV line handling quoted values
+  /// Parses combined "Location, Reference, Due" (e.g. JAHANIAN,DFS,500.00).
+  /// Returns (location, reference, due). If not in that format, returns (fullString, '', 0).
+  (String, String, double) _parseLocationReferenceDue(String combined) {
+    final s = combined.trim();
+    if (s.isEmpty) return ('', '', 0.0);
+    final parts = s.split(',');
+    if (parts.length >= 3) {
+      final last = parts.last.trim();
+      final due = double.tryParse(last);
+      if (due != null) {
+        final reference = parts[parts.length - 2].trim();
+        final location = parts.sublist(0, parts.length - 2).join(',').trim();
+        return (location, reference, due);
+      }
+    }
+    if (parts.length == 2) {
+      final due = double.tryParse(parts[1].trim());
+      if (due != null) return (parts[0].trim(), '', due);
+    }
+    if (parts.length == 1) {
+      final due = double.tryParse(parts[0].trim());
+      if (due != null) return ('', '', due);
+    }
+    return (s, '', 0.0); // whole string as location
+  }
+
   List<String> _parseCsvLine(String line) {
     final result = <String>[];
     String current = '';

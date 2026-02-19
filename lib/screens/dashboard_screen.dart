@@ -15,6 +15,7 @@ import '../models/seller_order.dart';
 import '../models/seller.dart';
 import '../models/seller_reminder.dart';
 import '../services/seller_reminder_service.dart';
+import '../services/reset_data_service.dart';
 import 'sellers_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -32,10 +33,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final sellerService = SellerService();
   final sellerOrderService = SellerOrderService();
   final sellerReminderService = SellerReminderService();
+  final resetDataService = ResetDataService();
+  late final Future<DateTime?> _resetDateFuture;
   int? _selectedDays = 0; // 0 = Today, null = custom date range
   DateTime? _customStartDate;
   DateTime? _customEndDate;
   bool _showProfit = false; // Hide profit by default
+
+  @override
+  void initState() {
+    super.initState();
+    _resetDateFuture = resetDataService.getFinancialResetDate();
+  }
 
   void _toggleProfitVisibility() {
     if (_showProfit) {
@@ -233,6 +242,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   // Calculate combined stats from stream data (for real-time updates)
+  // If [resetDate] is set, only data on or after that date is counted (for Revenue/Credit/Recovery).
   Map<String, dynamic> _calculateCombinedStats(
     List<Sale> sales,
     List<Expense> expenses,
@@ -241,44 +251,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
     double totalUnpaidSales,
     double borrowProfit,
     double realProfitFromPaid,
-    double totalCreditReductions,
-    double todayCreditReductions, // Today's credit reductions (for breakdown when "Today" is selected)
-  ) {
+    double periodCreditReductions, // Credit reductions for the selected date range (Today, Last N Days, or Custom)
+    [DateTime? resetDate,
+  ]) {
     try {
       final startDate = _getStartDate();
       final endDate = _getEndDate();
-      
-      // Filter sales by date range
+      // When user has done "Reset Revenue & Credit", only count data on or after reset date
+      final effectiveStartDate = (resetDate != null && resetDate.isAfter(startDate))
+          ? resetDate
+          : startDate;
+
+      // Filter sales by date range (respecting reset date)
       final filteredSales = sales.where((sale) {
-        return sale.createdAt.isAfter(startDate.subtract(const Duration(seconds: 1))) &&
+        return sale.createdAt.isAfter(effectiveStartDate.subtract(const Duration(seconds: 1))) &&
                sale.createdAt.isBefore(endDate.add(const Duration(seconds: 1)));
       }).toList();
-      
-      // Filter expenses by date range
+
+      // Filter expenses by date range (respecting reset date)
       final filteredExpenses = expenses.where((expense) {
-        return expense.createdAt.isAfter(startDate.subtract(const Duration(seconds: 1))) &&
+        return expense.createdAt.isAfter(effectiveStartDate.subtract(const Duration(seconds: 1))) &&
                expense.createdAt.isBefore(endDate.add(const Duration(seconds: 1)));
       }).toList();
-      
-      // Filter borrows by date range
+
+      // Filter borrows by date range (respecting reset date)
       final filteredBorrows = borrows.where((borrow) {
-        return borrow.createdAt.isAfter(startDate.subtract(const Duration(seconds: 1))) &&
+        return borrow.createdAt.isAfter(effectiveStartDate.subtract(const Duration(seconds: 1))) &&
                borrow.createdAt.isBefore(endDate.add(const Duration(seconds: 1)));
       }).toList();
-      
-      // Filter completed seller orders by date range
+
+      // Filter completed seller orders by date range (respecting reset date)
       final filteredSellerOrders = sellerOrders.where((order) {
         return order.status == OrderStatus.completed &&
                order.completedAt != null &&
-               order.completedAt!.isAfter(startDate.subtract(const Duration(seconds: 1))) &&
+               order.completedAt!.isAfter(effectiveStartDate.subtract(const Duration(seconds: 1))) &&
                order.completedAt!.isBefore(endDate.add(const Duration(seconds: 1)));
       }).toList();
       
-      // If "Today" is selected, use all seller orders for revenue calculation
-      // Otherwise, use filtered orders
-      final ordersForRevenue = (_selectedDays == 0) 
-          ? sellerOrders.where((order) => order.status == OrderStatus.completed && order.completedAt != null).toList()
-          : filteredSellerOrders;
+      // Always use filtered orders for revenue (respects date filter: Today, Last N Days, or Custom Range)
+      final ordersForRevenue = filteredSellerOrders;
       
       // Calculate wholesale orders revenue and profit
       double wholesaleRevenue = 0;
@@ -309,9 +320,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final todayStart = DateTime(now.year, now.month, now.day);
       final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
       
-      // If "Today" is selected, calculate overall total revenue from all sales (not filtered)
-      // Otherwise, use filtered sales
-      final salesForRevenue = (_selectedDays == 0) ? sales : filteredSales;
+      // Always use filtered sales for revenue (respects date filter: Today, Last N Days, or Custom Range)
+      final salesForRevenue = filteredSales;
       
       for (var sale in salesForRevenue) {
         // IMPORTANT: Completely exclude borrow payments from revenue calculation
@@ -418,7 +428,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         totalExpenses += expense.amount;
       }
       
-      // totalCreditReductions is passed as parameter (calculated from stream)
+      // periodCreditReductions is passed as parameter (filtered by selected date range)
       
       // Calculate borrows
       double totalBorrowed = 0;
@@ -447,12 +457,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // Revenue already accounts for returns (uses netTotal), now also subtract expenses and add wholesale revenue
       final grossRevenue = totalRevenue; // Sales revenue after returns (netTotal)
       
-      // Always subtract credit reductions from revenue (they represent money paid to reduce credit)
-      // If "Today" is selected, show overall revenue but still subtract all credit reductions
-      // Otherwise, subtract expenses and credit reductions for the date range
-      final netRevenue = (_selectedDays == 0) 
-          ? grossRevenue - totalCreditReductions  // Overall revenue (all time) - subtract credit reductions only
-          : grossRevenue - totalExpenses - totalCreditReductions; // Revenue after returns, expenses, and credit reductions for date range
+      // Always subtract credit reductions and expenses from revenue for the selected date range
+      final netRevenue = grossRevenue - totalExpenses - periodCreditReductions;
       
       // Total revenue including recovery balance AND wholesale orders
       // Revenue = sales (cash) + recovery + wholesale
@@ -462,9 +468,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final totalRevenueWithRecovery = netRevenue + totalRecoveryBalance + wholesaleRevenue;
       
       debugPrint('=== REVENUE CALCULATION ===');
-      debugPrint('Date Filter: ${_selectedDays == 0 ? "Today (showing overall revenue)" : _getDateRangeLabel()}');
+      debugPrint('Date Filter: ${_selectedDays == 0 ? "Today" : _getDateRangeLabel()}');
       debugPrint('POS Sales Revenue (gross, before expenses): $totalRevenue');
-      debugPrint('Credit Reductions (always subtracted from revenue): $totalCreditReductions');
+      debugPrint('Credit Reductions (filtered by date range): $periodCreditReductions');
       debugPrint('POS Sales Revenue (net, after expenses and credit reductions): $netRevenue');
       debugPrint('Wholesale Orders Revenue: $wholesaleRevenue');
       debugPrint('Wholesale Orders Profit: $wholesaleProfit');
@@ -473,23 +479,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       debugPrint('Credit Used (tracked separately, NOT in revenue): $totalCreditUsed');
       debugPrint('Total Revenue (POS + Wholesale + Recovery): $totalRevenueWithRecovery');
       if (_selectedDays == 0) {
-        debugPrint('NOTE: "Today" selected - showing OVERALL total revenue (all time)');
+        debugPrint('NOTE: "Today" selected - showing TODAY\'s data only');
       }
       debugPrint('Note: Recovery balance is NOT double-counted (excluded from sale revenue)');
       debugPrint('Note: Credit used is tracked separately and NOT included in revenue (already counted when credit was given)');
       debugPrint('Borrow payments are EXCLUDED from revenue');
       debugPrint('==========================');
       
-      // Calculate today's revenue for breakdown (when "Today" is selected)
-      // Revenue should include: today's sales (POS), manual sales, etc.
-      // Credit used is NOT included (it's money already received when credit was given)
-      // Subtract today's credit reductions (payments made today to reduce credit balance)
+      // Calculate revenue for breakdown display
+      // When Today: show today's revenue - today's credit reductions
+      // When date range: show filtered net revenue (already includes credit reductions)
       final todayRevenueForBreakdown = (_selectedDays == 0) 
-          ? todayRevenue - todayCreditReductions  // Today's revenue = cash sales - today's credit reductions
+          ? todayRevenue - periodCreditReductions  // Today's revenue = cash sales - period credit reductions
           : netRevenue;   // Filtered revenue for date range (already includes credit reductions)
       
       if (_selectedDays == 0) {
-        debugPrint('Today Revenue Breakdown: $todayRevenueForBreakdown (cash sales - today credit reductions: $todayCreditReductions)');
+        debugPrint('Today Revenue Breakdown: $todayRevenueForBreakdown (cash sales - period credit reductions: $periodCreditReductions)');
       }
       
       // Calculate today's recovery balance for breakdown (when "Today" is selected)
@@ -643,28 +648,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // Stats Cards (filtered by date) - Real-time updates
-                      StreamBuilder<List<Sale>>(
-                        stream: salesService.getSalesStream(),
-                        builder: (context, salesSnapshot) {
-                          return StreamBuilder<List<Expense>>(
-                            stream: expenseService.getExpensesStream(),
-                            builder: (context, expensesSnapshot) {
-                              return StreamBuilder<List<Borrow>>(
-                                stream: borrowService.getBorrowsStream(),
-                                builder: (context, borrowsSnapshot) {
-                                  return StreamBuilder<double>(
-                                    stream: sellerService.getTotalUnpaidSalesStream(),
-                                    builder: (context, unpaidSnapshot) {
-                                      // Get date range for filtering
-                                      final startDate = _getStartDate();
-                                      final endDate = _getEndDate();
-                                      
+                      FutureBuilder<DateTime?>(
+                        future: _resetDateFuture,
+                        builder: (context, resetDateSnapshot) {
+                          if (!resetDateSnapshot.hasData) {
+                            return const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(40.0),
+                                child: CircularProgressIndicator(),
+                              ),
+                            );
+                          }
+                          final resetDate = resetDateSnapshot.data;
+                          final startDate = _getStartDate();
+                          final endDate = _getEndDate();
+                          final effectiveStartDate = (resetDate != null && resetDate.isAfter(startDate))
+                              ? resetDate
+                              : startDate;
+                          final effectiveEndDate = endDate;
+
+                          return StreamBuilder<List<Sale>>(
+                            stream: salesService.getSalesStream(),
+                            builder: (context, salesSnapshot) {
+                              return StreamBuilder<List<Expense>>(
+                                stream: expenseService.getExpensesStream(),
+                                builder: (context, expensesSnapshot) {
+                                  return StreamBuilder<List<Borrow>>(
+                                    stream: borrowService.getBorrowsStream(),
+                                    builder: (context, borrowsSnapshot) {
                                       return StreamBuilder<double>(
-                                        stream: sellerService.getBorrowProfitStreamByDateRange(startDate, endDate),
-                                        builder: (context, borrowProfitSnapshot) {
+                                        stream: sellerService.getTotalUnpaidSalesStream(),
+                                        builder: (context, unpaidSnapshot) {
                                           return StreamBuilder<double>(
-                                            stream: sellerService.getRealProfitFromPaidStreamByDateRange(startDate, endDate),
-                                            builder: (context, realProfitSnapshot) {
+                                            stream: sellerService.getBorrowProfitStreamByDateRange(effectiveStartDate, effectiveEndDate),
+                                            builder: (context, borrowProfitSnapshot) {
+                                              return StreamBuilder<double>(
+                                                stream: sellerService.getRealProfitFromPaidStreamByDateRange(effectiveStartDate, effectiveEndDate),
+                                                builder: (context, realProfitSnapshot) {
                                               return StreamBuilder<List<SellerOrder>>(
                                                 stream: sellerOrderService.getAllOrders(),
                                                 builder: (context, sellerOrdersSnapshot) {
@@ -692,35 +712,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                             );
                                                           }
 
-                                                          // Get total credit reductions
-                                                          // For "Today" view, use all credit reductions (all time)
-                                                          // For date ranges, we need to filter by date
-                                                          double totalCreditReductions = creditReductionsSnapshot.data ?? 0.0;
-                                                          
-                                                          // If not "Today", we need to filter credit reductions by date range
-                                                          // Since the stream gives all reductions, we'll need to fetch filtered ones
-                                                          if (_selectedDays != 0) {
-                                                            // For date ranges, we'll use all reductions for now
-                                                            // In a production app, you'd want a filtered stream method
-                                                            // But since credit reductions should always reduce revenue regardless of date,
-                                                            // using all reductions is actually correct
-                                                            totalCreditReductions = creditReductionsSnapshot.data ?? 0.0;
-                                                          }
-                                                          
-                                                          debugPrint('Dashboard - Total Credit Reductions: $totalCreditReductions');
-
-                                                          // Get today's credit reductions if "Today" is selected
-                                                          // For date ranges, today's credit reductions = 0 (not needed)
-                                                          final now = DateTime.now();
-                                                          final todayStart = DateTime(now.year, now.month, now.day);
-                                                          final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
-                                                          
+                                                          // Fetch credit reductions for the selected period (respects reset date via effectiveStartDate/effectiveEndDate from outer scope)
                                                           return FutureBuilder<double>(
-                                                            future: (_selectedDays == 0) 
-                                                                ? sellerService.getTotalCreditReductionsByDateRange(todayStart, todayEnd)
-                                                                : Future.value(0.0),
-                                                            builder: (context, todayCreditReductionsSnapshot) {
-                                                              if (!todayCreditReductionsSnapshot.hasData && _selectedDays == 0) {
+                                                            future: sellerService.getTotalCreditReductionsByDateRange(effectiveStartDate, effectiveEndDate),
+                                                            builder: (context, periodCreditReductionsSnapshot) {
+                                                              if (!periodCreditReductionsSnapshot.hasData) {
                                                                 return const Center(
                                                                   child: Padding(
                                                                     padding: EdgeInsets.all(40.0),
@@ -729,10 +725,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                                 );
                                                               }
                                                               
-                                                              final todayCreditReductions = todayCreditReductionsSnapshot.data ?? 0.0;
-                                                              debugPrint('Dashboard - Today Credit Reductions: $todayCreditReductions');
+                                                              final periodCreditReductions = periodCreditReductionsSnapshot.data ?? 0.0;
+                                                              debugPrint('Dashboard - Period Credit Reductions: $periodCreditReductions');
 
-                                                              // Calculate stats from stream data
+                                                              // Calculate stats from stream data (respects reset date for Revenue/Credit/Recovery)
                                                               final stats = _calculateCombinedStats(
                                                                 salesSnapshot.data!,
                                                                 expensesSnapshot.data!,
@@ -741,8 +737,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                                 unpaidSnapshot.data!,
                                                                 borrowProfitSnapshot.data!,
                                                                 realProfitSnapshot.data!,
-                                                                totalCreditReductions,
-                                                                todayCreditReductions,
+                                                                periodCreditReductions,
+                                                                resetDate,
                                                               );
                                                               final formatter = NumberFormat.currency(symbol: 'Rs. ');
 
@@ -808,7 +804,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                           todayRevenue: stats['todayRevenueForBreakdown'] ?? stats['todayRevenue'] ?? stats['salesRevenue'], // Today's revenue for breakdown (already includes credit reductions)
                                                           todayRecoveryBalance: stats['todayRecoveryBalance'] ?? stats['totalRecoveryBalance'], // Today's recovery for breakdown
                                                           todayCreditUsed: stats['todayCreditUsed'] ?? stats['totalCreditUsed'], // Today's credit used for breakdown
-                                                          totalCreditReductions: totalCreditReductions, // Pass credit reductions for display
+                                                          totalCreditReductions: periodCreditReductions, // Pass credit reductions for display (filtered by date range)
                                                           isTodaySelected: _selectedDays == 0, // Whether "Today" is selected
                                                           formatter: formatter,
                                                         ),
@@ -922,24 +918,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                               );
                                                             },
                                                           );
-                                                    },
-                                                  );
-                                                },
-                                              );
-                                                        },
-                                                      );
-                                            },
-                                          );
-                                        },
-                                      );
-                                    },
-                                  );
-                                },
-                              );
                             },
                           );
                         },
-                      ),
+                      );
+                    },
+                  );
+                },
+              );
+            },
+          );
+        },
+      );
+    },
+  );
+},
+);
+                      },
+                    );
+                  },
+                ),
 
                       const SizedBox(height: 32),
 

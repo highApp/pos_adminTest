@@ -130,6 +130,29 @@ class SellerService {
     });
   }
 
+  /// Adds an opening-due record to seller_history (e.g. when importing sellers with existing due).
+  Future<void> addOpeningDueToSellerHistory({
+    required String sellerId,
+    required double dueAmount,
+    required DateTime date,
+    String? referenceNumber,
+  }) async {
+    if (dueAmount <= 0) return;
+    final data = <String, dynamic>{
+      'sellerId': sellerId,
+      'saleId': 'import_${const Uuid().v4()}',
+      'saleAmount': dueAmount,
+      'amountPaid': 0.0,
+      'duePayment': dueAmount,
+      'saleDate': date.toIso8601String(),
+      'createdAt': date.toIso8601String(),
+    };
+    if (referenceNumber != null && referenceNumber.trim().isNotEmpty) {
+      data['referenceNumber'] = referenceNumber.trim();
+    }
+    await _firestore.collection('seller_history').add(data);
+  }
+
   // Update seller history when items are returned
   // This reduces the due payment by the return amount
   Future<void> updateSellerHistoryForReturn(String saleId, double returnAmount) async {
@@ -834,51 +857,43 @@ class SellerService {
 
   // Get total due amount for a seller from seller_history table
   Future<double> getTotalDueAmountForSeller(String sellerId) async {
+    final result = await getTotalDueAndReferenceForSeller(sellerId);
+    return result.$1;
+  }
+
+  /// Returns (totalDue, referenceNumber from seller_history).
+  /// Reference is taken from the most recent seller_history doc that has referenceNumber set (prefer one with duePayment > 0).
+  Future<(double, String?)> getTotalDueAndReferenceForSeller(String sellerId) async {
     try {
-      debugPrint('=== CALCULATING TOTAL DUE FOR SELLER: $sellerId ===');
-      
-      // Fetch all seller_history records for this seller
       final snapshot = await _firestore
           .collection('seller_history')
           .where('sellerId', isEqualTo: sellerId)
           .get();
 
-      debugPrint('Found ${snapshot.docs.length} seller_history records');
-
-      // Check each record and sum duePayment amounts
       double totalDue = 0.0;
-      int recordsWithDue = 0;
-      
+      String? referenceNumber;
+      DateTime? latestWithRef;
+
       for (var doc in snapshot.docs) {
         final data = doc.data();
-        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
-        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
         final duePayment = (data['duePayment'] ?? 0).toDouble();
-        final saleId = data['saleId'] ?? 'N/A';
-        
-        debugPrint('Record ${doc.id}:');
-        debugPrint('  - Sale ID: $saleId');
-        debugPrint('  - Sale Amount: $saleAmount');
-        debugPrint('  - Amount Paid: $amountPaid');
-        debugPrint('  - Due Payment: $duePayment');
-        
-        if (duePayment > 0) {
-          recordsWithDue++;
-          totalDue += duePayment;
-          debugPrint('  - ✓ Added to total (Current total: $totalDue)');
-        } else {
-          debugPrint('  - ✗ No due payment (fully paid)');
+        final ref = data['referenceNumber'] as String?;
+        final createdAt = data['createdAt'] != null ? DateTime.tryParse(data['createdAt'] as String) : null;
+
+        if (duePayment > 0) totalDue += duePayment;
+
+        if (ref != null && ref.trim().isNotEmpty && createdAt != null) {
+          if (latestWithRef == null || createdAt.isAfter(latestWithRef)) {
+            latestWithRef = createdAt;
+            referenceNumber = ref.trim();
+          }
         }
       }
 
-      debugPrint('Total records with due payment: $recordsWithDue');
-      debugPrint('Total Due Amount: $totalDue');
-      debugPrint('=== END CALCULATION ===');
-
-      return totalDue;
+      return (totalDue, referenceNumber);
     } catch (e) {
-      debugPrint('Error calculating total due amount: $e');
-      return 0.0;
+      debugPrint('Error getTotalDueAndReferenceForSeller: $e');
+      return (0.0, null);
     }
   }
 

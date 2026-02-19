@@ -23,45 +23,52 @@ class CsvExportService {
     String? searchQuery,
   }) async {
     try {
-      // Calculate due amounts for each seller
-      final List<Map<String, dynamic>> sellersWithDue = [];
+      // Fetch due, reference from seller_history, and credit balance for each seller
+      final List<Map<String, dynamic>> sellersWithDueAndCredit = [];
       
       for (final seller in sellers) {
-        final totalDue = await _sellerService.getTotalDueAmountForSeller(seller.id);
+        final (totalDue, refFromHistory) = await _sellerService.getTotalDueAndReferenceForSeller(seller.id);
+        final creditBalance = await _sellerService.getCreditBalance(seller.id);
         
-        sellersWithDue.add({
+        sellersWithDueAndCredit.add({
           'seller': seller,
           'totalDue': totalDue,
+          'reference': refFromHistory ?? seller.reference ?? '',
+          'creditBalance': creditBalance,
         });
       }
 
       // Create CSV data
       final List<List<dynamic>> csvData = [];
       
-      // Add header row
+      // Add header row - "Location, Reference, Due" as one column (e.g. JAHANIAN,DFS,500.00)
       csvData.add([
         'No.',
         'Seller Name',
         'Phone Number',
-        'Location',
-        'Due Amount (Rs.)',
+        'Location, Reference, Due',
+        'Credit Balance (Rs.)',
         'Status',
         'Created Date',
       ]);
 
-      // Add data rows and calculate total
-      double grandTotal = 0.0;
-      for (int i = 0; i < sellersWithDue.length; i++) {
-        final seller = sellersWithDue[i]['seller'] as Seller;
-        final totalDue = sellersWithDue[i]['totalDue'] as double;
-        grandTotal += totalDue;
-        
+      // Add data rows and calculate totals
+      double grandTotalDue = 0.0;
+      double grandTotalCredit = 0.0;
+      for (int i = 0; i < sellersWithDueAndCredit.length; i++) {
+        final seller = sellersWithDueAndCredit[i]['seller'] as Seller;
+        final totalDue = sellersWithDueAndCredit[i]['totalDue'] as double;
+        final creditBalance = sellersWithDueAndCredit[i]['creditBalance'] as double;
+        grandTotalDue += totalDue;
+        grandTotalCredit += creditBalance;
+        final ref = sellersWithDueAndCredit[i]['reference'] as String;
+        final locationRefDue = '${seller.location ?? ''},$ref,${totalDue.toStringAsFixed(2)}';
         csvData.add([
           i + 1, // Serial number
           seller.name,
           seller.phone ?? 'N/A',
-          seller.location ?? 'N/A',
-          totalDue.toStringAsFixed(2),
+          locationRefDue,
+          creditBalance.toStringAsFixed(2),
           seller.isActive ? 'Active' : 'Inactive',
           _dateFormatter.format(seller.createdAt),
         ]);
@@ -74,7 +81,8 @@ class CsvExportService {
         '',
         '',
         '',
-        grandTotal.toStringAsFixed(2),
+        grandTotalDue.toStringAsFixed(2),
+        grandTotalCredit.toStringAsFixed(2),
         '',
         '',
       ]);
@@ -179,58 +187,66 @@ class CsvExportService {
     String? searchQuery,
   }) async {
     try {
-      // Calculate due amounts for each seller
-      final List<Map<String, dynamic>> sellersWithDue = [];
+      // Fetch due, reference from seller_history, and credit balance for each seller
+      final List<Map<String, dynamic>> sellersWithDueAndCredit = [];
       
       for (final seller in sellers) {
-        final totalDue = await _sellerService.getTotalDueAmountForSeller(seller.id);
+        final (totalDue, refFromHistory) = await _sellerService.getTotalDueAndReferenceForSeller(seller.id);
+        final creditBalance = await _sellerService.getCreditBalance(seller.id);
         
-        sellersWithDue.add({
+        sellersWithDueAndCredit.add({
           'seller': seller,
           'totalDue': totalDue,
+          'reference': refFromHistory ?? seller.reference ?? '',
+          'creditBalance': creditBalance,
         });
       }
 
       // Create CSV data
       final List<List<dynamic>> csvData = [];
       
-      // Add header row
+      // Add header row - "Location, Reference, Due" as one column (e.g. JAHANIAN,DFS,500.00)
       csvData.add([
         'No.',
         'Seller Name',
         'Phone Number',
-        'Location',
-        'Due Amount (Rs.)',
+        'Location, Reference, Due',
+        'Credit Balance (Rs.)',
         'Status',
         'Created Date',
       ]);
 
-      // Add data rows and calculate total
-      double grandTotal = 0.0;
-      for (int i = 0; i < sellersWithDue.length; i++) {
-        final seller = sellersWithDue[i]['seller'] as Seller;
-        final totalDue = sellersWithDue[i]['totalDue'] as double;
-        grandTotal += totalDue;
-        
+      // Add data rows and calculate totals
+      double grandTotalDue = 0.0;
+      double grandTotalCredit = 0.0;
+      for (int i = 0; i < sellersWithDueAndCredit.length; i++) {
+        final seller = sellersWithDueAndCredit[i]['seller'] as Seller;
+        final totalDue = sellersWithDueAndCredit[i]['totalDue'] as double;
+        final creditBalance = sellersWithDueAndCredit[i]['creditBalance'] as double;
+        grandTotalDue += totalDue;
+        grandTotalCredit += creditBalance;
+        final ref = sellersWithDueAndCredit[i]['reference'] as String;
+        final locationRefDue = '${seller.location ?? ''},$ref,${totalDue.toStringAsFixed(2)}';
         csvData.add([
-          i + 1, // Serial number
+          i + 1,
           seller.name,
           seller.phone ?? 'N/A',
-          seller.location ?? 'N/A',
-          totalDue.toStringAsFixed(2),
+          locationRefDue,
+          creditBalance.toStringAsFixed(2),
           seller.isActive ? 'Active' : 'Inactive',
           _dateFormatter.format(seller.createdAt),
         ]);
       }
 
       // Add total row at the end
-      csvData.add([]); // Empty row for spacing
+      csvData.add([]);
       csvData.add([
         'TOTAL',
         '',
         '',
         '',
-        grandTotal.toStringAsFixed(2),
+        grandTotalDue.toStringAsFixed(2),
+        grandTotalCredit.toStringAsFixed(2),
         '',
         '',
       ]);

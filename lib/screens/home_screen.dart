@@ -11,6 +11,7 @@ import 'categories_screen.dart';
 import 'login_screen.dart';
 import 'admin_seller_orders_screen.dart';
 import 'create_manager_screen.dart';
+import 'settings_screen.dart';
 import '../services/auth_service.dart';
 import '../models/user.dart';
 import '../widgets/reminder_alert_listener.dart';
@@ -507,6 +508,36 @@ class _HomeScreenState extends State<HomeScreen> {
                           context,
                           MaterialPageRoute(
                             builder: (context) => const AdminSellerOrdersScreen(),
+                          ),
+                        );
+                      },
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  // Settings button (Admin only)
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    child: ListTile(
+                      leading: Icon(
+                        Icons.settings,
+                        color: Colors.grey[700],
+                        size: 24,
+                      ),
+                      title: const Text(
+                        'Settings',
+                        style: TextStyle(
+                          color: Colors.black87,
+                          fontWeight: FontWeight.normal,
+                        ),
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const SettingsScreen(),
                           ),
                         );
                       },
