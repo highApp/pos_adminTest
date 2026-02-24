@@ -8,6 +8,9 @@ class BuyerPayment {
   /// Short 4-digit ID (e.g. PAY-1234) shown on success and in payment history
   final String? paymentNumber;
   
+  /// Groups payments made in same transaction (e.g. one amount split across multiple bills)
+  final String? batchId;
+  
   // Bank transfer fields (only if paymentType is 'bank_transfer')
   final String? accountTitle;
   final String? bankName;
@@ -23,6 +26,7 @@ class BuyerPayment {
     required this.paymentType,
     required this.amount,
     this.paymentNumber,
+    this.batchId,
     this.accountTitle,
     this.bankName,
     this.accountHolderName,
@@ -38,6 +42,7 @@ class BuyerPayment {
       'paymentType': paymentType,
       'amount': amount,
       'paymentNumber': paymentNumber,
+      'batchId': batchId,
       'accountTitle': accountTitle,
       'bankName': bankName,
       'accountHolderName': accountHolderName,
@@ -56,6 +61,7 @@ class BuyerPayment {
       paymentType: map['paymentType'] ?? 'cash',
       amount: (map['amount'] ?? 0).toDouble(),
       paymentNumber: map['paymentNumber'],
+      batchId: map['batchId'],
       accountTitle: map['accountTitle'],
       bankName: map['bankName'],
       accountHolderName: map['accountHolderName'],

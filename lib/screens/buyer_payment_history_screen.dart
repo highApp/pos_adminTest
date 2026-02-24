@@ -553,6 +553,30 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
               return bPayment.paymentDate.compareTo(aPayment.paymentDate);
             });
 
+            // Group payments by batchId (same transaction = one row)
+            final groupedPayments = <List<Map<String, dynamic>>>[];
+            final usedIndices = <int>{};
+            for (var i = 0; i < allPayments.length; i++) {
+              if (usedIndices.contains(i)) continue;
+              final payment = allPayments[i]['payment'] as BuyerPayment;
+              final batchId = payment.batchId;
+              if (batchId != null && batchId.isNotEmpty) {
+                final group = [allPayments[i]];
+                usedIndices.add(i);
+                for (var j = i + 1; j < allPayments.length; j++) {
+                  if (usedIndices.contains(j)) continue;
+                  if ((allPayments[j]['payment'] as BuyerPayment).batchId == batchId) {
+                    group.add(allPayments[j]);
+                    usedIndices.add(j);
+                  }
+                }
+                groupedPayments.add(group);
+              } else {
+                groupedPayments.add([allPayments[i]]);
+                usedIndices.add(i);
+              }
+            }
+
             if (allPayments.isEmpty) {
               return Center(
                 child: Column(
@@ -603,7 +627,7 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '${allPayments.length}',
+                            '${groupedPayments.length}',
                             style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
@@ -658,26 +682,33 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                   ),
                 ),
                 
-                // Payments List
+                // Payments List (grouped by batch - one payment split across bills shows as one row)
                 Expanded(
                   child: ListView.builder(
                     padding: const EdgeInsets.all(16),
-                    itemCount: allPayments.length,
+                    itemCount: groupedPayments.length,
                     itemBuilder: (context, index) {
-                      final paymentData = allPayments[index];
-                      final payment = paymentData['payment'] as BuyerPayment;
-                      final bill = paymentData['bill'] as BuyerBill?;
+                      final group = groupedPayments[index];
+                      final firstPayment = group[0]['payment'] as BuyerPayment;
+                      final totalAmount = group.fold<double>(
+                        0.0,
+                        (sum, p) => sum + (p['payment'] as BuyerPayment).amount,
+                      );
+                      final isGrouped = group.length > 1;
+                      final payment = firstPayment;
+                      final bill = group[0]['bill'] as BuyerBill?;
                       
                       return Card(
                         margin: const EdgeInsets.only(bottom: 12),
-                        child: ListTile(
+                        child: isGrouped
+                            ? ExpansionTile(
                           leading: CircleAvatar(
-                            backgroundColor: payment.paymentType == 'cash'
+                            backgroundColor: firstPayment.paymentType == 'cash'
                                 ? Colors.green.shade100
                                 : Colors.blue.shade100,
                             child: Icon(
-                              payment.paymentType == 'cash' ? Icons.money : Icons.account_balance,
-                              color: payment.paymentType == 'cash'
+                              firstPayment.paymentType == 'cash' ? Icons.money : Icons.account_balance,
+                              color: firstPayment.paymentType == 'cash'
                                   ? Colors.green.shade700
                                   : Colors.blue.shade700,
                             ),
@@ -686,7 +717,7 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                _currencyFormatter.format(payment.amount),
+                                _currencyFormatter.format(totalAmount),
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 18,
@@ -695,17 +726,17 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: payment.paymentType == 'cash'
+                                  color: firstPayment.paymentType == 'cash'
                                       ? Colors.green.shade50
                                       : Colors.blue.shade50,
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 child: Text(
-                                  payment.paymentType == 'cash' ? 'Cash' : 'Bank Transfer',
+                                  firstPayment.paymentType == 'cash' ? 'Cash' : 'Bank Transfer',
                                   style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.bold,
-                                    color: payment.paymentType == 'cash'
+                                    color: firstPayment.paymentType == 'cash'
                                         ? Colors.green.shade700
                                         : Colors.blue.shade700,
                                   ),
@@ -716,47 +747,186 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                           subtitle: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              if (payment.paymentNumber != null)
+                              if (firstPayment.paymentNumber != null && !isGrouped)
                                 Text(
-                                  'ID: ${payment.paymentNumber}',
+                                  'ID: ${firstPayment.paymentNumber}',
                                   style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
                                     color: Colors.blue.shade700,
                                   ),
                                 ),
-                              if (payment.paymentNumber != null) const SizedBox(height: 4),
-                              if (bill != null)
+                              if (firstPayment.paymentNumber != null && isGrouped)
                                 Text(
-                                  'Bill: ${bill.billNumber ?? 'Bill #${bill.id.substring(0, 8).toUpperCase()}'}',
+                                  'IDs: ${group.map((p) => (p['payment'] as BuyerPayment).paymentNumber).whereType<String>().join(', ')}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                ),
+                              if (firstPayment.paymentNumber != null) const SizedBox(height: 4),
+                              if (!isGrouped && group[0]['bill'] != null)
+                                Text(
+                                  'Bill: ${(group[0]['bill'] as BuyerBill).billNumber ?? 'Bill #${(group[0]['bill'] as BuyerBill).id.substring(0, 8).toUpperCase()}'}',
                                   style: const TextStyle(fontWeight: FontWeight.w500),
                                 ),
+                              if (isGrouped)
+                                Text(
+                                  'Split across ${group.length} bills',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
                               Text(
-                                _dateTimeFormatter.format(payment.paymentDate),
+                                _dateTimeFormatter.format(firstPayment.paymentDate),
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: Colors.grey[600],
                                 ),
                               ),
-                              if (payment.paymentType == 'bank_transfer') ...[
+                              if (firstPayment.paymentType == 'bank_transfer') ...[
                                 const SizedBox(height: 4),
-                                if (payment.accountTitle != null)
-                                  Text('Account: ${payment.accountTitle}'),
-                                if (payment.bankName != null)
-                                  Text('Bank: ${payment.bankName}'),
-                                if (payment.accountHolderName != null)
-                                  Text('Holder: ${payment.accountHolderName}'),
-                                if (payment.referenceNumber != null)
-                                  Text('Ref: ${payment.referenceNumber}'),
+                                if (firstPayment.accountTitle != null)
+                                  Text('Account: ${firstPayment.accountTitle}'),
+                                if (firstPayment.bankName != null)
+                                  Text('Bank: ${firstPayment.bankName}'),
+                                if (firstPayment.accountHolderName != null)
+                                  Text('Holder: ${firstPayment.accountHolderName}'),
+                                if (firstPayment.referenceNumber != null)
+                                  Text('Ref: ${firstPayment.referenceNumber}'),
                               ],
                             ],
                           ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () => _deletePayment(context, payment),
-                            tooltip: 'Delete Payment',
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (isGrouped)
+                                Icon(Icons.expand_more, color: Colors.grey[600]),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () => _deletePaymentGroup(context, group),
+                                tooltip: 'Delete Payment${isGrouped ? 's' : ''}',
+                              ),
+                            ],
                           ),
-                        ),
+                          children: isGrouped
+                              ? group.map((paymentData) {
+                                  final p = paymentData['payment'] as BuyerPayment;
+                                  final b = paymentData['bill'] as BuyerBill?;
+                                  return ListTile(
+                                    dense: true,
+                                    leading: const SizedBox(width: 24),
+                                    title: Text(
+                                      _currencyFormatter.format(p.amount),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    subtitle: b != null
+                                        ? Text(
+                                            'Bill: ${b.billNumber ?? 'Bill #${b.id.substring(0, 8).toUpperCase()}'}',
+                                            style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                                          )
+                                        : null,
+                                    trailing: IconButton(
+                                      icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                      onPressed: () => _deletePayment(context, p),
+                                      tooltip: 'Delete this portion',
+                                    ),
+                                  );
+                                }).toList()
+                              : [],
+                            )
+                            : ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: payment.paymentType == 'cash'
+                                      ? Colors.green.shade100
+                                      : Colors.blue.shade100,
+                                  child: Icon(
+                                    payment.paymentType == 'cash' ? Icons.money : Icons.account_balance,
+                                    color: payment.paymentType == 'cash'
+                                        ? Colors.green.shade700
+                                        : Colors.blue.shade700,
+                                  ),
+                                ),
+                                title: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      _currencyFormatter.format(totalAmount),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 18,
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: payment.paymentType == 'cash'
+                                            ? Colors.green.shade50
+                                            : Colors.blue.shade50,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        payment.paymentType == 'cash' ? 'Cash' : 'Bank Transfer',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: payment.paymentType == 'cash'
+                                              ? Colors.green.shade700
+                                              : Colors.blue.shade700,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (payment.paymentNumber != null)
+                                      Text(
+                                        'ID: ${payment.paymentNumber}',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.blue.shade700,
+                                        ),
+                                      ),
+                                    if (payment.paymentNumber != null) const SizedBox(height: 4),
+                                    if (bill != null)
+                                      Text(
+                                        'Bill: ${bill.billNumber ?? 'Bill #${bill.id.substring(0, 8).toUpperCase()}'}',
+                                        style: const TextStyle(fontWeight: FontWeight.w500),
+                                      ),
+                                    Text(
+                                      _dateTimeFormatter.format(payment.paymentDate),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[600],
+                                      ),
+                                    ),
+                                    if (payment.paymentType == 'bank_transfer') ...[
+                                      const SizedBox(height: 4),
+                                      if (payment.accountTitle != null)
+                                        Text('Account: ${payment.accountTitle}'),
+                                      if (payment.bankName != null)
+                                        Text('Bank: ${payment.bankName}'),
+                                      if (payment.accountHolderName != null)
+                                        Text('Holder: ${payment.accountHolderName}'),
+                                      if (payment.referenceNumber != null)
+                                        Text('Ref: ${payment.referenceNumber}'),
+                                    ],
+                                  ],
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.delete, color: Colors.red),
+                                  onPressed: () => _deletePaymentGroup(context, group),
+                                  tooltip: 'Delete Payment',
+                                ),
+                              ),
                       );
                     },
                   ),
@@ -830,6 +1000,46 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
           TextButton(
             onPressed: () async {
               await _paymentService.deletePayment(payment.id);
+              if (context.mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Payment deleted successfully'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _deletePaymentGroup(BuildContext context, List<Map<String, dynamic>> group) {
+    final payments = group.map((p) => p['payment'] as BuyerPayment).toList();
+    final total = payments.fold<double>(0.0, (sum, p) => sum + p.amount);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Payment'),
+        content: Text(
+          group.length > 1
+              ? 'Are you sure you want to delete this payment of ${_currencyFormatter.format(total)} (split across ${group.length} bills)?'
+              : 'Are you sure you want to delete this payment of ${_currencyFormatter.format(total)}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              for (var payment in payments) {
+                await _paymentService.deletePayment(payment.id);
+              }
               if (context.mounted) {
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(

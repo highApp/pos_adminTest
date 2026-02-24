@@ -16,7 +16,9 @@ import '../models/seller.dart';
 import '../models/seller_reminder.dart';
 import '../services/seller_reminder_service.dart';
 import '../services/reset_data_service.dart';
-import 'sellers_screen.dart';
+import '../services/balance_service.dart';
+import '../models/balance_entry.dart';
+import 'seller_history_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -34,8 +36,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final sellerOrderService = SellerOrderService();
   final sellerReminderService = SellerReminderService();
   final resetDataService = ResetDataService();
+  final balanceService = BalanceService();
   late final Future<DateTime?> _resetDateFuture;
-  int? _selectedDays = 0; // 0 = Today, null = custom date range
+  int? _selectedDays = 0; // -1 = All, 0 = Today, 7/30/90 = Last N Days, null = custom date range
   DateTime? _customStartDate;
   DateTime? _customEndDate;
   bool _showProfit = false; // Hide profit by default
@@ -205,6 +208,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_selectedDays == null) {
       // Custom date range
       return _customStartDate ?? now.subtract(const Duration(days: 7));
+    } else if (_selectedDays == -1) {
+      // All time (balance entries and data from beginning)
+      return DateTime(2000);
     } else if (_selectedDays == 0) {
       // Today
       return DateTime(now.year, now.month, now.day);
@@ -219,6 +225,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_selectedDays == null) {
       // Custom date range
       return _customEndDate ?? now;
+    } else if (_selectedDays == -1) {
+      // All time
+      return DateTime(now.year, now.month, now.day, 23, 59, 59);
     } else if (_selectedDays == 0) {
       // Today
       return DateTime(now.year, now.month, now.day, 23, 59, 59);
@@ -234,6 +243,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return '${DateFormat('MMM dd').format(_customStartDate!)} - ${DateFormat('MMM dd').format(_customEndDate!)}';
       }
       return 'Custom Range';
+    } else if (_selectedDays == -1) {
+      return 'All';
     } else if (_selectedDays == 0) {
       return 'Today';
     } else {
@@ -248,6 +259,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     List<Expense> expenses,
     List<Borrow> borrows,
     List<SellerOrder> sellerOrders,
+    List<BalanceEntry> balanceEntries,
     double totalUnpaidSales,
     double borrowProfit,
     double realProfitFromPaid,
@@ -287,7 +299,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                order.completedAt!.isAfter(effectiveStartDate.subtract(const Duration(seconds: 1))) &&
                order.completedAt!.isBefore(endDate.add(const Duration(seconds: 1)));
       }).toList();
-      
+
+      // Filter balance entries by date range (manual revenue from Add Balance)
+      final filteredBalanceEntries = balanceEntries.where((entry) {
+        final entryDate = DateTime(entry.date.year, entry.date.month, entry.date.day);
+        return !entryDate.isBefore(effectiveStartDate) && !entryDate.isAfter(DateTime(endDate.year, endDate.month, endDate.day));
+      }).toList();
+      final totalBalanceEntries = filteredBalanceEntries.fold<double>(0.0, (sum, e) => sum + e.amount);
+
       // Always use filtered orders for revenue (respects date filter: Today, Last N Days, or Custom Range)
       final ordersForRevenue = filteredSellerOrders;
       
@@ -309,6 +328,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       double todayRecoveryBalance = 0; // Today's recovery balance only (for breakdown when "Today" is selected)
       double totalCreditUsed = 0; // Total credit balance used from sellers
       double todayCreditUsed = 0; // Today's credit used only (for breakdown when "Today" is selected)
+      double totalCreditAdded = 0; // Credit added from manual overpayments (when payment > due amount)
+      double todayCreditAdded = 0; // Today's credit added only (for breakdown when "Today" is selected)
       double todayBorrowPayments = 0; // Sum of borrow payments made today
       int totalTransactions = 0;
       
@@ -351,6 +372,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           //   amountPaid = 0, recoveryBalance = 0, change = 0, creditUsed = 1250, returnedAmount = 250
           //   cashPaid = 0, totalPaid = 1250, cashPortionOfReturn = 250 * (0/1250) = 0
           //   revenue = 0 - 0 - 0 - 0 = 0 ✓ (no cash received, so no revenue to reduce)
+          //
+          // IMPORTANT: Manual payment with overpayment (e.g. pay 10000 when due is 5000):
+          //   amountPaid = 10000, recoveryBalance = 5000 (to dues), remainder 5000 = credit added
+          //   The credit portion (5000) should go to Credit column, NOT Revenue
+          final isManualPaymentSale = sale.total == 0 && (sale.customerName?.startsWith('Manual Payment') ?? false);
+          final creditAddedFromOverpayment = isManualPaymentSale && sale.amountPaid > sale.recoveryBalance
+              ? sale.amountPaid - sale.recoveryBalance
+              : 0.0;
+
           double cashPaid = sale.amountPaid - sale.recoveryBalance;
           double totalPaid = cashPaid + sale.creditUsed;
           double cashPortionOfReturn = 0.0;
@@ -358,8 +388,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             // Calculate what portion of the return was originally paid with cash
             cashPortionOfReturn = sale.returnedAmount * (cashPaid / totalPaid);
           }
-          final saleRevenue = sale.amountPaid - sale.recoveryBalance - sale.change - cashPortionOfReturn;
-          totalRevenue += saleRevenue; // Revenue = cash payment only, minus cash portion of returns (credit portion doesn't affect revenue)
+          // For manual payment with overpayment: exclude credit portion from revenue (it goes to Credit column)
+          final saleRevenue = isManualPaymentSale
+              ? 0.0  // Manual payments: recovery goes to Recovery, excess goes to Credit - no revenue
+              : sale.amountPaid - sale.recoveryBalance - sale.change - cashPortionOfReturn;
+          totalRevenue += saleRevenue;
           
           // Calculate net credit used (original credit used minus restored credit from returns)
           // When items are returned, credit is restored proportionally
@@ -374,6 +407,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             debugPrint('Sale ${sale.id}: Credit Used = ${sale.creditUsed}, Returned = ${sale.returnedAmount}, Restored Credit = $creditRestored, Net Credit Used = $netCreditUsed');
           }
           
+          // Track credit added from manual overpayments (when payment > due, excess becomes credit)
+          totalCreditAdded += creditAddedFromOverpayment;
+
           // If "Today" is selected, also calculate today's revenue separately for breakdown
           if (_selectedDays == 0 && 
               sale.createdAt.isAfter(todayStart.subtract(const Duration(seconds: 1))) &&
@@ -381,6 +417,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             todayRevenue += saleRevenue;
             todayRecoveryBalance += sale.recoveryBalance;
             todayCreditUsed += netCreditUsed; // Use net credit used (after returns)
+            todayCreditAdded += creditAddedFromOverpayment;
           }
           
           // Store sale for profit calculation from seller_history
@@ -460,12 +497,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // Always subtract credit reductions and expenses from revenue for the selected date range
       final netRevenue = grossRevenue - totalExpenses - periodCreditReductions;
       
-      // Total revenue including recovery balance AND wholesale orders
-      // Revenue = sales (cash) + recovery + wholesale
-      // NOTE: Credit used is NOT included in revenue (it's money already received when credit was given)
+      // Total revenue including recovery balance, credit added from overpayments, wholesale orders, AND manual balance entries (Add Balance)
+      // Revenue = sales (cash) + recovery + credit added (from manual overpayments) + wholesale + balance entries (manual revenue)
+      // NOTE: Credit used is NOT included (it's money already received when credit was given)
+      // NOTE: Credit added from manual overpayments IS included (new money received, saved as seller's credit)
       // NOTE: This excludes borrow payments completely - they are NOT included in revenue
       // Borrow payments are tracked separately in the borrow section only
-      final totalRevenueWithRecovery = netRevenue + totalRecoveryBalance + wholesaleRevenue;
+      final totalRevenueWithRecovery = netRevenue + totalRecoveryBalance + totalCreditAdded + wholesaleRevenue + totalBalanceEntries;
       
       debugPrint('=== REVENUE CALCULATION ===');
       debugPrint('Date Filter: ${_selectedDays == 0 ? "Today" : _getDateRangeLabel()}');
@@ -477,6 +515,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       debugPrint('Wholesale Transactions: $wholesaleTransactions');
       debugPrint('Recovery Balance (from sales only): $totalRecoveryBalance');
       debugPrint('Credit Used (tracked separately, NOT in revenue): $totalCreditUsed');
+      debugPrint('Credit Added (from manual overpayments, included in Total Revenue): $totalCreditAdded');
       debugPrint('Total Revenue (POS + Wholesale + Recovery): $totalRevenueWithRecovery');
       if (_selectedDays == 0) {
         debugPrint('NOTE: "Today" selected - showing TODAY\'s data only');
@@ -502,10 +541,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ? todayRecoveryBalance  // Today's recovery only
           : totalRecoveryBalance; // Filtered recovery for date range
       
-      // Calculate today's credit used for breakdown (when "Today" is selected)
+      // Credit column = credit USED (applied in sales) - shows when seller pays using their credit balance
+      // Credit Added (from manual overpayments) is included in Total Revenue but shown only when it happens
+      // Credit Used shows credit applied in sales - e.g. yesterday 4000 credit, today applied 1500 → show 1500
+      final totalCredit = totalCreditUsed;
+      // Calculate today's credit for breakdown (when "Today" is selected)
       final todayCreditForBreakdown = (_selectedDays == 0)
-          ? todayCreditUsed  // Today's credit only
-          : totalCreditUsed; // Filtered credit for date range
+          ? todayCreditUsed  // Today's credit applied in sales
+          : totalCredit; // Filtered credit for date range
       
       return {
         'totalRevenue': totalRevenueWithRecovery, // Total revenue including POS + Wholesale + recovery balance
@@ -522,7 +565,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'totalExpenses': totalExpenses,
         'totalReturned': totalReturned, // Total amount returned (for display)
         'totalRecoveryBalance': totalRecoveryBalance, // Recovery balance from actual sales only
-        'totalCreditUsed': totalCreditUsed, // Total credit balance used from sellers
+        'totalCreditUsed': totalCredit, // Credit = credit applied in sales (credit used from seller's balance)
         'totalBorrowed': totalBorrowed,
         'totalLent': totalLent,
         'netBorrow': netBorrow,
@@ -605,6 +648,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         icon: const Icon(Icons.arrow_drop_down),
                         underline: Container(),
                         items: const [
+                          DropdownMenuItem(value: -1, child: Text('All')),
                           DropdownMenuItem(value: 0, child: Text('Today')),
                           DropdownMenuItem(value: 7, child: Text('Last 7 Days')),
                           DropdownMenuItem(value: 30, child: Text('Last 30 Days')),
@@ -617,8 +661,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               _showCustomDatePicker();
                             } else {
                               _selectedDays = value;
-                              _customStartDate = null;
-                              _customEndDate = null;
+                              if (value != null) {
+                                _customStartDate = null;
+                                _customEndDate = null;
+                              }
                             }
                           });
                         },
@@ -648,17 +694,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // Stats Cards (filtered by date) - Real-time updates
+                      // Never block entire dashboard: use defaults so UI shows immediately, then updates live (no data deleted)
                       FutureBuilder<DateTime?>(
                         future: _resetDateFuture,
                         builder: (context, resetDateSnapshot) {
-                          if (!resetDateSnapshot.hasData) {
-                            return const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(40.0),
-                                child: CircularProgressIndicator(),
-                              ),
-                            );
-                          }
                           final resetDate = resetDateSnapshot.data;
                           final startDate = _getStartDate();
                           final endDate = _getEndDate();
@@ -685,58 +724,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                               return StreamBuilder<double>(
                                                 stream: sellerService.getRealProfitFromPaidStreamByDateRange(effectiveStartDate, effectiveEndDate),
                                                 builder: (context, realProfitSnapshot) {
-                                              return StreamBuilder<List<SellerOrder>>(
-                                                stream: sellerOrderService.getAllOrders(),
-                                                builder: (context, sellerOrdersSnapshot) {
-                                                  return StreamBuilder<double>(
-                                                    stream: sellerService.getTotalCreditBalanceStream(),
-                                                    builder: (context, creditBalanceSnapshot) {
-                                                      return StreamBuilder<double>(
-                                                        stream: sellerService.getTotalCreditReductionsStream(),
-                                                        builder: (context, creditReductionsSnapshot) {
-                                                          // Check if all streams have data
-                                                          if (!salesSnapshot.hasData || 
-                                                              !expensesSnapshot.hasData || 
-                                                              !borrowsSnapshot.hasData ||
-                                                              !unpaidSnapshot.hasData ||
-                                                              !borrowProfitSnapshot.hasData ||
-                                                              !realProfitSnapshot.hasData ||
-                                                              !sellerOrdersSnapshot.hasData ||
-                                                              !creditBalanceSnapshot.hasData ||
-                                                              !creditReductionsSnapshot.hasData) {
-                                                            return const Center(
-                                                              child: Padding(
-                                                                padding: EdgeInsets.all(40.0),
-                                                                child: CircularProgressIndicator(),
-                                                              ),
-                                                            );
-                                                          }
+                                                  return StreamBuilder<List<SellerOrder>>(
+                                                    stream: sellerOrderService.getAllOrders(),
+                                                    builder: (context, sellerOrdersSnapshot) {
+                                                      return StreamBuilder<List<BalanceEntry>>(
+                                                        stream: balanceService.getBalanceEntriesStream(),
+                                                        builder: (context, balanceSnapshot) {
+                                                          return StreamBuilder<double>(
+                                                        stream: sellerService.getTotalCreditBalanceStream(),
+                                                        builder: (context, creditBalanceSnapshot) {
+                                                          return StreamBuilder<double>(
+                                                            stream: sellerService.getTotalCreditReductionsStream(),
+                                                            builder: (context, creditReductionsSnapshot) {
+                                                          // Use stream data when available; defaults when waiting (live + real-time, no data deleted)
+                                                          final sales = salesSnapshot.data ?? [];
+                                                          final expenses = expensesSnapshot.data ?? [];
+                                                          final borrows = borrowsSnapshot.data ?? [];
+                                                          final unpaid = unpaidSnapshot.data ?? 0.0;
+                                                          final borrowProfit = borrowProfitSnapshot.data ?? 0.0;
+                                                          final realProfit = realProfitSnapshot.data ?? 0.0;
+                                                          final sellerOrders = sellerOrdersSnapshot.data ?? [];
+                                                          final balanceEntries = balanceSnapshot.data ?? [];
+                                                          final creditBalance = creditBalanceSnapshot.data ?? 0.0;
+                                                          final creditReductions = creditReductionsSnapshot.data ?? 0.0;
 
-                                                          // Fetch credit reductions for the selected period (respects reset date via effectiveStartDate/effectiveEndDate from outer scope)
                                                           return FutureBuilder<double>(
                                                             future: sellerService.getTotalCreditReductionsByDateRange(effectiveStartDate, effectiveEndDate),
                                                             builder: (context, periodCreditReductionsSnapshot) {
-                                                              if (!periodCreditReductionsSnapshot.hasData) {
-                                                                return const Center(
-                                                                  child: Padding(
-                                                                    padding: EdgeInsets.all(40.0),
-                                                                    child: CircularProgressIndicator(),
-                                                                  ),
-                                                                );
-                                                              }
-                                                              
                                                               final periodCreditReductions = periodCreditReductionsSnapshot.data ?? 0.0;
-                                                              debugPrint('Dashboard - Period Credit Reductions: $periodCreditReductions');
 
                                                               // Calculate stats from stream data (respects reset date for Revenue/Credit/Recovery)
                                                               final stats = _calculateCombinedStats(
-                                                                salesSnapshot.data!,
-                                                                expensesSnapshot.data!,
-                                                                borrowsSnapshot.data!,
-                                                                sellerOrdersSnapshot.data!,
-                                                                unpaidSnapshot.data!,
-                                                                borrowProfitSnapshot.data!,
-                                                                realProfitSnapshot.data!,
+                                                                sales,
+                                                                expenses,
+                                                                borrows,
+                                                                sellerOrders,
+                                                                balanceEntries,
+                                                                unpaid,
+                                                                borrowProfit,
+                                                                realProfit,
                                                                 periodCreditReductions,
                                                                 resetDate,
                                                               );
@@ -752,7 +778,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                         crossAxisAlignment: CrossAxisAlignment.start,
                                                         children: [
                                                           Text(
-                                                            _selectedDays == 0 ? 'Today\'s Overview' : 'Overview',
+                                                            _selectedDays == 0
+                                                                ? 'Today\'s Overview'
+                                                                : _selectedDays == -1
+                                                                    ? 'Overall Overview'
+                                                                    : 'Overview',
                                                             style: Theme.of(context).textTheme.titleLarge?.copyWith(
                                                                   fontWeight: FontWeight.bold,
                                                                   fontSize: 22,
@@ -772,7 +802,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                             ),
                                                         ],
                                                       ),
-                                                      if (_selectedDays != 0)
+                                                      if (_selectedDays != 0 && _selectedDays != -1)
                                                         Container(
                                                           padding: const EdgeInsets.symmetric(
                                                             horizontal: 12,
@@ -922,6 +952,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           );
                         },
                       );
+                        },
+                      );
                     },
                   );
                 },
@@ -979,11 +1011,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       StreamBuilder<List<Product>>(
                 stream: productService.getLowStockProducts(10),
                 builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  final products = snapshot.data!;
+                  final products = snapshot.data ?? [];
 
                   if (products.isEmpty) {
                     return Container(
@@ -1126,11 +1154,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       StreamBuilder<List<Sale>>(
                 stream: salesService.getSalesStream(),
                 builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  final sales = snapshot.data!.take(5).toList();
+                  final sales = (snapshot.data ?? []).take(5).toList();
 
                   if (sales.isEmpty) {
                     return Container(
@@ -1925,19 +1949,8 @@ class _SalesChart extends StatelessWidget {
             return FutureBuilder<double>(
               future: sellerService.getTotalCreditReductionsByDateRange(startDate, endDate),
               builder: (context, creditReductionsSnapshot) {
-                if (!salesSnapshot.hasData || !expensesSnapshot.hasData || !creditReductionsSnapshot.hasData) {
-                  return Container(
-                    height: 320,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Center(child: CircularProgressIndicator()),
-                  );
-                }
-
-                final sales = salesSnapshot.data!;
-                final expenses = expensesSnapshot.data!;
+                final sales = salesSnapshot.data ?? [];
+                final expenses = expensesSnapshot.data ?? [];
                 final totalCreditReductions = creditReductionsSnapshot.data ?? 0.0;
             // Group sales by date
             Map<String, double> dailySales = {};
@@ -2272,13 +2285,7 @@ class _SellerReminderAlerts extends StatelessWidget {
             StreamBuilder<List<SellerReminder>>(
               stream: reminderService.getRemindersDueTodayStream(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  return const SizedBox(
-                    height: 80,
-                    child: Center(child: CircularProgressIndicator()),
-                  );
-                }
-                final reminders = snapshot.data!;
+                final reminders = snapshot.data ?? [];
                 if (reminders.isEmpty) {
                   return _EmptyReminderCard(
                     icon: Icons.check_circle_outline,
@@ -2290,7 +2297,7 @@ class _SellerReminderAlerts extends StatelessWidget {
                   reminders: reminders,
                   getSellerName: getSellerName,
                   isToday: true,
-                  onTap: () => _navigateToSellers(context),
+                  onTapReminder: (r) => _navigateToSellerDetail(context, r.sellerId, sellersMap),
                 );
               },
             ),
@@ -2307,13 +2314,7 @@ class _SellerReminderAlerts extends StatelessWidget {
             StreamBuilder<List<SellerReminder>>(
               stream: reminderService.getUpcomingRemindersStream(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  return const SizedBox(
-                    height: 80,
-                    child: Center(child: CircularProgressIndicator()),
-                  );
-                }
-                final reminders = snapshot.data!;
+                final reminders = snapshot.data ?? [];
                 if (reminders.isEmpty) {
                   return _EmptyReminderCard(
                     icon: Icons.event_available,
@@ -2325,7 +2326,7 @@ class _SellerReminderAlerts extends StatelessWidget {
                   reminders: reminders,
                   getSellerName: getSellerName,
                   isToday: false,
-                  onTap: () => _navigateToSellers(context),
+                  onTapReminder: (r) => _navigateToSellerDetail(context, r.sellerId, sellersMap),
                 );
               },
             ),
@@ -2335,11 +2336,13 @@ class _SellerReminderAlerts extends StatelessWidget {
     );
   }
 
-  void _navigateToSellers(BuildContext context) {
+  void _navigateToSellerDetail(BuildContext context, String sellerId, Map<String, Seller> sellersMap) {
+    final seller = sellersMap[sellerId];
+    if (seller == null) return;
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => const SellersScreen(),
+        builder: (context) => SellerHistoryScreen(seller: seller),
       ),
     );
   }
@@ -2401,13 +2404,13 @@ class _ReminderList extends StatelessWidget {
   final List<SellerReminder> reminders;
   final String Function(String) getSellerName;
   final bool isToday;
-  final VoidCallback onTap;
+  final void Function(SellerReminder reminder) onTapReminder;
 
   const _ReminderList({
     required this.reminders,
     required this.getSellerName,
     required this.isToday,
-    required this.onTap,
+    required this.onTapReminder,
   });
 
   @override
@@ -2420,7 +2423,7 @@ class _ReminderList extends StatelessWidget {
         final r = reminders[index];
         final sellerName = getSellerName(r.sellerId);
         return InkWell(
-          onTap: onTap,
+          onTap: () => onTapReminder(r),
           borderRadius: BorderRadius.circular(12),
           child: Container(
             margin: const EdgeInsets.only(bottom: 12),

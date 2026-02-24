@@ -21,7 +21,7 @@ class WebDownloadHelper {
       
       // Clean up after a short delay
       Future.delayed(const Duration(milliseconds: 100), () {
-        html.document.body?.removeChild(anchor);
+        anchor.remove();
         html.Url.revokeObjectUrl(url);
       });
     } catch (e) {

@@ -7,6 +7,19 @@ class ResetDataService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static const String _settingsDoc = 'financial';
 
+  /// Stream of the financial reset date. When set, Total Revenue / Revenue / Credit / Recovery
+  /// should only count data on or after this date (e.g. dashboard and buyer screen).
+  Stream<DateTime?> getFinancialResetDateStream() {
+    return _firestore.collection('app_settings').doc(_settingsDoc).snapshots().map((doc) {
+      if (!doc.exists) return null;
+      final value = doc.data()?['resetDate'];
+      if (value == null) return null;
+      if (value is Timestamp) return (value as Timestamp).toDate();
+      if (value is String) return DateTime.tryParse(value);
+      return null;
+    });
+  }
+
   /// Get the financial reset date. If set, dashboard shows only data after this date for
   /// Total Revenue, Revenue, Credit, Recovery. Returns null if never reset.
   Future<DateTime?> getFinancialResetDate() async {

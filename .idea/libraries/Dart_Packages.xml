@@ -243,7 +243,7 @@
         <entry key="flutter">
           <value>
             <list>
-              <option value="$USER_HOME$/Desktop/flutter3.38.7/packages/flutter/lib" />
+              <option value="$USER_HOME$/Desktop/flutter3.29.3/packages/flutter/lib" />
             </list>
           </value>
         </entry>
@@ -264,14 +264,14 @@
         <entry key="flutter_test">
           <value>
             <list>
-              <option value="$USER_HOME$/Desktop/flutter3.38.7/packages/flutter_test/lib" />
+              <option value="$USER_HOME$/Desktop/flutter3.29.3/packages/flutter_test/lib" />
             </list>
           </value>
         </entry>
         <entry key="flutter_web_plugins">
           <value>
             <list>
-              <option value="$USER_HOME$/Desktop/flutter3.38.7/packages/flutter_web_plugins/lib" />
+              <option value="$USER_HOME$/Desktop/flutter3.29.3/packages/flutter_web_plugins/lib" />
             </list>
           </value>
         </entry>
@@ -404,7 +404,7 @@
         <entry key="meta">
           <value>
             <list>
-              <option value="$USER_HOME$/.pub-cache/hosted/pub.dev/meta-1.17.0/lib" />
+              <option value="$USER_HOME$/.pub-cache/hosted/pub.dev/meta-1.16.0/lib" />
             </list>
           </value>
         </entry>
@@ -649,7 +649,7 @@
         <entry key="sky_engine">
           <value>
             <list>
-              <option value="$USER_HOME$/Desktop/flutter3.38.7/bin/cache/pkg/sky_engine/lib" />
+              <option value="$USER_HOME$/Desktop/flutter3.29.3/bin/cache/pkg/sky_engine/lib" />
             </list>
           </value>
         </entry>
@@ -698,7 +698,7 @@
         <entry key="test_api">
           <value>
             <list>
-              <option value="$USER_HOME$/.pub-cache/hosted/pub.dev/test_api-0.7.7/lib" />
+              <option value="$USER_HOME$/.pub-cache/hosted/pub.dev/test_api-0.7.6/lib" />
             </list>
           </value>
         </entry>
@@ -878,7 +878,7 @@
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/lints-5.1.1/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/matcher-0.12.17/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/material_color_utilities-0.11.1/lib" />
-      <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/meta-1.17.0/lib" />
+      <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/meta-1.16.0/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/mime-1.0.6/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/nested-1.0.0/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/path-1.9.1/lib" />
@@ -919,7 +919,7 @@
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/stream_channel-2.1.4/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/string_scanner-1.4.1/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/term_glyph-1.2.2/lib" />
-      <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/test_api-0.7.7/lib" />
+      <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/test_api-0.7.6/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/typed_data-1.4.0/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/url_launcher-6.3.2/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/url_launcher_android-6.3.28/lib" />
@@ -937,10 +937,10 @@
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/win32-5.15.0/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/xdg_directories-1.1.0/lib" />
       <root url="file://$USER_HOME$/.pub-cache/hosted/pub.dev/xml-6.6.1/lib" />
-      <root url="file://$USER_HOME$/Desktop/flutter3.38.7/bin/cache/pkg/sky_engine/lib" />
-      <root url="file://$USER_HOME$/Desktop/flutter3.38.7/packages/flutter/lib" />
-      <root url="file://$USER_HOME$/Desktop/flutter3.38.7/packages/flutter_test/lib" />
-      <root url="file://$USER_HOME$/Desktop/flutter3.38.7/packages/flutter_web_plugins/lib" />
+      <root url="file://$USER_HOME$/Desktop/flutter3.29.3/bin/cache/pkg/sky_engine/lib" />
+      <root url="file://$USER_HOME$/Desktop/flutter3.29.3/packages/flutter/lib" />
+      <root url="file://$USER_HOME$/Desktop/flutter3.29.3/packages/flutter_test/lib" />
+      <root url="file://$USER_HOME$/Desktop/flutter3.29.3/packages/flutter_web_plugins/lib" />
     </CLASSES>
     <JAVADOC />
     <SOURCES />

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:printing/printing.dart';
 import '../models/sale.dart';
 import '../models/sale_item.dart';
 import '../models/seller_order.dart';
@@ -8,6 +9,8 @@ import '../services/sales_service.dart';
 import '../services/product_service.dart';
 import '../services/seller_order_service.dart';
 import '../services/seller_service.dart';
+import '../services/receipt_pdf_service.dart';
+import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
 
 class SalesHistoryScreen extends StatefulWidget {
   const SalesHistoryScreen({super.key});
@@ -25,7 +28,17 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   DateTime? _endDate;
   bool _filterByDate = false;
   String _transactionTypeFilter = 'all'; // 'all', 'pos', 'wholesale'
-  
+
+  @override
+  void initState() {
+    super.initState();
+    // Default: show today's sales
+    final now = DateTime.now();
+    _filterByDate = true;
+    _startDate = DateTime(now.year, now.month, now.day);
+    _endDate = DateTime(now.year, now.month, now.day, 23, 59, 59);
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
@@ -223,16 +236,52 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                           }
 
                           // Sort by date (newest first)
-                          combinedTransactions.sort((a, b) => 
-                            (b['date'] as DateTime).compareTo(a['date'] as DateTime)
-                          );
+                          combinedTransactions.sort((a, b) =>
+                              (b['date'] as DateTime).compareTo(a['date'] as DateTime));
 
-                          // Filter by search query for seller names (async)
-                          if (searchQuery.isNotEmpty) {
-                            // We'll filter seller names in the widget builder
+                          // Group POS sales by seller + same day (expandable when 2+)
+                          final dateFmt = DateFormat('yyyy-MM-dd');
+                          final posBySellerDay = <String, List<Map<String, dynamic>>>{};
+                          final singleRows = <Map<String, dynamic>>[];
+
+                          for (var t in combinedTransactions) {
+                            if (t['type'] == 'wholesale') {
+                              singleRows.add(t);
+                              continue;
+                            }
+                            final sale = t['data'] as Sale;
+                            final d = t['date'] as DateTime;
+                            final dayKey = dateFmt.format(d);
+                            final sellerId = sale.sellerId ?? '';
+                            final key = '${sellerId}_$dayKey';
+                            posBySellerDay.putIfAbsent(key, () => []).add(t);
                           }
 
-                          if (combinedTransactions.isEmpty) {
+                          final listRows = <Map<String, dynamic>>[];
+                          for (var entry in posBySellerDay.entries) {
+                            final list = entry.value;
+                            if (list.length == 1) {
+                              singleRows.add(list.first);
+                            } else {
+                              listRows.add({
+                                'type': 'group',
+                                'date': (list.first['date'] as DateTime),
+                                'sellerId': (list.first['data'] as Sale).sellerId,
+                                'sales': list.map((e) => e['data'] as Sale).toList(),
+                              });
+                            }
+                          }
+                          for (var t in singleRows) {
+                            listRows.add({
+                              'type': 'single',
+                              'date': t['date'] as DateTime,
+                              'transaction': t,
+                            });
+                          }
+                          listRows.sort((a, b) =>
+                              (b['date'] as DateTime).compareTo(a['date'] as DateTime));
+
+                          if (listRows.isEmpty) {
                             return Center(
                               child: Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
@@ -255,26 +304,42 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
 
                           return ListView.builder(
                             padding: const EdgeInsets.all(8),
-                            itemCount: combinedTransactions.length,
+                            itemCount: listRows.length,
                             itemBuilder: (context, index) {
-                              final transaction = combinedTransactions[index];
-                              
-                              if (transaction['type'] == 'pos') {
-                                final sale = transaction['data'] as Sale;
-                                // Check if search query matches seller name
+                              final row = listRows[index];
+                              if (row['type'] == 'group') {
+                                final sellerId = row['sellerId'] as String?;
+                                final sales = row['sales'] as List<Sale>;
+                                final date = row['date'] as DateTime;
+                                return _SellerDayGroupTile(
+                                  sellerId: sellerId,
+                                  date: date,
+                                  sales: sales,
+                                  searchQuery: searchQuery,
+                                  sellerService: _sellerService,
+                                  onReturn: (sale) => _showReturnDialog(context, sale),
+                                );
+                              }
+                              final t = row['transaction'] as Map<String, dynamic>;
+                              if (t['type'] == 'pos') {
+                                final sale = t['data'] as Sale;
                                 if (searchQuery.isNotEmpty && sale.sellerId != null) {
                                   return FutureBuilder<Seller?>(
                                     future: _sellerService.getSellerById(sale.sellerId!),
                                     builder: (context, sellerSnapshot) {
-                                      if (sellerSnapshot.hasData && sellerSnapshot.data != null) {
+                                      if (sellerSnapshot.hasData &&
+                                          sellerSnapshot.data != null) {
                                         final seller = sellerSnapshot.data!;
-                                        if (!seller.name.toLowerCase().contains(searchQuery)) {
+                                        if (!seller.name
+                                            .toLowerCase()
+                                            .contains(searchQuery)) {
                                           return const SizedBox.shrink();
                                         }
                                       }
                                       return _SaleCard(
                                         sale: sale,
-                                        onReturn: () => _showReturnDialog(context, sale),
+                                        onReturn: () =>
+                                            _showReturnDialog(context, sale),
                                       );
                                     },
                                   );
@@ -284,7 +349,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                   onReturn: () => _showReturnDialog(context, sale),
                                 );
                               } else {
-                                final order = transaction['data'] as SellerOrder;
+                                final order = t['data'] as SellerOrder;
                                 return _WholesaleOrderCard(order: order);
                               }
                             },
@@ -406,6 +471,104 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   }
 }
 
+/// Expandable tile for multiple POS sales by the same seller on the same day.
+class _SellerDayGroupTile extends StatelessWidget {
+  final String? sellerId;
+  final DateTime date;
+  final List<Sale> sales;
+  final String searchQuery;
+  final SellerService sellerService;
+  final void Function(Sale sale) onReturn;
+
+  const _SellerDayGroupTile({
+    required this.sellerId,
+    required this.date,
+    required this.sales,
+    required this.searchQuery,
+    required this.sellerService,
+    required this.onReturn,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final formatter = NumberFormat.currency(symbol: 'Rs. ');
+    final dateStr = DateFormat('MMM dd, yyyy').format(date);
+    final totalAmount =
+        sales.fold<double>(0.0, (sum, s) => sum + s.total);
+    final future = sellerId != null
+        ? Future.wait([
+            sellerService.getSellerById(sellerId!),
+            sellerService.getTotalDueAmountForSeller(sellerId!),
+            sellerService.getCreditBalance(sellerId!),
+          ])
+        : Future.value(<dynamic>[null, 0.0, 0.0]);
+    return FutureBuilder<List<dynamic>>(
+      future: future,
+      builder: (context, snapshot) {
+        final seller = snapshot.data != null && snapshot.data!.isNotEmpty
+            ? snapshot.data![0] as Seller?
+            : null;
+        final due = snapshot.data != null && snapshot.data!.length > 1
+            ? (snapshot.data![1] as num).toDouble()
+            : 0.0;
+        final credit = snapshot.data != null && snapshot.data!.length > 2
+            ? (snapshot.data![2] as num).toDouble()
+            : 0.0;
+        final sellerName = seller?.name ?? 'No seller';
+        if (searchQuery.isNotEmpty &&
+            !sellerName.toLowerCase().contains(searchQuery)) {
+          return const SizedBox.shrink();
+        }
+        final dueCreditParts = <String>[];
+        if (due > 0.01) dueCreditParts.add('Due: ${formatter.format(due)}');
+        if (credit > 0.01) dueCreditParts.add('Credit: ${formatter.format(credit)}');
+        final dueCreditStr = dueCreditParts.isEmpty
+            ? ''
+            : ' • ${dueCreditParts.join(' • ')}';
+        return Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          color: Colors.green.shade50,
+          child: Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              initiallyExpanded: false,
+              leading: CircleAvatar(
+                backgroundColor: Colors.green.shade200,
+                child: Icon(Icons.person, color: Colors.green.shade800),
+              ),
+              title: Text(
+                sellerName,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              subtitle: Text(
+                '$dateStr • ${sales.length} sale(s) • ${formatter.format(totalAmount)} total$dueCreditStr',
+                style: TextStyle(
+                  color: Colors.grey.shade700,
+                  fontSize: 13,
+                ),
+              ),
+              children: sales
+                  .map(
+                    (sale) => Padding(
+                      padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+                      child: _SaleCard(
+                        sale: sale,
+                        onReturn: () => onReturn(sale),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _SaleCard extends StatelessWidget {
   final Sale sale;
   final VoidCallback onReturn;
@@ -419,6 +582,104 @@ class _SaleCard extends StatelessWidget {
     if (sellerId == null) return null;
     final sellerService = SellerService();
     return await sellerService.getSellerById(sellerId);
+  }
+
+  Future<void> _handleViewPdf(BuildContext context) async {
+    Seller? seller;
+    if (sale.sellerId != null) {
+      seller = await _getSeller(sale.sellerId);
+    }
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final bytes = await ReceiptPdfService.generateSaleReceiptPdf(
+        sale,
+        seller: seller,
+        existingDueTotal: sale.existingDueTotalAtSale,
+      );
+      if (!context.mounted) return;
+      Navigator.of(context).pop();
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Sale Receipt'),
+          content: SizedBox(
+            width: 600,
+            height: 700,
+            child: PdfPreview(
+              build: (format) async => bytes,
+              allowPrinting: true,
+              allowSharing: true,
+              canChangeOrientation: false,
+              canChangePageFormat: false,
+              canDebug: false,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (context.mounted) Navigator.of(context).pop();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error generating PDF: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleDownloadPdf(BuildContext context) async {
+    Seller? seller;
+    if (sale.sellerId != null) {
+      seller = await _getSeller(sale.sellerId);
+    }
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final bytes = await ReceiptPdfService.generateSaleReceiptPdf(
+        sale,
+        seller: seller,
+        existingDueTotal: sale.existingDueTotalAtSale,
+      );
+      if (!context.mounted) return;
+      Navigator.of(context).pop();
+      final filename = 'sale-${sale.id.substring(0, 8).toUpperCase()}.pdf';
+      pdf_download.downloadPdf(bytes, filename);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PDF downloaded: $filename'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) Navigator.of(context).pop();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error generating PDF: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -542,6 +803,60 @@ class _SaleCard extends StatelessWidget {
                   return const SizedBox.shrink();
                 },
               ),
+            if (sale.sellerId != null)
+              FutureBuilder<List<dynamic>>(
+                future: Future.wait([
+                  SellerService().getTotalDueAmountForSeller(sale.sellerId!),
+                  SellerService().getCreditBalance(sale.sellerId!),
+                ]),
+                builder: (context, snap) {
+                  if (!snap.hasData || snap.data!.length < 2) return const SizedBox.shrink();
+                  final due = (snap.data![0] as num).toDouble();
+                  final credit = (snap.data![1] as num).toDouble();
+                  if (due < 0.01 && credit < 0.01) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: [
+                        if (due > 0.01)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.pending_actions, size: 14, color: Colors.orange.shade700),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Due: ${formatter.format(due)}',
+                                style: TextStyle(
+                                  color: Colors.orange.shade700,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        if (credit > 0.01)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.account_balance_wallet, size: 14, color: Colors.teal.shade700),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Credit: ${formatter.format(credit)}',
+                                style: TextStyle(
+                                  color: Colors.teal.shade700,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
             if (sale.customerName != null && sale.customerName!.isNotEmpty)
               Text(
                 sale.customerName!,
@@ -600,13 +915,41 @@ class _SaleCard extends StatelessWidget {
               ),
           ],
         ),
-        trailing: canReturn 
-            ? IconButton(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              tooltip: 'View or download PDF',
+              onSelected: (value) async {
+                if (value == 'view_pdf') await _handleViewPdf(context);
+                if (value == 'download_pdf') await _handleDownloadPdf(context);
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'view_pdf',
+                  child: ListTile(
+                    leading: Icon(Icons.picture_as_pdf),
+                    title: Text('View PDF'),
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'download_pdf',
+                  child: ListTile(
+                    leading: Icon(Icons.download),
+                    title: Text('Download PDF'),
+                  ),
+                ),
+              ],
+            ),
+            if (canReturn)
+              IconButton(
                 icon: const Icon(Icons.assignment_return, color: Colors.orange),
                 onPressed: onReturn,
                 tooltip: 'Return Items',
-              )
-            : null,
+              ),
+          ],
+        ),
         children: [
           const Divider(),
           Padding(
@@ -1096,6 +1439,7 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
         isBorrowPayment: widget.sale.isBorrowPayment, // Preserve borrow payment flag
         saleType: widget.sale.saleType, // Preserve sale type
         description: widget.sale.description, // Preserve description
+        existingDueTotalAtSale: widget.sale.existingDueTotalAtSale,
       );
 
       // Update sale in database and update seller history if needed

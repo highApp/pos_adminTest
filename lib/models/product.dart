@@ -10,6 +10,7 @@ class Product {
   final String unit; // Unit of measurement (kg, g, L, pieces, etc.)
   final double? value; // Value/size of product (e.g., 500 for 500g, 1 for 1L)
   final String? barcode;
+  final String? productCode; // Product code / item code (optional)
   final String category;
   final String? imageUrl;
   final DateTime createdAt;
@@ -27,6 +28,7 @@ class Product {
     required this.unit,
     this.value,
     this.barcode,
+    this.productCode,
     required this.category,
     this.imageUrl,
     required this.createdAt,
@@ -68,6 +70,7 @@ class Product {
       'unit': unit,
       'value': value,
       'barcode': barcode,
+      'productCode': productCode,
       'category': category,
       'imageUrl': imageUrl,
       'createdAt': createdAt.toIso8601String(),
@@ -133,6 +136,7 @@ class Product {
       unit: map['unit'] ?? 'pieces',
       value: map['value'] != null ? (map['value'] as num).toDouble() : null,
       barcode: map['barcode']?.toString(),
+      productCode: map['productCode']?.toString(),
       category: map['category'] ?? 'General',
       imageUrl: map['imageUrl']?.toString(),
       createdAt: map['createdAt'] != null
@@ -157,6 +161,7 @@ class Product {
     String? unit,
     double? value,
     String? barcode,
+    String? productCode,
     String? category,
     String? imageUrl,
     DateTime? createdAt,
@@ -174,6 +179,7 @@ class Product {
       unit: unit ?? this.unit,
       value: value ?? this.value,
       barcode: barcode ?? this.barcode,
+      productCode: productCode ?? this.productCode,
       category: category ?? this.category,
       imageUrl: imageUrl ?? this.imageUrl,
       createdAt: createdAt ?? this.createdAt,
@@ -181,6 +187,12 @@ class Product {
     );
   }
   
+  /// Inventory value: stock × purchase price (total cost of items in stock)
+  double get inventoryValue => stock * purchasePrice;
+
+  /// Sale value: stock × sale price (total value if sold at current sale price)
+  double get saleStockValue => stock * salePrice;
+
   // Helper method to calculate profit per item
   double get profitPerItem => salePrice - purchasePrice;
   

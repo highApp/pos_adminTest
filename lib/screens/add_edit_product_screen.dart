@@ -37,6 +37,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   late TextEditingController _valueController;
   late TextEditingController _unitController;
   late TextEditingController _barcodeController;
+  late TextEditingController _productCodeController;
   late TextEditingController _categoryController;
   String _selectedCategory = 'General';
   bool _usePercentage = false; // Toggle between manual and percentage mode for sale price
@@ -78,6 +79,8 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         TextEditingController(text: widget.product?.unit ?? '');
     _barcodeController =
         TextEditingController(text: widget.product?.barcode ?? '');
+    _productCodeController =
+        TextEditingController(text: widget.product?.productCode ?? '');
     _selectedCategory = widget.product?.category ?? 'General';
     _categoryController = TextEditingController(text: _selectedCategory);
     _imageUrl = widget.product?.imageUrl;
@@ -128,6 +131,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _valueController.dispose();
     _unitController.dispose();
     _barcodeController.dispose();
+    _productCodeController.dispose();
     _categoryController.dispose();
     super.dispose();
   }
@@ -612,6 +616,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         barcode: _barcodeController.text.trim().isEmpty
             ? null
             : _barcodeController.text.trim(),
+        productCode: _productCodeController.text.trim().isEmpty
+            ? null
+            : _productCodeController.text.trim(),
         category: _selectedCategory,
         imageUrl: uploadedImageUrl,
         createdAt: widget.product?.createdAt ?? DateTime.now(),
@@ -733,7 +740,17 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            
+            // Product Code / Item Code (Optional)
+            TextFormField(
+              controller: _productCodeController,
+              decoration: const InputDecoration(
+                labelText: 'Product Code / Item Code',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.tag, color: Colors.grey),
+                helperText: 'Optional. Your internal code or SKU for this product.',
+              ),
+            ),
+            const SizedBox(height: 16),
             // Product Image Section (Optional)
             Container(
               padding: const EdgeInsets.all(16),

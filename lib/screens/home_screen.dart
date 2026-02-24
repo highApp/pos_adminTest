@@ -12,6 +12,7 @@ import 'login_screen.dart';
 import 'admin_seller_orders_screen.dart';
 import 'create_manager_screen.dart';
 import 'settings_screen.dart';
+import 'zakat_screen.dart';
 import '../services/auth_service.dart';
 import '../models/user.dart';
 import '../widgets/reminder_alert_listener.dart';
@@ -199,7 +200,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         drawer: _buildDrawer(),
-        body: const ReminderAlertListener(child: POSScreen()),
+        body: const POSScreen(),
       );
     }
 
@@ -235,7 +236,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       drawer: _buildDrawer(),
-      body: ReminderAlertListener(child: _screens[_selectedIndex]),
+      body: _selectedIndex == 0
+          ? ReminderAlertListener(child: _screens[_selectedIndex])
+          : _screens[_selectedIndex],
     );
   }
 
@@ -403,6 +406,43 @@ class _HomeScreenState extends State<HomeScreen> {
                           context,
                           MaterialPageRoute(
                             builder: (context) => const BorrowsScreen(),
+                          ),
+                        );
+                      },
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  // Zakat (2.5%) calculator
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    child: ListTile(
+                      leading: Icon(
+                        Icons.volunteer_activism,
+                        color: Colors.green[700],
+                        size: 24,
+                      ),
+                      title: const Text(
+                        'Zakat (2.5%)',
+                        style: TextStyle(
+                          color: Colors.black87,
+                          fontWeight: FontWeight.normal,
+                        ),
+                      ),
+                      subtitle: const Text(
+                        'Calculate annual Zakat',
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const ZakatScreen(),
                           ),
                         );
                       },

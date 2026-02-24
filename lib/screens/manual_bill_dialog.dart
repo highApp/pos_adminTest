@@ -114,7 +114,7 @@ class _ManualBillDialogState extends State<ManualBillDialog> {
         items: [item],
         total: amount,
         totalExpense: expense,
-        finalPrice: amount + expense,
+        finalPrice: amount, // Save final price without expense (used for balance)
         amountPaid: 0.0,
         change: 0.0,
         createdAt: DateTime.now(),

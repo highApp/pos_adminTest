@@ -54,8 +54,11 @@ class ProductService {
         }
       }
       
-      // Search in barcode and description
+      // Search in barcode, product code and description
       if (product.barcode?.toLowerCase().contains(searchQuery) ?? false) {
+        return true;
+      }
+      if (product.productCode?.toLowerCase().contains(searchQuery) ?? false) {
         return true;
       }
       if (product.description?.toLowerCase().contains(searchQuery) ?? false) {

@@ -3,8 +3,10 @@ import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import '../models/buyer.dart';
 import '../models/balance_entry.dart';
+import '../models/category.dart';
 import '../services/buyer_service.dart';
 import '../services/balance_service.dart';
+import '../services/category_service.dart';
 import 'add_edit_buyer_screen.dart';
 import 'buyer_bills_screen.dart';
 
@@ -18,6 +20,7 @@ class BuyersScreen extends StatefulWidget {
 class _BuyersScreenState extends State<BuyersScreen> {
   final BuyerService _buyerService = BuyerService();
   final BalanceService _balanceService = BalanceService();
+  final CategoryService _categoryService = CategoryService();
   final TextEditingController _searchController = TextEditingController();
   List<Buyer>? _searchResults;
   int _currentPage = 1;
@@ -50,7 +53,7 @@ class _BuyersScreenState extends State<BuyersScreen> {
     return Scaffold(
       body: Column(
         children: [
-          // Summary Section with 3 metrics
+          // Summary Section: Total Revenue, Profit, Payable Payment, Deposit Balance
           Container(
             padding: const EdgeInsets.all(16),
             color: Colors.white,
@@ -64,6 +67,17 @@ class _BuyersScreenState extends State<BuyersScreen> {
                     stream: _buyerService.getTotalRevenueFromSalesStream(),
                     showPlusIcon: true,
                     onPlusPressed: () => _showAddBalanceDialog(context),
+                    showHistoryIcon: true,
+                    onHistoryPressed: () => _showBalanceHistoryDialog(context),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildMetricCard(
+                    title: 'Profit',
+                    icon: Icons.show_chart,
+                    color: Colors.teal,
+                    stream: _buyerService.getTotalProfitFromSalesStream(),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -518,6 +532,8 @@ class _BuyersScreenState extends State<BuyersScreen> {
     required Stream<double> stream,
     bool showPlusIcon = false,
     VoidCallback? onPlusPressed,
+    bool showHistoryIcon = false,
+    VoidCallback? onHistoryPressed,
   }) {
     return StreamBuilder<double>(
       stream: stream,
@@ -555,6 +571,19 @@ class _BuyersScreenState extends State<BuyersScreen> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (showHistoryIcon && onHistoryPressed != null)
+                    InkWell(
+                      onTap: onHistoryPressed,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Icon(
+                          Icons.history,
+                          size: 18,
+                          color: color,
+                        ),
+                      ),
+                    ),
                   if (showPlusIcon && onPlusPressed != null)
                     InkWell(
                       onTap: onPlusPressed,
@@ -605,6 +634,7 @@ class _BuyersScreenState extends State<BuyersScreen> {
     final TextEditingController descriptionController = TextEditingController();
     DateTime selectedDate = DateTime.now();
     bool isLoading = false;
+    String? selectedCategory;
 
     showDialog(
       context: context,
@@ -631,6 +661,37 @@ class _BuyersScreenState extends State<BuyersScreen> {
                     prefixIcon: Icon(Icons.attach_money),
                     border: OutlineInputBorder(),
                   ),
+                ),
+                const SizedBox(height: 16),
+                StreamBuilder<List<Category>>(
+                  stream: _categoryService.getCategoriesStream(),
+                  builder: (context, catSnapshot) {
+                    final categories = catSnapshot.data ?? [];
+                    return DropdownButtonFormField<String>(
+                      value: selectedCategory,
+                      decoration: const InputDecoration(
+                        labelText: 'Category (Optional)',
+                        prefixIcon: Icon(Icons.category),
+                        border: OutlineInputBorder(),
+                        helperText: 'Select a category for this balance entry',
+                      ),
+                      items: [
+                        const DropdownMenuItem<String>(
+                          value: null,
+                          child: Text('No category'),
+                        ),
+                        ...categories.map((c) => DropdownMenuItem<String>(
+                              value: c.name,
+                              child: Text(c.name),
+                            )),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          selectedCategory = value;
+                        });
+                      },
+                    );
+                  },
                 ),
                 const SizedBox(height: 16),
                 TextField(
@@ -716,6 +777,7 @@ class _BuyersScreenState extends State<BuyersScreen> {
                           description: descriptionController.text.trim().isEmpty
                               ? null
                               : descriptionController.text.trim(),
+                          category: selectedCategory,
                           date: selectedDate,
                           createdAt: DateTime.now(),
                         );
@@ -762,6 +824,152 @@ class _BuyersScreenState extends State<BuyersScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showBalanceHistoryDialog(BuildContext context) {
+    final formatter = NumberFormat.currency(symbol: 'Rs. ');
+    final dateFormat = DateFormat('MMM dd, yyyy');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.history, color: Colors.green),
+            const SizedBox(width: 8),
+            const Text('Added Balance History'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: StreamBuilder<List<BalanceEntry>>(
+            stream: _balanceService.getBalanceEntriesStream(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError) {
+                return Text('Error: ${snapshot.error}');
+              }
+              final entries = snapshot.data ?? [];
+              if (entries.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.account_balance_wallet, size: 48, color: Colors.grey),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'No balance entries yet',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Add balance using the + icon on Total Revenue',
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                );
+              }
+              final total = entries.fold<double>(0.0, (s, e) => s + e.amount);
+              // Group by category (one row per category; tap to expand nested list)
+              final Map<String, List<BalanceEntry>> byCategory = {};
+              for (final e in entries) {
+                final key = (e.category != null && e.category!.trim().isNotEmpty)
+                    ? e.category!.trim()
+                    : 'No category';
+                byCategory.putIfAbsent(key, () => []).add(e);
+              }
+              final categoryKeys = byCategory.keys.toList()
+                ..sort((a, b) => a.compareTo(b));
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Total: ${formatter.format(total)} (included in Total Revenue above)',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green.shade700,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 400),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: categoryKeys.length,
+                        itemBuilder: (context, i) {
+                          final cat = categoryKeys[i];
+                          final list = byCategory[cat]!;
+                          final catTotal = list.fold<double>(0.0, (s, e) => s + e.amount);
+                          return Theme(
+                            data: Theme.of(ctx).copyWith(dividerColor: Colors.transparent),
+                            child: ExpansionTile(
+                              leading: CircleAvatar(
+                                backgroundColor: Colors.green.shade100,
+                                child: Icon(Icons.category, size: 18, color: Colors.green.shade700),
+                              ),
+                              title: Text(
+                                cat,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              subtitle: Text(
+                                '${list.length} entry(ies) • ${formatter.format(catTotal)}',
+                                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                              ),
+                              children: list
+                                  .map(
+                                    (e) => ListTile(
+                                      dense: true,
+                                      leading: const SizedBox(
+                                        width: 32,
+                                        child: Icon(Icons.add, size: 16, color: Colors.green),
+                                      ),
+                                      title: Text(
+                                        formatter.format(e.amount),
+                                        style: const TextStyle(fontWeight: FontWeight.w500),
+                                      ),
+                                      subtitle: Text(
+                                        [
+                                          dateFormat.format(e.date),
+                                          if (e.description != null && e.description!.isNotEmpty)
+                                            e.description!,
+                                        ].join(' • '),
+                                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
       ),
     );
   }

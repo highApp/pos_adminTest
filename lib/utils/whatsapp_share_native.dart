@@ -11,7 +11,7 @@ Future<bool> sharePdfToWhatsAppContact(
   String? reportLabel,
 }) async {
   final installed = await WhatsappShare.isInstalled(package: Package.whatsapp);
-  if (!installed) return false;
+  if (installed != true) return false;
 
   final dir = await getTemporaryDirectory();
   final file = File('${dir.path}/$filename');

@@ -740,6 +740,27 @@ class SellerService {
     }
   }
 
+  /// Stream of total credit reductions on or after [fromDate]. Use for revenue calculation when reset date is set.
+  Stream<double> getTotalCreditReductionsFromDateStream(DateTime fromDate) {
+    final start = fromDate.subtract(const Duration(seconds: 1));
+    return _firestore.collection('credit_history').snapshots().map((snapshot) {
+      double total = 0.0;
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final amount = (data['amount'] ?? 0).toDouble();
+        final type = data['type'] ?? '';
+        final createdAtStr = data['createdAt'];
+        if (createdAtStr != null && amount < 0 && type == 'payment') {
+          try {
+            final createdAt = DateTime.parse(createdAtStr);
+            if (!createdAt.isBefore(start)) total += amount.abs();
+          } catch (_) {}
+        }
+      }
+      return total;
+    });
+  }
+
   // Update credit balance to a new value
   // When credit balance is reduced, creates an expense entry to reduce Revenue and Total Revenue
   // This ensures that reducing credit balance properly reflects in the dashboard metrics
@@ -851,6 +872,53 @@ class SellerService {
       debugPrint('=== END DELETING CREDIT BALANCE AND HISTORY ===');
     } catch (e) {
       debugPrint('Error deleting credit balance and history: $e');
+      rethrow;
+    }
+  }
+
+  /// Migrate old manual due payment records: add recordType: 'payment' so they show simplified layout
+  /// Returns number of records updated
+  Future<int> migrateOldSellerPaymentRecords() async {
+    try {
+      final snapshot = await _firestore
+          .collection('seller_history')
+          .where('isManual', isEqualTo: true)
+          .get();
+
+      int updated = 0;
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        if (data['recordType'] != null) continue; // Already has recordType
+
+        final duePayment = (data['duePayment'] ?? 0).toDouble();
+        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+        final saleId = data['saleId'] as String?;
+
+        // Must look like a payment: duePayment=0, amountPaid==saleAmount, saleAmount>0
+        if (duePayment != 0 || amountPaid != saleAmount || saleAmount <= 0) continue;
+        if (saleId == null || saleId.isEmpty) continue;
+
+        try {
+          final saleDoc = await _firestore.collection('sales').doc(saleId).get();
+          if (!saleDoc.exists) continue;
+
+          final saleData = saleDoc.data();
+          final total = (saleData?['total'] ?? 0).toDouble();
+          final items = saleData?['items'] as List<dynamic>?;
+
+          // Manual due payment: sale has total=0, no items
+          if (total == 0 && (items == null || items.isEmpty)) {
+            await doc.reference.update({'recordType': 'payment'});
+            updated++;
+          }
+        } catch (_) {
+          // Skip on error
+        }
+      }
+      return updated;
+    } catch (e) {
+      debugPrint('Error migrating seller payment records: $e');
       rethrow;
     }
   }

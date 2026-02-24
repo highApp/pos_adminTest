@@ -7,7 +7,7 @@ class BuyerBill {
   final List<BuyerBillItem> items;
   final double total;
   final double totalExpense;
-  final double finalPrice; // Total + Total Expense
+  final double finalPrice; // Subtotal (without expense) - used as bill balance
   final double amountPaid;
   final double change;
   final DateTime createdAt;

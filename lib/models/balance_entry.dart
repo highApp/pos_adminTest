@@ -2,6 +2,7 @@ class BalanceEntry {
   final String id;
   final double amount;
   final String? description;
+  final String? category;
   final DateTime date;
   final DateTime createdAt;
 
@@ -9,6 +10,7 @@ class BalanceEntry {
     required this.id,
     required this.amount,
     this.description,
+    this.category,
     required this.date,
     required this.createdAt,
   });
@@ -18,6 +20,7 @@ class BalanceEntry {
       'id': id,
       'amount': amount,
       'description': description,
+      'category': category,
       'date': date.toIso8601String(),
       'createdAt': createdAt.toIso8601String(),
     };
@@ -28,6 +31,7 @@ class BalanceEntry {
       id: map['id'] ?? '',
       amount: (map['amount'] ?? 0).toDouble(),
       description: map['description'],
+      category: map['category'],
       date: map['date'] != null
           ? DateTime.parse(map['date'])
           : DateTime.now(),

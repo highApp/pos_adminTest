@@ -8,8 +8,6 @@ import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:printing/printing.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -25,6 +23,8 @@ import '../services/sales_service.dart';
 import '../services/seller_service.dart';
 import '../services/category_service.dart';
 import '../services/printer_service.dart';
+import '../services/receipt_pdf_service.dart';
+import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
 
 class POSScreen extends StatefulWidget {
   const POSScreen({super.key});
@@ -79,7 +79,7 @@ class _POSScreenState extends State<POSScreen> {
                   child: TextField(
                     controller: _searchController,
                     decoration: InputDecoration(
-                      hintText: 'Search products by name or barcode...',
+                      hintText: 'Search by name, barcode or product code...',
                       prefixIcon: const Icon(Icons.search, color: Colors.green),
                       suffixIcon: _searchController.text.isNotEmpty
                           ? IconButton(
@@ -371,6 +371,7 @@ class _POSScreenState extends State<POSScreen> {
         creditUsed: 0.0, // Will be set during seller processing
         saleType: cart.saleType == SaleType.wholesale ? 'wholesale' : 'regular',
         description: description,
+        existingDueTotalAtSale: sellerId != null ? existingDueTotal : 0.0,
       );
 
       await salesService.addSale(sale);
@@ -482,6 +483,7 @@ class _POSScreenState extends State<POSScreen> {
             creditUsed: creditUsed,
             saleType: sale.saleType,
             description: sale.description,
+            existingDueTotalAtSale: sale.existingDueTotalAtSale,
           );
         }
         
@@ -627,6 +629,28 @@ class _POSScreenState extends State<POSScreen> {
                         value: formatter.format(sale.creditUsed),
                         isTotal: false,
                         color: Colors.blue,
+                      ),
+                    ],
+                    if (sale.recoveryBalance > 0) ...[
+                      const Divider(height: 24),
+                      _ReceiptRow(
+                        label: 'Applied to Dues',
+                        value: formatter.format(sale.recoveryBalance),
+                        isTotal: false,
+                        color: Colors.orange,
+                      ),
+                      const Divider(height: 24),
+                      _ReceiptRow(
+                        label: 'Previous Due',
+                        value: formatter.format(existingDueTotal),
+                        isTotal: false,
+                      ),
+                      const Divider(height: 24),
+                      _ReceiptRow(
+                        label: 'Remaining Balance',
+                        value: formatter.format((existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity)),
+                        isTotal: false,
+                        color: Colors.green,
                       ),
                     ],
                     const Divider(height: 24),
@@ -1012,7 +1036,8 @@ class _POSScreenState extends State<POSScreen> {
               right: 8,
               child: IconButton(
                 onPressed: () {
-                  Navigator.pop(context); // Close the success dialog first
+                  // Don't pop the success dialog first - when seller is selected we await
+                  // getSellerById, and popping would dispose the context before the preview shows
                   _showPrintPreview(context, sale, existingDueTotal, languageCode: selectedLanguage);
                 },
                 icon: const Icon(
@@ -1105,7 +1130,12 @@ class _POSScreenState extends State<POSScreen> {
                       build: (format) async {
                         try {
                           final lang = languageCode ?? await PrinterService().getReceiptLanguage();
-                          return await _generateReceiptPDF(sale, existingDueTotal, seller, languageCode: lang);
+                          return await ReceiptPdfService.generateSaleReceiptPdf(
+                            sale,
+                            seller: seller,
+                            languageCode: lang,
+                            existingDueTotal: existingDueTotal,
+                          );
                         } catch (e) {
                           debugPrint('PDF Generation Error: $e');
                           rethrow;
@@ -1131,7 +1161,12 @@ class _POSScreenState extends State<POSScreen> {
                         onPressed: () async {
                           try {
                             final lang = languageCode ?? await PrinterService().getReceiptLanguage();
-                            final pdf = await _generateReceiptPDF(sale, existingDueTotal, seller, languageCode: lang);
+                            final pdf = await ReceiptPdfService.generateSaleReceiptPdf(
+                              sale,
+                              seller: seller,
+                              languageCode: lang,
+                              existingDueTotal: existingDueTotal,
+                            );
                             await Printing.layoutPdf(
                               onLayout: (format) async => pdf,
                             );
@@ -1201,7 +1236,12 @@ class _POSScreenState extends State<POSScreen> {
       final currentLanguage = await printerService.getReceiptLanguage();
       
       // Generate PDF
-      final pdfBytes = await _generateReceiptPDF(sale, existingDueTotal, seller, languageCode: currentLanguage);
+      final pdfBytes = await ReceiptPdfService.generateSaleReceiptPdf(
+        sale,
+        seller: seller,
+        languageCode: currentLanguage,
+        existingDueTotal: existingDueTotal,
+      );
 
       // Get seller phone number
       String? phoneNumber = seller?.phone;
@@ -1222,18 +1262,20 @@ class _POSScreenState extends State<POSScreen> {
       }
 
       if (kIsWeb) {
-        // Web: Use WhatsApp Web API
+        // Web: Download PDF + share + open WhatsApp
+        final filename = 'receipt_${sale.id.substring(0, 8)}.pdf';
         if (phoneNumber != null && phoneNumber.isNotEmpty) {
-          // For web, download the PDF first, then open WhatsApp Web
-          // Download PDF using share_plus (works on web)
           try {
+            // Download the PDF to user's device
+            pdf_download.downloadPdf(pdfBytes, filename);
+
             final xFile = XFile.fromData(
               pdfBytes,
               mimeType: 'application/pdf',
-              name: 'receipt_${sale.id.substring(0, 8)}.pdf',
+              name: filename,
             );
-            
-            // Share the file (will download on web)
+
+            // Share the file (shows share sheet)
             await Share.shareXFiles([xFile], text: 'Receipt for Sale #${sale.id.substring(0, 8).toUpperCase()}');
             
             // Open WhatsApp Web with phone number
@@ -1279,11 +1321,13 @@ class _POSScreenState extends State<POSScreen> {
             }
           }
         } else {
+          // No seller phone: still download the receipt
+          pdf_download.downloadPdf(pdfBytes, filename);
           if (context.mounted) {
             Navigator.pop(context); // Close loading
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Seller phone number not found. Cannot share via WhatsApp.'),
+              SnackBar(
+                content: Text('Receipt downloaded. Seller phone number not found for WhatsApp.'),
                 backgroundColor: Colors.orange,
               ),
             );
@@ -1341,392 +1385,6 @@ class _POSScreenState extends State<POSScreen> {
           ),
         );
       }
-    }
-  }
-
-  Future<Uint8List> _generateReceiptPDF(Sale sale, double existingDueTotal, Seller? seller, {String languageCode = 'en'}) async {
-    try {
-      final pdf = pw.Document();
-      final formatter = NumberFormat.currency(symbol: 'Rs. ', decimalDigits: 2);
-      final dateFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
-      
-      // Fetch products to get language-specific names
-      final productService = ProductService();
-      final Map<String, String> productNamesMap = {};
-      
-      // Fetch all products for this sale
-      for (var item in sale.items) {
-        try {
-          final product = await productService.getProductById(item.productId);
-          if (product != null) {
-            // Get name in selected language, fallback to English or displayName
-            final name = product.getName(languageCode) ?? 
-                        (languageCode == 'en' ? product.name : product.getName('en')) ?? 
-                        product.name;
-            productNamesMap[item.productId] = name;
-          } else {
-            // Fallback to stored productName if product not found
-            productNamesMap[item.productId] = item.productName;
-          }
-        } catch (e) {
-          debugPrint('Error fetching product ${item.productId}: $e');
-          // Fallback to stored productName
-          productNamesMap[item.productId] = item.productName;
-        }
-      }
-
-      // Use monospace Courier font for receipt (standard receipt printer style)
-      final font = pw.Font.courier();
-      
-      // Helper function to create text style with standard font
-      pw.TextStyle textStyle({
-        double fontSize = 6,
-        pw.FontWeight? fontWeight,
-      }) {
-        return pw.TextStyle(
-          font: font,
-          fontSize: fontSize,
-          fontWeight: fontWeight,
-        );
-      }
-      
-      pdf.addPage(
-        pw.Page(
-          pageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, double.infinity, marginAll: 3 * PdfPageFormat.mm),
-          build: (pw.Context context) {
-          return pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.center,
-            children: [
-              // Header: AR'S Traders
-              pw.Text(
-                'AR\'S Traders',
-                style: textStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 4),
-              
-              // Seller Information - More Prominent
-              if (seller != null) ...[
-                pw.SizedBox(height: 4),
-                pw.Container(
-                  padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  decoration: pw.BoxDecoration(
-                    border: pw.Border.all(color: PdfColors.grey800, width: 0.8),
-                    borderRadius: const pw.BorderRadius.all(pw.Radius.circular(2)),
-                  ),
-                  child: pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        'CUSTOMER NAME:',
-                        style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                      ),
-                      pw.SizedBox(height: 3),
-                      pw.Text(
-                        seller.name.toUpperCase(),
-                        style: textStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
-                      ),
-                      if (seller.phone != null && seller.phone!.isNotEmpty) ...[
-                        pw.SizedBox(height: 3),
-                        pw.Text(
-                          'Phone: ${seller.phone!}',
-                          style: textStyle(fontSize: 6),
-                        ),
-                      ],
-                      if (seller.location != null && seller.location!.isNotEmpty) ...[
-                        pw.SizedBox(height: 2),
-                        pw.Text(
-                          'Address: ${seller.location!}',
-                          style: textStyle(fontSize: 6),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                pw.SizedBox(height: 4),
-              ],
-              
-              pw.Divider(thickness: 0.5),
-              pw.SizedBox(height: 3),
-              
-              // Items Table Header - simplified like receipt format
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Expanded(
-                    flex: 1,
-                    child: pw.Text(
-                      'No.',
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                      textAlign: pw.TextAlign.left,
-                    ),
-                  ),
-                  pw.Expanded(
-                    flex: 4,
-                    child: pw.Text(
-                      'Item',
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                      textAlign: pw.TextAlign.left,
-                    ),
-                  ),
-                  pw.Expanded(
-                    flex: 1,
-                    child: pw.Text(
-                      'Qty',
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                      textAlign: pw.TextAlign.center,
-                    ),
-                  ),
-                  pw.Expanded(
-                    flex: 2,
-                    child: pw.Text(
-                      'Price',
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                      textAlign: pw.TextAlign.right,
-                    ),
-                  ),
-                  pw.Expanded(
-                    flex: 2,
-                    child: pw.Text(
-                      'Amount',
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                      textAlign: pw.TextAlign.right,
-                    ),
-                  ),
-                ],
-              ),
-              pw.SizedBox(height: 2),
-              pw.Divider(thickness: 0.5),
-              pw.SizedBox(height: 2),
-              
-              // Items List with numbering
-              ...sale.items.asMap().entries.map((entry) {
-                final index = entry.key;
-                final item = entry.value;
-                final itemNumber = (index + 1).toString().padLeft(2, '0');
-                
-                return pw.Column(
-                  children: [
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Expanded(
-                          flex: 1,
-                          child: pw.Text(
-                            itemNumber,
-                            style: textStyle(fontSize: 6),
-                            textAlign: pw.TextAlign.left,
-                          ),
-                        ),
-                        pw.Expanded(
-                          flex: 4,
-                          child: pw.Text(
-                            productNamesMap[item.productId] ?? item.productName,
-                            style: textStyle(fontSize: 6),
-                            maxLines: 2,
-                            textAlign: pw.TextAlign.left,
-                          ),
-                        ),
-                        pw.Expanded(
-                          flex: 1,
-                          child: pw.Text(
-                            item.quantity.toStringAsFixed(item.quantity % 1 == 0 ? 0 : 2),
-                            style: textStyle(fontSize: 6),
-                            textAlign: pw.TextAlign.center,
-                          ),
-                        ),
-                        pw.Expanded(
-                          flex: 2,
-                          child: pw.Text(
-                            formatter.format(item.price),
-                            style: textStyle(fontSize: 6),
-                            textAlign: pw.TextAlign.right,
-                          ),
-                        ),
-                        pw.Expanded(
-                          flex: 2,
-                          child: pw.Text(
-                            formatter.format(item.subtotal),
-                            style: textStyle(fontSize: 6),
-                            textAlign: pw.TextAlign.right,
-                          ),
-                        ),
-                      ],
-                    ),
-                    pw.SizedBox(height: 2),
-                  ],
-                );
-              }).toList(),
-              
-              pw.Divider(thickness: 0.5),
-              pw.SizedBox(height: 3),
-              
-              // Total Quantity Row
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text(
-                    'Total Items: ${sale.items.length}',
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                  pw.Text(
-                    'Total Qty: ${sale.items.fold<double>(0, (sum, item) => sum + item.quantity).toStringAsFixed(sale.items.any((item) => item.quantity % 1 != 0) ? 2 : 0)}',
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                ],
-              ),
-              
-              pw.Divider(thickness: 0.5),
-              pw.SizedBox(height: 3),
-              
-              // Payment Summary
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text(
-                    'Sale Amount:',
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                  pw.Text(
-                    formatter.format(sale.total),
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                ],
-              ),
-              if (sale.creditUsed > 0) ...[
-                pw.SizedBox(height: 4),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text(
-                      'Credit Applied:',
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                    ),
-                    pw.Text(
-                      formatter.format(sale.creditUsed),
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                    ),
-                  ],
-                ),
-              ],
-              pw.SizedBox(height: 4),
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text(
-                    'Amount Paid:',
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                  pw.Text(
-                    formatter.format(sale.amountPaid),
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                ],
-              ),
-              pw.SizedBox(height: 4),
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text(
-                    'Change:',
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                  pw.Text(
-                    formatter.format(sale.change),
-                    style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                  ),
-                ],
-              ),
-              pw.SizedBox(height: 4),
-              pw.Divider(thickness: 0.5),
-              pw.SizedBox(height: 3),
-              
-              // Order ID
-              pw.Text(
-                'Order ID: ${sale.id.substring(0, 8).toUpperCase()}',
-                style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 4),
-              pw.Text(
-                dateFormatter.format(sale.createdAt),
-                style: textStyle(fontSize: 6),
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 4),
-              
-              // Footer
-              pw.Text(
-                'Thank you come again',
-                      style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 4),
-              // Contact Information
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
-                children: [
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.center,
-                    children: [
-                      pw.Text(
-                        '03017826712',
-                        style: textStyle(fontSize: 6),
-                        textAlign: pw.TextAlign.center,
-                      ),
-                      pw.SizedBox(height: 2),
-                      pw.Text(
-                        'M.Irfan',
-                        style: textStyle(fontSize: 6),
-                        textAlign: pw.TextAlign.center,
-                      ),
-                    ],
-                  ),
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.center,
-                    children: [
-                      pw.Text(
-                        '03015384952',
-                        style: textStyle(fontSize: 6),
-                        textAlign: pw.TextAlign.center,
-                      ),
-                      pw.SizedBox(height: 2),
-                      pw.Text(
-                        'M.Usman',
-                        style: textStyle(fontSize: 6),
-                        textAlign: pw.TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              pw.SizedBox(height: 4),
-              // Software Developer Information
-              pw.Text(
-                'Software Developed by:',
-                style: textStyle(fontSize: 6),
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 2),
-              pw.Text(
-                'HighApp Solution 0301-5384952',
-                style: textStyle(fontSize: 6, fontWeight: pw.FontWeight.bold),
-                textAlign: pw.TextAlign.center,
-              ),
-            ],
-          );
-        },
-      ),
-    );
-
-      final pdfBytes = await pdf.save();
-      debugPrint('PDF generated successfully, size: ${pdfBytes.length} bytes');
-      return pdfBytes;
-    } catch (e, stackTrace) {
-      debugPrint('Error generating PDF: $e');
-      debugPrint('Stack trace: $stackTrace');
-      rethrow;
     }
   }
 
@@ -1836,7 +1494,7 @@ class _POSScreenState extends State<POSScreen> {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
                     child: Text(
-                      'USB is only available on web (Chrome/Edge). Use WiFi for mobile/desktop.',
+                      'USB may require Chrome/Edge on web. If the button below does not work, use WiFi instead.',
                       style: TextStyle(fontSize: 12, color: Colors.orange[700]),
                     ),
                   ),
@@ -2017,8 +1675,8 @@ class _POSScreenState extends State<POSScreen> {
                   ),
                 ],
                 
-                // USB Configuration
-                if (selectedConnectionType == PrinterConnectionType.usb && isUsbAvailable) ...[
+                // USB Configuration - show whenever USB selected (button works if Web USB available)
+                if (selectedConnectionType == PrinterConnectionType.usb) ...[
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -2080,7 +1738,15 @@ class _POSScreenState extends State<POSScreen> {
                     ),
                     const SizedBox(height: 12),
                   ],
-                  ElevatedButton.icon(
+                  const SizedBox(height: 8),
+                  Text(
+                    'Click below to select your printer (Chrome will show a device list):',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.blue[900]),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
                     onPressed: () async {
                       try {
                         if (context.mounted) {
@@ -2127,11 +1793,13 @@ class _POSScreenState extends State<POSScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue,
                       foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  ),
+                  const SizedBox(height: 12),
                   Text(
-                    'Make sure:\n• Printer is connected via USB cable\n• Printer is powered ON\n• Use Chrome, Edge, or Opera browser',
+                    'Make sure:\n• Printer is connected via USB cable\n• Printer is powered ON\n• Scroll up if needed - click "Select USB Device" above',
                     style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                   ),
                 ],
@@ -3052,20 +2720,39 @@ class _CartItemTile extends StatefulWidget {
 class _CartItemTileState extends State<_CartItemTile> {
   late TextEditingController _quantityController;
   late TextEditingController _priceController;
+  late TextEditingController _subtotalController;
   bool _isEditingQuantity = false;
   bool _isEditingPrice = false;
+  bool _isEditingSubtotal = false;
 
   @override
   void initState() {
     super.initState();
     _quantityController = TextEditingController(text: widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0));
     _priceController = TextEditingController(text: widget.cartItem.unitPrice.toStringAsFixed(2));
+    _subtotalController = TextEditingController(text: widget.cartItem.subtotal.toStringAsFixed(2));
+  }
+
+  @override
+  void didUpdateWidget(covariant _CartItemTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cartItem != widget.cartItem) {
+      _quantityController.text = widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0);
+      _priceController.text = widget.cartItem.unitPrice.toStringAsFixed(2);
+      _subtotalController.text = widget.cartItem.subtotal.toStringAsFixed(2);
+      setState(() {
+        _isEditingQuantity = false;
+        _isEditingPrice = false;
+        _isEditingSubtotal = false;
+      });
+    }
   }
 
   @override
   void dispose() {
     _quantityController.dispose();
     _priceController.dispose();
+    _subtotalController.dispose();
     super.dispose();
   }
 
@@ -3279,14 +2966,57 @@ class _CartItemTileState extends State<_CartItemTile> {
                     ],
                   ),
                 ),
-                // Subtotal
-                Text(
-                  formatter.format(widget.cartItem.subtotal),
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    color: Colors.green,
-                  ),
+                // Subtotal (editable: change total → auto-updates "each" price, not below purchase price)
+                InkWell(
+                  onTap: () {
+                    setState(() {
+                      _isEditingSubtotal = true;
+                    });
+                    _subtotalController.selection = TextSelection(
+                      baseOffset: 0,
+                      extentOffset: _subtotalController.text.length,
+                    );
+                  },
+                  child: _isEditingSubtotal
+                      ? SizedBox(
+                          width: 90,
+                          child: TextField(
+                            controller: _subtotalController,
+                            keyboardType: TextInputType.numberWithOptions(decimal: true),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                            ],
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                              color: Colors.green,
+                            ),
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.zero,
+                              isDense: true,
+                              hintText: '0.00',
+                            ),
+                            onSubmitted: (value) {
+                              _updateSubtotal(value);
+                            },
+                            onEditingComplete: () {
+                              _updateSubtotal(_subtotalController.text);
+                            },
+                            onTapOutside: (_) {
+                              _updateSubtotal(_subtotalController.text);
+                            },
+                          ),
+                        )
+                      : Text(
+                          formatter.format(widget.cartItem.subtotal),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                            color: Colors.green,
+                          ),
+                        ),
                 ),
               ],
             ),
@@ -3294,6 +3024,52 @@ class _CartItemTileState extends State<_CartItemTile> {
         ),
       ),
     );
+  }
+
+  void _updateSubtotal(String value) {
+    setState(() {
+      _isEditingSubtotal = false;
+    });
+
+    final total = double.tryParse(value);
+    if (total == null || total < 0) {
+      _subtotalController.text = widget.cartItem.subtotal.toStringAsFixed(2);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid total amount'),
+          duration: Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final quantity = widget.cartItem.quantity;
+    if (quantity <= 0) {
+      _subtotalController.text = widget.cartItem.subtotal.toStringAsFixed(2);
+      return;
+    }
+
+    // New unit price = total / quantity; cannot be less than purchase price
+    double newUnitPrice = total / quantity;
+    final purchasePrice = widget.cartItem.product.purchasePrice;
+    if (newUnitPrice < purchasePrice) {
+      newUnitPrice = purchasePrice;
+      _subtotalController.text = (purchasePrice * quantity).toStringAsFixed(2);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)}). Unit price set to Rs. ${newUnitPrice.toStringAsFixed(2)}.',
+          ),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+
+    context.read<CartProvider>().updatePrice(widget.cartItem.product.id, newUnitPrice);
+    _priceController.text = newUnitPrice.toStringAsFixed(2);
   }
 
   void _updateQuantity(String value) {
@@ -3332,6 +3108,7 @@ class _CartItemTileState extends State<_CartItemTile> {
       context.read<CartProvider>().removeItem(widget.cartItem.product.id);
     } else {
       context.read<CartProvider>().updateQuantity(widget.cartItem.product.id, quantity);
+      _subtotalController.text = (widget.cartItem.unitPrice * quantity).toStringAsFixed(2);
     }
   }
 
@@ -3372,7 +3149,8 @@ class _CartItemTileState extends State<_CartItemTile> {
 
     // Update the cart item with new price (only affects this cart session)
     context.read<CartProvider>().updatePrice(widget.cartItem.product.id, finalPrice);
-    
+    _subtotalController.text = (finalPrice * widget.cartItem.quantity).toStringAsFixed(2);
+
     if (price >= purchasePrice) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

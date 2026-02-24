@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:uuid/uuid.dart';
 import '../models/buyer_payment.dart';
 
 class BuyerPaymentService {
@@ -106,5 +107,71 @@ class BuyerPaymentService {
         .collection(_collection)
         .doc(payment.id)
         .update(payment.toMap());
+  }
+
+  /// Get all payments (for migration)
+  Future<List<BuyerPayment>> getAllPayments() async {
+    final snapshot = await _firestore.collection(_collection).get();
+    return snapshot.docs
+        .map((doc) => BuyerPayment.fromMap(doc.data()))
+        .toList();
+  }
+
+  /// Migrate old payments without batchId: group by same buyer + paymentDate + paymentType + createdAt within 5 seconds
+  /// Returns number of payment groups updated
+  Future<int> migrateOldPaymentsToAddBatchId({
+    required Map<String, String> billIdToBuyerId,
+  }) async {
+    final allPayments = await getAllPayments();
+    final paymentsWithoutBatchId = allPayments
+        .where((p) => p.batchId == null || p.batchId!.isEmpty)
+        .toList();
+
+    if (paymentsWithoutBatchId.isEmpty) return 0;
+
+    // Sort by createdAt
+    paymentsWithoutBatchId.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+    int groupsUpdated = 0;
+    final processed = <String>{};
+
+    for (var i = 0; i < paymentsWithoutBatchId.length; i++) {
+      if (processed.contains(paymentsWithoutBatchId[i].id)) continue;
+
+      final p = paymentsWithoutBatchId[i];
+      final buyerId = billIdToBuyerId[p.billId] ?? '';
+      final paymentDateKey = DateTime(p.paymentDate.year, p.paymentDate.month, p.paymentDate.day).toIso8601String();
+
+      final group = <BuyerPayment>[p];
+      processed.add(p.id);
+
+      for (var j = i + 1; j < paymentsWithoutBatchId.length; j++) {
+        if (processed.contains(paymentsWithoutBatchId[j].id)) continue;
+
+        final q = paymentsWithoutBatchId[j];
+        final qBuyerId = billIdToBuyerId[q.billId] ?? '';
+        final qPaymentDateKey = DateTime(q.paymentDate.year, q.paymentDate.month, q.paymentDate.day).toIso8601String();
+
+        final createdAtDiff = q.createdAt.difference(p.createdAt).inSeconds;
+        if (buyerId == qBuyerId &&
+            paymentDateKey == qPaymentDateKey &&
+            p.paymentType == q.paymentType &&
+            createdAtDiff >= 0 &&
+            createdAtDiff <= 5) {
+          group.add(q);
+          processed.add(q.id);
+        }
+      }
+
+      if (group.length >= 2) {
+        final batchId = const Uuid().v4();
+        for (var payment in group) {
+          await _firestore.collection(_collection).doc(payment.id).update({'batchId': batchId});
+        }
+        groupsUpdated++;
+      }
+    }
+
+    return groupsUpdated;
   }
 }

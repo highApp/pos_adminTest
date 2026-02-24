@@ -7,6 +7,14 @@ class BuyerBillItem {
   final double expense;
   final double subtotal;
   final DateTime? date;
+  /// Free quantity added to total (does not affect price)
+  final double bonusQty;
+  /// Pack size (qty per pack) - for edit restore
+  final double packSize;
+  /// Packing type (Box, Carton, etc.) - for edit restore
+  final String? packingType;
+  /// Category for new product creation when bill is saved
+  final String? category;
 
   BuyerBillItem({
     required this.id,
@@ -17,6 +25,10 @@ class BuyerBillItem {
     required this.expense,
     required this.subtotal,
     this.date,
+    this.bonusQty = 0,
+    this.packSize = 1,
+    this.packingType,
+    this.category,
   });
 
   Map<String, dynamic> toMap() {
@@ -29,6 +41,10 @@ class BuyerBillItem {
       'expense': expense,
       'subtotal': subtotal,
       'date': date?.toIso8601String(),
+      'bonusQty': bonusQty,
+      'packSize': packSize,
+      'packingType': packingType,
+      'category': category,
     };
   }
 
@@ -42,6 +58,10 @@ class BuyerBillItem {
       expense: (map['expense'] ?? 0).toDouble(),
       subtotal: (map['subtotal'] ?? 0).toDouble(),
       date: map['date'] != null ? DateTime.parse(map['date']) : null,
+      bonusQty: (map['bonusQty'] ?? 0).toDouble(),
+      packSize: (map['packSize'] ?? 1).toDouble(),
+      packingType: map['packingType'] as String?,
+      category: map['category'] as String?,
     );
   }
 }

@@ -27,6 +27,7 @@ class CreateEditBuyerBillScreen extends StatefulWidget {
 
 class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
   final _billService = BuyerBillService();
+  final _productService = ProductService();
   final _formKey = GlobalKey<FormState>();
   final List<BuyerBillItem> _items = [];
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
@@ -36,6 +37,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
   double _amountPaid = 0.0;
   bool _isLoading = false;
   late TextEditingController _billNumberController;
+  late TextEditingController _finalPriceWithoutExpenseController;
 
   @override
   void initState() {
@@ -48,17 +50,30 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
       _billNumberController = TextEditingController(
         text: widget.bill!.billNumber ?? '',
       );
+      _finalPriceWithoutExpenseController = TextEditingController(
+        text: widget.bill!.finalPrice.toStringAsFixed(2),
+      );
     } else {
       // Auto-generate bill number for new bills
       _billNumberController = TextEditingController(
         text: _generateBillNumber(),
       );
+      _finalPriceWithoutExpenseController = TextEditingController(text: '');
+    }
+  }
+
+  void _syncFinalPriceWithoutExpenseFromTotal() {
+    if (_items.isEmpty) {
+      _finalPriceWithoutExpenseController.text = '';
+    } else {
+      _finalPriceWithoutExpenseController.text = _total.toStringAsFixed(2);
     }
   }
 
   @override
   void dispose() {
     _billNumberController.dispose();
+    _finalPriceWithoutExpenseController.dispose();
     super.dispose();
   }
 
@@ -103,6 +118,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
         onAdd: (item) {
           setState(() {
             _items.add(item);
+            _syncFinalPriceWithoutExpenseFromTotal();
           });
         },
       ),
@@ -117,6 +133,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
         onAdd: (item) {
           setState(() {
             _items[index] = item;
+            _syncFinalPriceWithoutExpenseFromTotal();
           });
         },
       ),
@@ -126,7 +143,118 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
   void _removeItem(int index) {
     setState(() {
       _items.removeAt(index);
+      _syncFinalPriceWithoutExpenseFromTotal();
     });
+  }
+
+  /// Updates product stock when bill is created/updated. For buyer bills, stock INCREASES.
+  Future<void> _updateProductStockForBill() async {
+    final oldItems = widget.bill?.items ?? [];
+
+    // Reverse old items' stock contribution (when editing)
+    for (final item in oldItems) {
+      await _reverseItemStock(item);
+    }
+
+    // Add new items' stock contribution
+    for (final item in _items) {
+      await _addItemStock(item);
+    }
+  }
+
+  Future<void> _reverseItemStock(BuyerBillItem item) async {
+    final name = item.itemName.trim();
+    if (name.isEmpty) return;
+
+    final oldQuantity = item.quantity;
+    final oldPrice = item.price;
+    final oldExpense = item.expense;
+    final oldPackSize = item.packSize;
+    final oldBonusQty = item.bonusQty;
+    final oldHadPacking = (item.packingType != null && item.packingType!.trim().isNotEmpty) || (oldPackSize > 1);
+    final oldTotalUnits = (oldHadPacking && oldPackSize > 0) ? (oldQuantity * oldPackSize) + oldBonusQty : oldQuantity + oldBonusQty;
+    final oldTotalValue = (oldPrice * oldQuantity) + oldExpense;
+
+    Product? product;
+    try {
+      final products = await _productService.searchProducts(name);
+      for (final p in products) {
+        if (p.name.toLowerCase() == name.toLowerCase()) {
+          product = p;
+          break;
+        }
+      }
+    } catch (_) {
+      return;
+    }
+    if (product == null) return;
+
+    final stockBefore = (product.stock - oldTotalUnits).clamp(0.0, double.infinity);
+    final totalValueBefore = (product.stock * product.purchasePrice) - oldTotalValue;
+    final avgPrice = stockBefore > 0 ? totalValueBefore / stockBefore : product.purchasePrice;
+
+    await _productService.updateProduct(product.copyWith(
+      stock: stockBefore,
+      purchasePrice: avgPrice,
+      updatedAt: DateTime.now(),
+    ));
+  }
+
+  Future<void> _addItemStock(BuyerBillItem item) async {
+    final name = item.itemName.trim();
+    if (name.isEmpty) return;
+
+    final quantity = item.quantity;
+    final price = item.price;
+    final expense = item.expense;
+    final packSize = item.packSize;
+    final bonusQty = item.bonusQty;
+    final hasPacking = (item.packingType != null && item.packingType!.trim().isNotEmpty) || packSize > 1;
+    final baseUnits = (hasPacking && packSize > 0) ? (quantity * packSize) : quantity;
+    final totalUnits = baseUnits + bonusQty;
+    final totalValue = (price * quantity) + expense;
+    final unitCost = baseUnits > 0 ? totalValue / baseUnits : (hasPacking && packSize > 0 ? price / packSize : price);
+    final category = item.category;
+
+    Product? product;
+    try {
+      final products = await _productService.searchProducts(name);
+      for (final p in products) {
+        if (p.name.toLowerCase() == name.toLowerCase()) {
+          product = p;
+          break;
+        }
+      }
+    } catch (_) {
+      product = null;
+    }
+
+    if (product != null) {
+      final oldStock = product.stock;
+      final oldPrice = product.purchasePrice;
+      final oldValue = oldStock * oldPrice;
+      final newStock = oldStock + totalUnits;
+      final newValue = oldValue + (totalUnits * unitCost);
+      final avgPrice = newStock > 0 ? newValue / newStock : unitCost;
+      await _productService.updateProduct(product.copyWith(
+        stock: newStock,
+        purchasePrice: avgPrice,
+        updatedAt: DateTime.now(),
+      ));
+    } else if (category != null && category.isNotEmpty) {
+      final newProduct = Product(
+        id: const Uuid().v4(),
+        name: name,
+        purchasePrice: unitCost,
+        salePrice: unitCost * 1.1,
+        stock: totalUnits,
+        unit: 'pcs',
+        category: category,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+      await _productService.addProduct(newProduct);
+    }
   }
 
   Future<void> _saveBill() async {
@@ -164,6 +292,11 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
     });
 
     try {
+      // Update product stock when bill is created/updated (not when adding items)
+      await _updateProductStockForBill();
+
+      final priceWithoutExpense = double.tryParse(
+            _finalPriceWithoutExpenseController.text.trim()) ?? _total;
       final bill = BuyerBill(
         id: widget.bill?.id ?? const Uuid().v4(),
         buyerId: widget.buyer.id,
@@ -171,7 +304,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
         items: _items,
         total: _total,
         totalExpense: _totalExpense,
-        finalPrice: _finalPrice,
+        finalPrice: priceWithoutExpense, // Manual or calculated (used for balance)
         amountPaid: widget.bill?.amountPaid ?? 0.0, // Keep existing or default to 0
         change: widget.bill?.change ?? 0.0, // Keep existing or default to 0
         createdAt: widget.bill?.createdAt ?? DateTime.now(),
@@ -314,6 +447,9 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
                       itemCount: _items.length,
                       itemBuilder: (context, index) {
                         final item = _items[index];
+                        final packSize = item.packSize > 0 ? item.packSize : 1.0;
+                        final totalQty = (item.quantity * packSize) + item.bonusQty;
+                        final unitPrice = item.packSize > 1 ? (item.price / item.packSize) : item.price;
                         return Card(
                           margin: const EdgeInsets.only(bottom: 8),
                           child: ListTile(
@@ -338,6 +474,10 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
                               children: [
                                 Text(
                                   '${item.quantity} ${item.unit} × ${_currencyFormatter.format(item.price)}',
+                                ),
+                                Text(
+                                  'Total Qty: ${totalQty % 1 == 0 ? totalQty.toInt() : totalQty.toStringAsFixed(2)}  •  Unit Price: ${_currencyFormatter.format(unitPrice)}',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey[700]),
                                 ),
                                 Text(
                                   'Total: ${_currencyFormatter.format(item.subtotal - item.expense)}',
@@ -433,12 +573,55 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      const Text('Final Price (without expense):'),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 140,
+                            child: TextField(
+                              controller: _finalPriceWithoutExpenseController,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
+                              ],
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: (_) => setState(() {}),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.calculate),
+                            tooltip: 'Calculator',
+                            onPressed: () async {
+                              final v = await _CalculatorDialog.show(
+                                context,
+                                initialValue: _finalPriceWithoutExpenseController.text,
+                              );
+                              if (v != null && mounted) {
+                                _finalPriceWithoutExpenseController.text = v.toStringAsFixed(2);
+                                setState(() {});
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                   const Divider(),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
-                        'Final Price:',
+                        'Final Price (with expense):',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -506,6 +689,206 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
   }
 }
 
+/// Simple calculator dialog for plus, minus, multiply, divide. Returns result when "Use" is pressed.
+class _CalculatorDialog extends StatefulWidget {
+  final String initialValue;
+
+  const _CalculatorDialog({this.initialValue = '0'});
+
+  static Future<double?> show(BuildContext context, {String initialValue = ''}) {
+    return showDialog<double>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _CalculatorDialog(
+        initialValue: initialValue.isEmpty ? '0' : initialValue,
+      ),
+    );
+  }
+
+  @override
+  State<_CalculatorDialog> createState() => _CalculatorDialogState();
+}
+
+class _CalculatorDialogState extends State<_CalculatorDialog> {
+  String _display = '0';
+  double? _pendingValue;
+  String? _pendingOp;
+
+  @override
+  void initState() {
+    super.initState();
+    _display = widget.initialValue;
+  }
+
+  void _onDigit(String d) {
+    setState(() {
+      if (d == '.') {
+        if (_display.contains('.')) return;
+        if (_display == '0') _display = '0.';
+        else _display += '.';
+        return;
+      }
+      if (d == '00') {
+        if (_display == '0') return;
+        _display += '00';
+        return;
+      }
+      if (_display == '0') _display = d;
+      else _display += d;
+    });
+  }
+
+  void _onOp(String op) {
+    setState(() {
+      final current = double.tryParse(_display) ?? 0.0;
+      if (_pendingOp != null && _pendingValue != null) {
+        final result = _apply(_pendingValue!, _pendingOp!, current);
+        _display = _formatNum(result);
+        _pendingValue = result;
+      } else {
+        _pendingValue = current;
+      }
+      _pendingOp = op;
+      _display = '0';
+    });
+  }
+
+  double _apply(double a, String op, double b) {
+    switch (op) {
+      case '+': return a + b;
+      case '-': return a - b;
+      case '×': return a * b;
+      case '÷': return b == 0 ? a : a / b;
+      case '%': return a * (b / 100);
+      default: return b;
+    }
+  }
+
+  String _formatNum(double n) {
+    if (n == n.roundToDouble()) return n.toInt().toString();
+    return n.toStringAsFixed(2).replaceAll(RegExp(r'\.?0+$'), '');
+  }
+
+  void _onEquals() {
+    if (_pendingOp == null || _pendingValue == null) return;
+    setState(() {
+      final current = double.tryParse(_display) ?? 0.0;
+      final result = _apply(_pendingValue!, _pendingOp!, current);
+      _display = _formatNum(result);
+      _pendingValue = null;
+      _pendingOp = null;
+    });
+  }
+
+  void _onClear() {
+    setState(() {
+      _display = '0';
+      _pendingValue = null;
+      _pendingOp = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          Icon(Icons.calculate, color: Colors.purple.shade700),
+          const SizedBox(width: 8),
+          const Text('Calculator'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade200,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            alignment: Alignment.centerRight,
+            child: Text(
+              _display,
+              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Table(
+            children: [
+              TableRow(children: [
+                _calcBtn('C', Colors.pink, _onClear),
+                _calcBtn('%', Colors.blue.shade300, () => _onOp('%')),
+                _calcBtn('÷', Colors.orange, () => _onOp('÷')),
+                _calcBtn('×', Colors.orange, () => _onOp('×')),
+              ]),
+              TableRow(children: [
+                _calcBtn('7', Colors.grey.shade300, () => _onDigit('7')),
+                _calcBtn('8', Colors.grey.shade300, () => _onDigit('8')),
+                _calcBtn('9', Colors.grey.shade300, () => _onDigit('9')),
+                _calcBtn('-', Colors.orange, () => _onOp('-')),
+              ]),
+              TableRow(children: [
+                _calcBtn('4', Colors.grey.shade300, () => _onDigit('4')),
+                _calcBtn('5', Colors.grey.shade300, () => _onDigit('5')),
+                _calcBtn('6', Colors.grey.shade300, () => _onDigit('6')),
+                _calcBtn('+', Colors.orange, () => _onOp('+')),
+              ]),
+              TableRow(children: [
+                _calcBtn('1', Colors.grey.shade300, () => _onDigit('1')),
+                _calcBtn('2', Colors.grey.shade300, () => _onDigit('2')),
+                _calcBtn('3', Colors.grey.shade300, () => _onDigit('3')),
+                _calcBtn('=', Colors.green, _onEquals),
+              ]),
+              TableRow(children: [
+                _calcBtn('0', Colors.grey.shade300, () => _onDigit('0')),
+                _calcBtn('00', Colors.grey.shade300, () => _onDigit('00')),
+                _calcBtn('.', Colors.grey.shade300, () => _onDigit('.')),
+                _calcBtn('Use', Colors.green, () {
+                  final v = double.tryParse(_display);
+                  Navigator.of(context).pop(v ?? 0.0);
+                }),
+              ]),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+
+  Widget _calcBtn(String label, Color color, VoidCallback onPressed) {
+    return Padding(
+      padding: const EdgeInsets.all(4),
+      child: Material(
+        color: color,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: label.length > 2 ? 14 : 20,
+                fontWeight: FontWeight.bold,
+                color: color == Colors.grey.shade300 ? Colors.black87 : Colors.white,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _AddItemDialog extends StatefulWidget {
   final BuyerBillItem? item;
   final Function(BuyerBillItem) onAdd;
@@ -533,6 +916,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   late TextEditingController _packSizeController;
   late TextEditingController _singleUnitPriceController;
   late TextEditingController _totalQtyController;
+  late TextEditingController _bonusQtyController;
+  late TextEditingController _taxPercentController;
   bool _isSyncingQtyPackSize = false;
   DateTime? _selectedDate;
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
@@ -566,16 +951,34 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _expenseController = TextEditingController(
         text: widget.item?.expense.toString() ?? '0');
     _productSearchController = TextEditingController();
-    _packSizeController = TextEditingController(text: '1');
+    final initPackSize = widget.item?.packSize ?? 1.0;
+    _packSizeController = TextEditingController(
+        text: initPackSize % 1 == 0
+            ? initPackSize.toInt().toString()
+            : initPackSize.toStringAsFixed(2));
     _singleUnitPriceController = TextEditingController();
     _totalQtyController = TextEditingController();
+    _bonusQtyController = TextEditingController(
+        text: ((widget.item?.bonusQty ?? 0) % 1 == 0
+            ? (widget.item?.bonusQty ?? 0).toInt().toString()
+            : (widget.item?.bonusQty ?? 0).toStringAsFixed(2)));
+    _taxPercentController = TextEditingController(text: '0');
     _selectedDate = widget.item?.date ?? DateTime.now();
-    _selectedPackingType = null; // Default to no packing type selected
+    // Restore packing type when editing (match unit to packing types if applicable)
+    _selectedPackingType = widget.item?.packingType;
+    if (_selectedPackingType == null && widget.item?.unit != null) {
+      final unit = widget.item!.unit.trim();
+      if (_packingTypes.any((t) => t.toLowerCase() == unit.toLowerCase())) {
+        _selectedPackingType = _packingTypes.firstWhere(
+            (t) => t.toLowerCase() == unit.toLowerCase());
+      }
+    }
     
-    // Initialize total price controller (buyer total = Price × Quantity only; expense is your cost)
+    // Initialize total price controller (buyer total = (Price × Quantity) × (1 + Tax%); expense is your cost)
     final initialPrice = double.tryParse(_priceController.text) ?? 0.0;
     final initialQuantity = double.tryParse(_quantityController.text) ?? 0.0;
-    final initialTotal = initialPrice * initialQuantity;
+    final initialTaxMult = 1.0 + ((double.tryParse(_taxPercentController.text) ?? 0.0) / 100.0);
+    final initialTotal = (initialPrice * initialQuantity) * initialTaxMult;
     _totalPriceController = TextEditingController(
         text: initialTotal > 0 ? initialTotal.toStringAsFixed(2) : '');
     
@@ -597,10 +1000,12 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _packSizeController.addListener(_updateSingleUnitPrice);
     _quantityController.addListener(_updateSingleUnitPrice);
     _expenseController.addListener(_updateSingleUnitPrice);
+    _taxPercentController.addListener(_onTaxPercentChanged);
 
-    // Add listeners to update total qty (Qty × Pack Size)
+    // Add listeners to update total qty (Qty × Pack Size + Bonus)
     _quantityController.addListener(_updateTotalQty);
     _packSizeController.addListener(_updateTotalQty);
+    _bonusQtyController.addListener(_updateTotalQty);
     _totalQtyController.addListener(_onTotalQtyChanged);
     
     // Load product stock if editing existing item
@@ -629,6 +1034,10 @@ class _AddItemDialogState extends State<_AddItemDialog> {
           _selectedProduct = matchingProduct;
           _currentProductStock = matchingProduct.stock;
           _productSearchController.text = matchingProduct.name;
+          // When editing, restore category from product so dropdown shows correct value
+          if (widget.item != null && matchingProduct.category.isNotEmpty) {
+            _selectedCategory = matchingProduct.category;
+          }
         });
       }
     } catch (e) {
@@ -722,13 +1131,25 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     }
   }
   
+  double _getTaxMultiplier() {
+    final taxPercent = double.tryParse(_taxPercentController.text) ?? 0.0;
+    return 1.0 + (taxPercent / 100.0);
+  }
+
+  void _onTaxPercentChanged() {
+    _onPriceOrQuantityChanged();
+    _updateSingleUnitPrice();
+  }
+
   void _onPriceOrQuantityChanged() {
     // Only auto-calculate total if user hasn't manually edited it recently
-    // Buyer bill: Total Price = Price × Quantity only (expense is your cost, not added to buyer total)
+    // Buyer bill: Total Price = (Price × Quantity) × (1 + Tax%) ; expense is your cost, not added to buyer total
     if (!_isManualTotalEdit) {
       final price = double.tryParse(_priceController.text) ?? 0.0;
       final quantity = double.tryParse(_quantityController.text) ?? 0.0;
-      final calculatedTotal = price * quantity;
+      final baseTotal = price * quantity;
+      final taxMult = _getTaxMultiplier();
+      final calculatedTotal = baseTotal * taxMult;
       
       // Temporarily remove listeners to avoid recursive updates
       _totalPriceController.removeListener(_onTotalPriceChanged);
@@ -741,11 +1162,13 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   }
 
   void _onExpenseChanged() {
-    // Total Price for buyer = Price × Quantity only; expense does not change buyer total
+    // Total Price for buyer = (Price × Quantity) × (1 + Tax%); expense does not change buyer total
     if (!_isManualTotalEdit && mounted) {
       final price = double.tryParse(_priceController.text) ?? 0.0;
       final quantity = double.tryParse(_quantityController.text) ?? 0.0;
-      final calculatedTotal = price * quantity;
+      final baseTotal = price * quantity;
+      final taxMult = _getTaxMultiplier();
+      final calculatedTotal = baseTotal * taxMult;
       
       // Temporarily remove listener to avoid recursive updates
       _totalPriceController.removeListener(_onTotalPriceChanged);
@@ -758,14 +1181,16 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   }
   
   void _onTotalPriceChanged() {
-    // When total price is manually changed, recalculate the price field
-    // Total Price is buyer total (Price × Quantity only)
+    // When total price is manually changed, recalculate the price field (base price before tax)
+    // Total Price shown = (Price × Quantity) × (1 + Tax%), so base price = totalPrice / (quantity * taxMult)
     final totalPrice = double.tryParse(_totalPriceController.text) ?? 0.0;
     final quantity = double.tryParse(_quantityController.text) ?? 1.0;
+    final taxMult = _getTaxMultiplier();
     
-    if (totalPrice > 0 && quantity > 0) {
+    if (totalPrice > 0 && quantity > 0 && taxMult > 0) {
       _isManualTotalEdit = true;
-      final newPrice = totalPrice / quantity;
+      final baseTotal = totalPrice / taxMult;
+      final newPrice = baseTotal / quantity;
       
       // Temporarily remove listener to avoid recursive updates
       _priceController.removeListener(_onPriceOrQuantityChanged);
@@ -787,16 +1212,19 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     final qty = double.tryParse(_quantityController.text) ?? 0.0;
     final expense = double.tryParse(_expenseController.text) ?? 0.0;
     final hasPacking = (_selectedPackingType != null && _selectedPackingType!.trim().isNotEmpty);
+    final taxMult = _getTaxMultiplier();
     
-    // Single unit cost should include expense in real-time.
-    // If packing is selected: total units = qty * packSize, base cost = price * qty
-    // Else: total units = qty, base cost = price * qty
+    // Buyer total (tax-inclusive) = (price * qty) * taxMult. Expense is our cost, not added to buyer.
+    // Single unit price (buyer-facing, tax-inclusive) = buyer total / total units.
     final totalUnits = (hasPacking && packSize > 0) ? (qty * packSize) : qty;
-    final totalCost = (price * qty) + expense;
+    final buyerTotal = (price * qty) * taxMult;
+    final totalCostForUnit = buyerTotal + expense; // cost includes expense for our records
 
-    if (totalUnits > 0 && totalCost > 0) {
-      final singleUnitPrice = totalCost / totalUnits;
+    if (totalUnits > 0 && totalCostForUnit > 0) {
+      final singleUnitPrice = totalCostForUnit / totalUnits;
       _singleUnitPriceController.text = singleUnitPrice.toStringAsFixed(2);
+    } else if (totalUnits > 0 && buyerTotal > 0) {
+      _singleUnitPriceController.text = (buyerTotal / totalUnits).toStringAsFixed(2);
     } else {
       _singleUnitPriceController.text = '';
     }
@@ -810,17 +1238,16 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     if (_isSyncingQtyPackSize) return;
     final qty = double.tryParse(_quantityController.text) ?? 0.0;
     final packSize = double.tryParse(_packSizeController.text) ?? 0.0;
+    final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
 
-    if (qty > 0 && packSize > 0) {
-      final totalQty = qty * packSize;
-      _isSyncingQtyPackSize = true;
-      _totalQtyController.text = totalQty.toStringAsFixed(totalQty % 1 == 0 ? 0 : 2);
-      _isSyncingQtyPackSize = false;
-    } else {
-      _isSyncingQtyPackSize = true;
-      _totalQtyController.text = '';
-      _isSyncingQtyPackSize = false;
-    }
+    final baseQty = (qty > 0 && packSize > 0) ? qty * packSize : 0.0;
+    final totalQty = baseQty + bonusQty;
+
+    _isSyncingQtyPackSize = true;
+    _totalQtyController.text = totalQty > 0
+        ? totalQty.toStringAsFixed(totalQty % 1 == 0 ? 0 : 2)
+        : '';
+    _isSyncingQtyPackSize = false;
 
     if (mounted) {
       setState(() {});
@@ -832,15 +1259,29 @@ class _AddItemDialogState extends State<_AddItemDialog> {
 
     final totalQty = double.tryParse(_totalQtyController.text) ?? 0.0;
     final qty = double.tryParse(_quantityController.text) ?? 0.0;
+    final packSize = double.tryParse(_packSizeController.text) ?? 0.0;
+    final baseQty = (qty > 0 && packSize > 0) ? qty * packSize : 0.0;
 
+    // If bonus is used, treat total edit as changing bonus (not pack size)
+    final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
+    if (bonusQty != 0 || totalQty > baseQty) {
+      final newBonus = (totalQty - baseQty).clamp(0.0, double.infinity);
+      _bonusQtyController.removeListener(_updateTotalQty);
+      _bonusQtyController.text = newBonus % 1 == 0
+          ? newBonus.toInt().toString()
+          : newBonus.toStringAsFixed(2);
+      _bonusQtyController.addListener(_updateTotalQty);
+      if (mounted) setState(() {});
+      return;
+    }
+
+    // Otherwise back-calc pack size from total
     if (totalQty > 0 && qty > 0) {
       final newPackSize = totalQty / qty;
       _isSyncingQtyPackSize = true;
       _packSizeController.text =
           newPackSize.toStringAsFixed(newPackSize % 1 == 0 ? 0 : 2);
       _isSyncingQtyPackSize = false;
-
-      // pack size changed -> update derived fields
       _updateSingleUnitPrice();
     }
 
@@ -862,7 +1303,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _expenseController.removeListener(_updateSingleUnitPrice);
     _quantityController.removeListener(_updateTotalQty);
     _packSizeController.removeListener(_updateTotalQty);
+    _bonusQtyController.removeListener(_updateTotalQty);
     _totalQtyController.removeListener(_onTotalQtyChanged);
+    _taxPercentController.removeListener(_onTaxPercentChanged);
     _nameController.dispose();
     _priceController.dispose();
     _quantityController.dispose();
@@ -873,21 +1316,28 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _packSizeController.dispose();
     _singleUnitPriceController.dispose();
     _totalQtyController.dispose();
+    _bonusQtyController.dispose();
+    _taxPercentController.dispose();
     super.dispose();
   }
 
   Future<void> _saveItem() async {
     if (_formKey.currentState!.validate()) {
       final name = _nameController.text.trim();
-      final price = double.parse(_priceController.text); // UI price (pack price if packing selected; otherwise unit price)
+      final basePrice = double.parse(_priceController.text); // base price before tax
+      final taxMult = _getTaxMultiplier();
+      final price = basePrice * taxMult; // tax-inclusive price for line total (price × qty)
       final quantity = double.parse(_quantityController.text); // UI qty (packs if packing selected; otherwise units)
       final packSize = double.tryParse(_packSizeController.text) ?? 1.0;
+      final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
       final hasPacking = (_selectedPackingType != null && _selectedPackingType!.trim().isNotEmpty);
 
       // Inventory logic:
-      // - totalUnits = (packs * packSize) when packing selected, else quantity
+      // - base units = (packs * packSize) when packing selected, else quantity
+      // - totalUnits = base units + bonus (bonus adds to stock but does not affect price)
       // - unitPurchasePrice = (packPrice / packSize) when packing selected, else price
-      final totalUnitsForStock = (hasPacking && packSize > 0) ? (quantity * packSize) : quantity;
+      final baseUnitsForStock = (hasPacking && packSize > 0) ? (quantity * packSize) : quantity;
+      final totalUnitsForStock = baseUnitsForStock + bonusQty;
       final unitPurchasePrice = (hasPacking && packSize > 0) ? (price / packSize) : price;
 
       // Prefer showing packing type as unit label in the bill when selected
@@ -896,163 +1346,13 @@ class _AddItemDialogState extends State<_AddItemDialog> {
           : (hasPacking ? _selectedPackingType!.trim() : 'pcs');
       final expense = double.tryParse(_expenseController.text) ?? 0.0;
       
-      // Total Price in dialog = Price × Quantity only (buyer total; expense not included)
-      final baseTotalPrice = double.parse(_totalPriceController.text); // buyer amount
+      // Total Price in dialog = (Price × Quantity) × (1 + Tax%); already tax-inclusive
+      final baseTotalPrice = double.parse(_totalPriceController.text); // buyer amount (tax-inclusive)
       final subtotal = baseTotalPrice + expense; // store full cost (buyer total + expense) for internal use
 
-      // Distribute expense across total units for inventory costing
-      final newTotalValueForStock = (price * quantity) + expense;
-      final unitCostWithExpense = totalUnitsForStock > 0
-          ? (newTotalValueForStock / totalUnitsForStock)
-          : unitPurchasePrice;
-
-      // Update or create product stock and purchase price
-      // For buyer bills, we INCREASE stock (buying from buyer adds to inventory)
-      // Also calculate weighted average purchase price
-      Product? productToUpdate;
-      
-      // Check if product exists (by name and category if category is selected)
-      if (_selectedProduct != null) {
-        // Product was selected from list - use it
-        productToUpdate = await _productService.getProductById(_selectedProduct!.id);
-      } else if (name.isNotEmpty && _selectedCategory != null) {
-        // Product not found but name and category provided - search for existing product
-        try {
-          final allProducts = await _productService.searchProducts(name);
-          productToUpdate = allProducts.firstWhere(
-            (p) => p.name.toLowerCase() == name.toLowerCase() && 
-                   p.category.toLowerCase() == _selectedCategory!.toLowerCase(),
-          );
-        } catch (e) {
-          // Product doesn't exist - will be created below
-          productToUpdate = null;
-        }
-      }
-      
-      // If product exists, update it; otherwise create new one
-      if (productToUpdate != null) {
-        try {
-          final currentProduct = productToUpdate;
-          
-          // Check if we're editing an existing item
-          if (widget.item != null) {
-            // If editing, we need to adjust stock and recalculate average price
-            final oldQuantityUi = widget.item!.quantity;
-            final oldPriceUi = widget.item!.price;
-            final oldExpense = widget.item!.expense;
-
-            // Treat previous item using current packing settings (best-effort; old pack size isn't stored)
-            final oldTotalUnitsForStock = (hasPacking && packSize > 0) ? (oldQuantityUi * packSize) : oldQuantityUi;
-            final oldTotalValueForStock = (oldPriceUi * oldQuantityUi) + oldExpense;
-
-            final quantityDifference = totalUnitsForStock - oldTotalUnitsForStock;
-            
-            // Update if quantity, price, or expense changed
-            if (quantityDifference != 0 || oldPriceUi != price || oldExpense != expense) {
-              // Reverse the old transaction to get the state before it
-              // Current stock includes the old quantity, so subtract it
-              final stockBeforeOldTransaction = currentProduct.stock - oldTotalUnitsForStock;
-              
-              // Reverse the average calculation to get the total value before old transaction
-              // Note: Old expense may not have been included in purchase price (for backward compatibility)
-              // So we reverse: oldQuantity * oldPrice (without old expense)
-              // If old expense was included, this will slightly over-correct, but that's acceptable
-              final totalValueBeforeOldTransaction =
-                  (currentProduct.stock * currentProduct.purchasePrice) - oldTotalValueForStock;
-              
-              // Now add the new transaction (including expense)
-              final newTotalValue = totalValueBeforeOldTransaction + newTotalValueForStock;
-              final newTotalStock = stockBeforeOldTransaction + totalUnitsForStock;
-              
-              // Calculate weighted average
-              final averagePurchasePrice = newTotalStock > 0 
-                  ? newTotalValue / newTotalStock 
-                  : price;
-              
-              // Update stock and purchase price
-              final updatedProduct = currentProduct.copyWith(
-                stock: newTotalStock,
-                purchasePrice: averagePurchasePrice,
-                updatedAt: DateTime.now(),
-              );
-              
-              await _productService.updateProduct(updatedProduct);
-            }
-          } else {
-            // New item - calculate weighted average purchase price
-            final oldStock = currentProduct.stock;
-            final oldPrice = currentProduct.purchasePrice;
-            final newQuantity = totalUnitsForStock;
-            final newPrice = unitCostWithExpense;
-            
-            // Calculate weighted average: (Old Stock × Old Price + New Quantity × New Price + Expense) / (Old Stock + New Quantity)
-            // Expense is included as part of the total cost of acquiring the items
-            final oldTotalValue = oldStock * oldPrice;
-            final totalValue = oldTotalValue + (newQuantity * newPrice);
-            final totalStock = oldStock + newQuantity;
-            
-            final averagePurchasePrice = totalStock > 0 
-                ? totalValue / totalStock 
-                : newPrice;
-            
-            // Update stock and purchase price
-            final updatedProduct = currentProduct.copyWith(
-              stock: totalStock,
-              purchasePrice: averagePurchasePrice,
-              updatedAt: DateTime.now(),
-            );
-            
-            await _productService.updateProduct(updatedProduct);
-          }
-        } catch (e) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error updating stock: $e'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-          return;
-        }
-      } else if (name.isNotEmpty && _selectedCategory != null) {
-        // Product doesn't exist - create new one
-        try {
-          final newProduct = Product(
-            id: const Uuid().v4(),
-            name: name,
-            purchasePrice: unitCostWithExpense, // save as per-unit purchase price
-            salePrice: unitCostWithExpense * 1.1, // per-unit sale price
-            stock: totalUnitsForStock, // save total qty in stock
-            unit: 'pcs', // stock is always in total units
-            category: _selectedCategory!,
-            createdAt: DateTime.now(),
-            updatedAt: DateTime.now(),
-          );
-          
-          await _productService.addProduct(newProduct);
-          
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('New product "$name" created in $_selectedCategory category'),
-                backgroundColor: Colors.green,
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          }
-        } catch (e) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error creating product: $e'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-          return;
-        }
-      }
+      // Stock update is deferred until bill is created (see _saveBill)
+      // Store category for new product creation at bill save
+      final itemCategory = _selectedCategory ?? _selectedProduct?.category;
 
       final item = BuyerBillItem(
         id: widget.item?.id ?? const Uuid().v4(),
@@ -1063,6 +1363,10 @@ class _AddItemDialogState extends State<_AddItemDialog> {
         expense: expense,
         subtotal: subtotal,
         date: _selectedDate,
+        bonusQty: bonusQty,
+        packSize: packSize,
+        packingType: _selectedPackingType,
+        category: itemCategory,
       );
 
       widget.onAdd(item);
@@ -1517,12 +1821,26 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                     flex: 2,
                     child: TextFormField(
                       controller: _priceController,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Price *',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.currency_rupee),
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.currency_rupee),
                         prefixText: 'Rs. ',
                         helperText: 'Purchase price',
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.calculate),
+                          tooltip: 'Calculator',
+                          onPressed: () async {
+                            final v = await _CalculatorDialog.show(
+                              context,
+                              initialValue: _priceController.text,
+                            );
+                            if (v != null && mounted) {
+                              _priceController.text = v.toStringAsFixed(2);
+                              setState(() {});
+                            }
+                          },
+                        ),
                       ),
                       keyboardType: TextInputType.number,
                       inputFormatters: [
@@ -1585,6 +1903,56 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                 ],
               ),
               const SizedBox(height: 16),
+              // Tax % Field
+              TextFormField(
+                controller: _taxPercentController,
+                decoration: const InputDecoration(
+                  labelText: 'Tax %',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.percent),
+                  helperText: 'e.g. 1 or 0.5 for 1% or 0.5% (applied to unit price and total price)',
+                ),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                ],
+                onChanged: (value) => setState(() {}),
+                validator: (value) {
+                  if (value != null && value.isNotEmpty) {
+                    final v = double.tryParse(value);
+                    if (v == null || v < 0) return 'Invalid tax %';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              // Bonus Qty Field
+              TextFormField(
+                controller: _bonusQtyController,
+                decoration: const InputDecoration(
+                  labelText: 'Bonus Qty',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.add_circle_outline),
+                  helperText: 'Free quantity added to total (does not affect price)',
+                ),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                ],
+                onChanged: (value) => setState(() {}),
+                validator: (value) {
+                  if (value != null && value.isNotEmpty) {
+                    if (double.tryParse(value) == null) {
+                      return 'Invalid';
+                    }
+                    if (double.parse(value) < 0) {
+                      return 'Cannot be negative';
+                    }
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
               // Single Unit Price Field (Read-only, calculated)
               TextFormField(
                 controller: _singleUnitPriceController,
@@ -1596,11 +1964,13 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                   prefixText: 'Rs. ',
                   filled: true,
                   fillColor: Colors.blue.shade50,
-                  helperText: 'Calculated: Price ÷ Pack Size',
+                  helperText: _selectedPackingType != null
+                      ? 'Total Price ÷ (Pack Size × $_selectedPackingType)'
+                      : 'Total Price ÷ (Pack Size × Qty)',
                 ),
               ),
               const SizedBox(height: 16),
-              // Total Qty Field (Read-only, calculated)
+              // Total Qty Field (calculated: base + bonus)
               TextFormField(
                 controller: _totalQtyController,
                 readOnly: false,
@@ -1611,8 +1981,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                   filled: true,
                   fillColor: Colors.green.shade50,
                   helperText: _selectedPackingType != null
-                      ? 'Calculated: $_selectedPackingType × Pack Size'
-                      : 'Calculated: Qty × Pack Size',
+                      ? 'Calculated: ($_selectedPackingType × Pack Size) + Bonus Qty'
+                      : 'Calculated: (Qty × Pack Size) + Bonus Qty',
                 ),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [
@@ -1630,14 +2000,32 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                   prefixText: 'Rs. ',
                   filled: true,
                   fillColor: Colors.purple.shade50,
-                  suffixIcon: _isManualTotalEdit
-                      ? IconButton(
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.calculate_outlined, size: 22),
+                        tooltip: 'Calculator',
+                        onPressed: () async {
+                          final v = await _CalculatorDialog.show(
+                            context,
+                            initialValue: _totalPriceController.text,
+                          );
+                          if (v != null && mounted) {
+                            _totalPriceController.text = v.toStringAsFixed(2);
+                            setState(() {});
+                          }
+                        },
+                      ),
+                      if (_isManualTotalEdit)
+                        IconButton(
                           icon: const Icon(Icons.refresh, size: 20),
                           tooltip: 'Reset to calculated value',
                           onPressed: _resetToCalculated,
                           color: Colors.purple.shade700,
-                        )
-                      : null,
+                        ),
+                    ],
+                  ),
                   helperText: _isManualTotalEdit
                       ? 'Manual override - tap refresh to auto-calculate'
                       : 'Price × Quantity (expense is your cost; not added to buyer total)',

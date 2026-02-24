@@ -421,8 +421,77 @@ class _ProductsScreenState extends State<ProductsScreen> {
                   });
                 }
 
+                final totalInventoryValue = products.fold<double>(
+                    0.0, (sum, p) => sum + p.inventoryValue);
+                final totalSaleStockValue = products.fold<double>(
+                    0.0, (sum, p) => sum + p.saleStockValue);
+
                 return Column(
                   children: [
+                    // Total stock value summary (purchase + sale)
+                    Container(
+                      margin: const EdgeInsets.all(8),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.assessment, color: Colors.blue[700], size: 24),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      'Purchase Value: ',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.grey[700],
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    Text(
+                                      formatter.format(totalInventoryValue),
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue[800],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Text(
+                                      'Sale Value: ',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.grey[700],
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    Text(
+                                      formatter.format(totalSaleStockValue),
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.green[800],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     // Products List
                     Expanded(
                       child: ListView.builder(
@@ -507,32 +576,63 @@ class _ProductsScreenState extends State<ProductsScreen> {
                               
                               const SizedBox(height: 12),
                               
-                              // Stock info
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[100],
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.inventory_2,
-                                      size: 16,
-                                      color: Colors.grey[700],
+                              // Stock info and inventory value (stock × purchase price)
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey[100],
+                                      borderRadius: BorderRadius.circular(8),
                                     ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      'Stock: ${product.stock.toStringAsFixed(product.stock % 1 == 0 ? 0 : 1)} ${product.unit}',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: Colors.grey[700],
-                                        fontWeight: FontWeight.w500,
-                                      ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.inventory_2,
+                                          size: 16,
+                                          color: Colors.grey[700],
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Stock: ${product.stock.toStringAsFixed(product.stock % 1 == 0 ? 0 : 1)} ${product.unit}',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.grey[700],
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue.shade50,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.account_balance_wallet,
+                                          size: 16,
+                                          color: Colors.blue[700],
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Value: ${formatter.format(product.inventoryValue)}',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.blue[700],
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ),
                               
                               if (product.barcode != null) ...[

@@ -28,6 +28,16 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
   final BuyerPaymentService _paymentService = BuyerPaymentService();
   DateTime? _startDate;
   DateTime? _endDate;
+  /// Test-only: discount % input per bill (what user typed). Not applied until they click Apply.
+  final Map<String, String> _testDiscountByBillId = {};
+  /// Test-only: fixed discount amount input per bill (e.g. "2000"). Not applied until Apply.
+  final Map<String, String> _testFixedDiscountByBillId = {};
+  /// Test-only: applied discount % per bill (used for preview after clicking Apply).
+  final Map<String, String> _appliedTestDiscountByBillId = {};
+  /// Test-only: applied fixed discount amount per bill (Rs.). When set, preview uses this instead of %.
+  final Map<String, String> _appliedTestFixedDiscountByBillId = {};
+  /// Keeps which bill expansion tiles are open (so typing discount doesn't collapse them).
+  final Set<String> _expandedBillIds = {};
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
   final DateFormat _dateTimeFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
@@ -586,8 +596,20 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
           itemBuilder: (context, index) {
             final bill = bills[index];
             return Card(
+              key: ValueKey(bill.id),
               margin: const EdgeInsets.only(bottom: 12),
               child: ExpansionTile(
+                key: ValueKey('exp_${bill.id}'),
+                initiallyExpanded: _expandedBillIds.contains(bill.id),
+                onExpansionChanged: (expanded) {
+                  setState(() {
+                    if (expanded) {
+                      _expandedBillIds.add(bill.id);
+                    } else {
+                      _expandedBillIds.remove(bill.id);
+                    }
+                  });
+                },
                 leading: CircleAvatar(
                   backgroundColor: Colors.purple.shade100,
                   child: Icon(
@@ -767,6 +789,115 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                         
                         const Divider(height: 24),
                         
+                        // Test discount % (preview only - not saved)
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade200,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.grey.shade400),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.percent, size: 18, color: Colors.grey.shade700),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Test discount % (preview only)',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.grey.shade800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  SizedBox(
+                                    width: 80,
+                                    child: TextFormField(
+                                      key: ValueKey('discount_${bill.id}'),
+                                      initialValue: _testDiscountByBillId[bill.id],
+                                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                      inputFormatters: [
+                                        FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
+                                      ],
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        hintText: 'e.g. 2.5 or 3',
+                                        border: OutlineInputBorder(),
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      ),
+                                      onChanged: (v) {
+                                        _testDiscountByBillId[bill.id] = v;
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Text('%', style: TextStyle(fontWeight: FontWeight.w500)),
+                                  const SizedBox(width: 12),
+                                  ElevatedButton.icon(
+                                    onPressed: () {
+                                      setState(() {
+                                        final fixedStr = _testFixedDiscountByBillId[bill.id]?.trim() ?? '';
+                                        final fixedVal = double.tryParse(fixedStr);
+                                        if (fixedStr.isNotEmpty && fixedVal != null && fixedVal > 0) {
+                                          _appliedTestFixedDiscountByBillId[bill.id] = fixedStr;
+                                          _appliedTestDiscountByBillId[bill.id] = '';
+                                        } else {
+                                          _appliedTestDiscountByBillId[bill.id] =
+                                              _testDiscountByBillId[bill.id] ?? '';
+                                          _appliedTestFixedDiscountByBillId[bill.id] = '';
+                                        }
+                                      });
+                                    },
+                                    icon: const Icon(Icons.check, size: 18),
+                                    label: const Text('Apply'),
+                                    style: ElevatedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Text('Or fixed amount: ', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                  SizedBox(
+                                    width: 100,
+                                    child: TextFormField(
+                                      key: ValueKey('fixed_${bill.id}'),
+                                      initialValue: _testFixedDiscountByBillId[bill.id],
+                                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                      inputFormatters: [
+                                        FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
+                                      ],
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        hintText: 'e.g. 2000',
+                                        border: OutlineInputBorder(),
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      ),
+                                      onChanged: (v) {
+                                        _testFixedDiscountByBillId[bill.id] = v;
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text('Rs.', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        
                         // Items Heading
                         const Text(
                           'Items:',
@@ -779,6 +910,19 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                         
                         // Items List
                         ...bill.items.map((item) {
+                          final packSize = item.packSize > 0 ? item.packSize : 1.0;
+                          final totalQty = (item.quantity * packSize) + item.bonusQty;
+                          final unitPrice = packSize > 1 ? (item.price / packSize) : item.price;
+                          final discountPct = double.tryParse(_appliedTestDiscountByBillId[bill.id] ?? '');
+                          final fixedAmount = double.tryParse(_appliedTestFixedDiscountByBillId[bill.id] ?? '');
+                          final usePct = discountPct != null && discountPct >= 0 && discountPct <= 100;
+                          final useFixed = fixedAmount != null && fixedAmount > 0 && fixedAmount < bill.finalPrice;
+                          final multiplier = useFixed
+                              ? ((bill.finalPrice - fixedAmount) / bill.finalPrice)
+                              : (usePct ? (1 - discountPct! / 100) : 1.0);
+                          final validDiscount = usePct || useFixed;
+                          final itemAfterDiscount = item.subtotal * multiplier;
+                          final unitPriceAfterDiscount = unitPrice * multiplier;
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 8),
                             child: Row(
@@ -802,6 +946,13 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                                           color: Colors.grey[600],
                                         ),
                                       ),
+                                      Text(
+                                        'Total Qty: ${totalQty % 1 == 0 ? totalQty.toInt() : totalQty.toStringAsFixed(2)}  •  Unit Price: ${_currencyFormatter.format(unitPrice)}${validDiscount ? " → ${_currencyFormatter.format(unitPriceAfterDiscount)} (after discount)" : ""}',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey[700],
+                                        ),
+                                      ),
                                       if (item.expense > 0)
                                         Text(
                                           'Expense: ${_currencyFormatter.format(item.expense)}',
@@ -818,15 +969,41 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                                             color: Colors.grey[600],
                                           ),
                                         ),
+                                      if (validDiscount)
+                                        Padding(
+                                          padding: const EdgeInsets.only(top: 4),
+                                          child: Text(
+                                            'After discount: ${_currencyFormatter.format(itemAfterDiscount)}',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.green.shade700,
+                                            ),
+                                          ),
+                                        ),
                                     ],
                                   ),
                                 ),
-                                Text(
-                                  _currencyFormatter.format(item.subtotal),
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
-                                  ),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      _currencyFormatter.format(item.subtotal),
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    if (validDiscount)
+                                      Text(
+                                        _currencyFormatter.format(itemAfterDiscount),
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w500,
+                                          color: Colors.green.shade700,
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ],
                             ),
@@ -897,6 +1074,48 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                             ),
                           ],
                         ),
+                        if ((){
+                          final pct = double.tryParse(_appliedTestDiscountByBillId[bill.id] ?? '');
+                          final fixed = double.tryParse(_appliedTestFixedDiscountByBillId[bill.id] ?? '');
+                          return (pct != null && pct >= 0 && pct <= 100) ||
+                              (fixed != null && fixed > 0 && fixed < bill.finalPrice);
+                        }()) ...[
+                          const SizedBox(height: 8),
+                          Builder(
+                            builder: (context) {
+                              final fixedStr = _appliedTestFixedDiscountByBillId[bill.id];
+                              final fixedVal = double.tryParse(fixedStr ?? '');
+                              final useFixed = fixedStr != null && fixedStr.isNotEmpty && fixedVal != null && fixedVal > 0 && fixedVal < bill.finalPrice;
+                              final afterDiscount = useFixed
+                                  ? bill.finalPrice - fixedVal
+                                  : bill.finalPrice * (1 - (double.tryParse(_appliedTestDiscountByBillId[bill.id] ?? '') ?? 0) / 100);
+                              final label = useFixed
+                                  ? 'After test discount (${_currencyFormatter.format(fixedVal)} off):'
+                                  : 'After test discount (${_appliedTestDiscountByBillId[bill.id]}%):';
+                              return Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    label,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.green.shade700,
+                                    ),
+                                  ),
+                                  Text(
+                                    _currencyFormatter.format(afterDiscount),
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.green.shade700,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                        ],
                         if (bill.notes != null && bill.notes!.isNotEmpty) ...[
                           const SizedBox(height: 16),
                           const Divider(),

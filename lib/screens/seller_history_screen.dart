@@ -1375,19 +1375,20 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             final saleId = record['saleId'] ?? '';
             final referenceNumber = record['referenceNumber'] as String?;
             final isManual = record['isManual'] == true;
+            final isPaymentRecord = record['recordType'] == 'payment';
 
             return Card(
               margin: const EdgeInsets.only(bottom: 12),
               child: ExpansionTile(
                 leading: CircleAvatar(
-                  backgroundColor: duePayment > 0
-                      ? Colors.orange.shade100
-                      : Colors.green.shade100,
+                  backgroundColor: isPaymentRecord || duePayment <= 0
+                      ? Colors.green.shade100
+                      : Colors.orange.shade100,
                   child: Icon(
-                    duePayment > 0 ? Icons.pending : Icons.check_circle,
-                    color: duePayment > 0
-                        ? Colors.orange.shade700
-                        : Colors.green.shade700,
+                    isPaymentRecord ? Icons.payment : (duePayment > 0 ? Icons.pending : Icons.check_circle),
+                    color: isPaymentRecord || duePayment <= 0
+                        ? Colors.green.shade700
+                        : Colors.orange.shade700,
                   ),
                 ),
                 title: Column(
@@ -1398,14 +1399,16 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       children: [
                         Expanded(
                           child: SelectableText(
-                            'Sale #${saleId.substring(0, 8).toUpperCase()}',
+                            isPaymentRecord
+                                ? 'Payment'
+                                : 'Sale #${saleId.substring(0, 8).toUpperCase()}',
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
                             ),
                           ),
                         ),
-                        if (isManual)
+                        if (isManual && !isPaymentRecord)
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -1457,17 +1460,27 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            SelectableText(
-                              'Sale Amount: ${_currencyFormatter.format(saleAmount)}',
-                              style: const TextStyle(fontSize: 14),
-                            ),
-                            SelectableText(
-                              'Amount Paid: ${_currencyFormatter.format(amountPaid)}',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey[700],
+                            if (isPaymentRecord)
+                              SelectableText(
+                                _currencyFormatter.format(amountPaid),
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              )
+                            else ...[
+                              SelectableText(
+                                'Sale Amount: ${_currencyFormatter.format(saleAmount)}',
+                                style: const TextStyle(fontSize: 14),
                               ),
-                            ),
+                              SelectableText(
+                                'Amount Paid: ${_currencyFormatter.format(amountPaid)}',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey[700],
+                                ),
+                              ),
+                            ],
                             if (referenceNumber != null && referenceNumber.isNotEmpty)
                               Padding(
                                 padding: const EdgeInsets.only(top: 4),
@@ -1482,7 +1495,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                             ),
                           ],
                         ),
-                        if (duePayment > 0)
+                        if (duePayment > 0 && !isPaymentRecord)
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 12, vertical: 6),
@@ -1500,7 +1513,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                               ),
                             ),
                           )
-                        else
+                        else if (isPaymentRecord || duePayment <= 0)
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 12, vertical: 6),
@@ -1522,14 +1535,43 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     ),
                   ],
                 ),
-                subtitle: const Padding(
-                  padding: EdgeInsets.only(top: 8),
+                subtitle: Padding(
+                  padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    'Tap to view order details',
-                    style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                    isPaymentRecord
+                        ? 'Payment applied to due sales'
+                        : 'Tap to view order details',
+                    style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
                   ),
                 ),
-                children: [
+                children: isPaymentRecord
+                    ? [
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Payment of ${_currencyFormatter.format(amountPaid)} applied to due sales.',
+                                style: const TextStyle(fontSize: 14),
+                              ),
+                              if (referenceNumber != null && referenceNumber.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Text(
+                                    'Reference: $referenceNumber',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.blue[700],
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ]
+                    : [
                   FutureBuilder<DocumentSnapshot>(
                     future: FirebaseFirestore.instance
                         .collection('sales')
@@ -2439,6 +2481,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     await _salesService.addSale(manualSale);
                     
                     // Create a manual due payment record in seller_history
+                    // recordType: 'payment' = due payment (user paid money); distinct from manual sale
                     await FirebaseFirestore.instance
                         .collection('seller_history')
                         .add({
@@ -2453,6 +2496,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                           ? referenceNumber
                           : null,
                       'isManual': true,
+                      'recordType': 'payment', // Due payment received (not a sale)
                     });
 
                     if (context.mounted) {

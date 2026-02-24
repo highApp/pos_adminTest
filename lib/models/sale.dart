@@ -20,6 +20,8 @@ class Sale {
   final double creditUsed; // Amount of credit balance used from seller (tracked separately, NOT added to revenue)
   final String saleType; // 'regular' or 'wholesale'
   final String? description; // Optional description for the sale
+  /// Seller's total due balance before this sale (for receipt: Previous Due / Remaining Balance).
+  final double existingDueTotalAtSale;
 
   Sale({
     required this.id,
@@ -39,6 +41,7 @@ class Sale {
     this.creditUsed = 0.0,
     this.saleType = 'regular',
     this.description,
+    this.existingDueTotalAtSale = 0.0,
   });
 
   Map<String, dynamic> toMap() {
@@ -60,6 +63,7 @@ class Sale {
       'creditUsed': creditUsed,
       'saleType': saleType,
       'description': description,
+      'existingDueTotalAtSale': existingDueTotalAtSale,
     };
   }
 
@@ -87,6 +91,7 @@ class Sale {
       creditUsed: (map['creditUsed'] ?? 0).toDouble(),
       saleType: map['saleType'] ?? 'regular',
       description: map['description'],
+      existingDueTotalAtSale: (map['existingDueTotalAtSale'] ?? 0).toDouble(),
     );
   }
   

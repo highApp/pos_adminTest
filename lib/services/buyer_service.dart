@@ -8,6 +8,7 @@ import 'sales_service.dart';
 import 'expense_service.dart';
 import 'balance_service.dart';
 import 'seller_service.dart';
+import 'reset_data_service.dart';
 
 class BuyerService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -18,6 +19,7 @@ class BuyerService {
   final ExpenseService _expenseService = ExpenseService();
   final BalanceService _balanceService = BalanceService();
   final SellerService _sellerService = SellerService();
+  final ResetDataService _resetDataService = ResetDataService();
 
   // Get all buyers stream
   Stream<List<Buyer>> getBuyersStream() {
@@ -169,73 +171,108 @@ class BuyerService {
     });
   }
 
+  /// Deposit balance (sum of payments) on or after [fromDate]. Used when financial reset is set.
+  Stream<double> _getDepositBalanceFromDateStream(DateTime fromDate) {
+    final cutoff = fromDate.subtract(const Duration(seconds: 1));
+    return _billService.getBillsStream().asyncExpand((bills) {
+      if (bills.isEmpty) return Stream.value(0.0);
+      final ids = bills.map((b) => b.id).toList();
+      return _paymentService.getAllPaymentsForBuyer(ids).map((payments) {
+        return payments
+            .where((p) => !p.paymentDate.isBefore(cutoff))
+            .fold<double>(0.0, (s, p) => s + p.amount);
+      });
+    });
+  }
+
   // Get total revenue stream (from sales, same calculation as dashboard + balance entries - deposit balance)
-  // Calculates: (sum of sale.amountPaid - sale.recoveryBalance - sale.change + sale.creditUsed for non-borrow sales) - expenses - credit reductions + recoveryBalance + balance entries - deposit balance
-  // Updates in real-time when sales, expenses, balance entries, credit reductions, or deposit balance change
+  // Respects financial reset date: only counts sales, expenses, balance entries, credit reductions, and deposit balance on or after reset date.
   Stream<double> getTotalRevenueFromSalesStream() {
-    return _salesService.getSalesStream().asyncExpand((sales) {
-      return _expenseService.getExpensesStream().asyncExpand((expenses) {
-        return _balanceService.getBalanceEntriesStream().asyncExpand((balanceEntries) {
-          return _sellerService.getTotalCreditReductionsStream().asyncExpand((creditReductions) {
-          return getTotalDepositBalanceStream().map((depositBalance) {
-            // Calculate sales revenue (same logic as dashboard)
-            double totalRevenue = 0;
-            double totalRecoveryBalance = 0;
+    return _resetDataService.getFinancialResetDateStream().asyncExpand((resetDate) {
+      return _salesService.getSalesStream().asyncExpand((sales) {
+        return _expenseService.getExpensesStream().asyncExpand((expenses) {
+          return _balanceService.getBalanceEntriesStream().asyncExpand((balanceEntries) {
+            final creditReductionsStream = resetDate != null
+                ? _sellerService.getTotalCreditReductionsFromDateStream(resetDate)
+                : _sellerService.getTotalCreditReductionsStream();
+            return creditReductionsStream.asyncExpand((creditReductions) {
+              final depositStream = resetDate != null
+                  ? _getDepositBalanceFromDateStream(resetDate)
+                  : getTotalDepositBalanceStream();
+              return depositStream.map((depositBalance) {
+                final cutoff = resetDate?.subtract(const Duration(seconds: 1));
+                final filteredSales = cutoff != null
+                    ? sales.where((s) => !s.createdAt.isBefore(cutoff)).toList()
+                    : sales;
+                final filteredExpenses = cutoff != null
+                    ? expenses.where((e) => !e.createdAt.isBefore(cutoff)).toList()
+                    : expenses;
+                final filteredBalanceEntries = cutoff != null
+                    ? balanceEntries.where((e) => !e.date.isBefore(cutoff)).toList()
+                    : balanceEntries;
 
-            for (var sale in sales) {
-              // IMPORTANT: Completely exclude borrow payments from revenue calculation
-              if (!sale.isBorrowPayment) {
-                // Revenue calculation: amountPaid - recoveryBalance - change - cashPortionOfReturn
-                // IMPORTANT: 
-                // - amountPaid = cash amount customer paid (does NOT include change - change is money returned to customer)
-                // - recoveryBalance = amount applied to existing due payments (not revenue for current sale)
-                // - change = excess cash returned to customer (MUST be subtracted from revenue)
-                // - cashPortionOfReturn = cash portion of returned items (must be subtracted)
-                // - creditUsed = credit balance used (NOT included in revenue - it's money owed, not received)
-                // Example: Sale total = 4500, customer pays 5000, change = 500
-                //   revenue = 5000 - 0 - 500 - 0 = 4500 ✓ (only sale amount, not change)
-                // Calculate cash portion of return: returnedAmount * (cashPaid / totalPaid)
-                // Where cashPaid = amountPaid - recoveryBalance, totalPaid = cashPaid + creditUsed
-                double cashPaid = sale.amountPaid - sale.recoveryBalance;
-                double totalPaid = cashPaid + sale.creditUsed;
-                double cashPortionOfReturn = 0.0;
-                if (sale.returnedAmount > 0 && totalPaid > 0) {
-                  // Calculate what portion of the return was originally paid with cash
-                  cashPortionOfReturn = sale.returnedAmount * (cashPaid / totalPaid);
+                double totalRevenue = 0;
+                double totalRecoveryBalance = 0;
+                for (var sale in filteredSales) {
+                  if (!sale.isBorrowPayment) {
+                    double cashPaid = sale.amountPaid - sale.recoveryBalance;
+                    double totalPaid = cashPaid + sale.creditUsed;
+                    double cashPortionOfReturn = 0.0;
+                    if (sale.returnedAmount > 0 && totalPaid > 0) {
+                      cashPortionOfReturn = sale.returnedAmount * (cashPaid / totalPaid);
+                    }
+                    final saleRevenue = sale.amountPaid - sale.recoveryBalance - sale.change - cashPortionOfReturn;
+                    totalRevenue += saleRevenue;
+                    totalRecoveryBalance += sale.recoveryBalance;
+                  }
                 }
-                final saleRevenue = sale.amountPaid - sale.recoveryBalance - sale.change - cashPortionOfReturn;
-                totalRevenue += saleRevenue;
-                totalRecoveryBalance += sale.recoveryBalance;
-              }
-            }
 
-            // Calculate total expenses
-            double totalExpenses = 0;
-            for (var expense in expenses) {
-              totalExpenses += expense.amount;
-            }
+                double totalExpenses = 0;
+                for (var expense in filteredExpenses) {
+                  totalExpenses += expense.amount;
+                }
 
-            // Calculate net revenue: Revenue - Expenses - Credit Reductions
-            // Credit reductions represent money paid to reduce credit balance and should reduce revenue
-            final netRevenue = totalRevenue - totalExpenses - creditReductions;
-
-            // Total revenue including recovery balance (money received from sales + recovery from due payments)
-            // NOTE: This excludes borrow payments completely - they are NOT included in revenue
-            final totalRevenueWithRecovery = netRevenue + totalRecoveryBalance;
-
-            // Add balance entries to total revenue
-            final totalBalanceEntries = balanceEntries.fold<double>(
-              0.0,
-              (sum, entry) => sum + entry.amount,
-            );
-
-            // Subtract deposit balance from total revenue
-            // When buyers make payments (deposit balance increases), it reduces total revenue
-            final finalRevenue = totalRevenueWithRecovery + totalBalanceEntries - depositBalance;
-
-            return finalRevenue;
+                final netRevenue = totalRevenue - totalExpenses - creditReductions;
+                final totalRevenueWithRecovery = netRevenue + totalRecoveryBalance;
+                final totalBalanceEntries = filteredBalanceEntries.fold<double>(
+                  0.0,
+                  (sum, entry) => sum + entry.amount,
+                );
+                final finalRevenue = totalRevenueWithRecovery + totalBalanceEntries - depositBalance;
+                return finalRevenue;
+              });
             });
           });
+        });
+      });
+    });
+  }
+
+  /// Total profit from sales (sum of sale.netProfit for non-borrow sales) minus expenses.
+  /// Respects financial reset date. Use for a separate "Profit" metric so it is not mixed with Total Revenue.
+  Stream<double> getTotalProfitFromSalesStream() {
+    return _resetDataService.getFinancialResetDateStream().asyncExpand((resetDate) {
+      return _salesService.getSalesStream().asyncExpand((sales) {
+        return _expenseService.getExpensesStream().map((expenses) {
+          final cutoff = resetDate?.subtract(const Duration(seconds: 1));
+          final filteredSales = cutoff != null
+              ? sales.where((s) => !s.createdAt.isBefore(cutoff)).toList()
+              : sales;
+          final filteredExpenses = cutoff != null
+              ? expenses.where((e) => !e.createdAt.isBefore(cutoff)).toList()
+              : expenses;
+
+          double totalProfit = 0;
+          for (var sale in filteredSales) {
+            if (!sale.isBorrowPayment) {
+              totalProfit += sale.netProfit;
+            }
+          }
+          double totalExpenses = 0;
+          for (var expense in filteredExpenses) {
+            totalExpenses += expense.amount;
+          }
+          return totalProfit - totalExpenses;
         });
       });
     });

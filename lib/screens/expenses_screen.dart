@@ -198,6 +198,8 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         return Colors.purple;
       case 'food':
         return Colors.orange;
+      case 'salary':
+        return Colors.teal;
       case 'other':
         return Colors.grey;
       default:
@@ -292,6 +294,17 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                       onTap: () {
                         setDialogState(() {
                           selectedCategory = 'food';
+                        });
+                      },
+                    ),
+                    _CategoryChip(
+                      label: 'Salary',
+                      icon: '👤',
+                      value: 'salary',
+                      selected: selectedCategory == 'salary',
+                      onTap: () {
+                        setDialogState(() {
+                          selectedCategory = 'salary';
                         });
                       },
                     ),

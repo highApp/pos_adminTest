@@ -1229,6 +1229,8 @@ class PrinterService {
     
     if (sale.recoveryBalance > 0) {
       _addText(commands, _formatLine('Recovery:', sale.recoveryBalance.toStringAsFixed(2)));
+      _addText(commands, _formatLine('Previous Due:', existingDueTotal.toStringAsFixed(2)));
+      _addText(commands, _formatLine('Remaining Balance:', (existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity).toStringAsFixed(2)));
     }
 
     _addText(commands, _formatLine('Paid:', sale.amountPaid.toStringAsFixed(2)));
@@ -1237,7 +1239,7 @@ class PrinterService {
       _addText(commands, _formatLine('Change:', sale.change.toStringAsFixed(2)));
     }
 
-    if (seller != null && existingDueTotal > 0) {
+    if (seller != null && existingDueTotal > 0 && sale.recoveryBalance <= 0) {
       _addText(commands, '${_repeatChar('-', 32)}\n');
       _addText(commands, _formatLine('Previous Due:', existingDueTotal.toStringAsFixed(2)));
     }

@@ -102,8 +102,11 @@ class CartProvider with ChangeNotifier {
     if (_items.containsKey(productId)) {
       // Create a new product with updated price for this cart session only
       final originalProduct = _items[productId]!.product;
-      final updatedProduct = originalProduct.copyWith(salePrice: newPrice);
-      
+      final saleType = _items[productId]!.saleType;
+      final updatedProduct = saleType == SaleType.wholesale
+          ? originalProduct.copyWith(wholesalePrice: newPrice)
+          : originalProduct.copyWith(salePrice: newPrice);
+
       // Update the cart item with the new product (price only affects this cart)
       _items[productId]!.product = updatedProduct;
       notifyListeners();

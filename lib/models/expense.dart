@@ -1,6 +1,6 @@
 class Expense {
   final String id;
-  final String category; // tea, drink, ice_cream, donation, food, other
+  final String category; // tea, drink, ice_cream, donation, food, salary, other
   final String description;
   final double amount;
   final DateTime createdAt;
@@ -47,6 +47,8 @@ class Expense {
         return 'Donation';
       case 'food':
         return 'Food';
+      case 'salary':
+        return 'Salary';
       case 'other':
         return 'Other';
       default:
@@ -66,6 +68,8 @@ class Expense {
         return '💝';
       case 'food':
         return '🍽️';
+      case 'salary':
+        return '👤';
       case 'other':
         return '📋';
       default:

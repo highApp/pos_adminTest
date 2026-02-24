@@ -117,6 +117,8 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
         });
 
         // Allocate payment to bills (oldest first)
+        // Use same batchId for all payments in this transaction (groups in payment history)
+        final batchId = const Uuid().v4();
         double remainingAmount = amount;
         final paymentIds = <String>[];
         for (var billData in billsWithBalance) {
@@ -135,6 +137,7 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
             paymentType: _paymentType,
             amount: paymentAmount,
             paymentNumber: paymentNumber,
+            batchId: batchId,
             accountTitle: _paymentType == 'bank_transfer' && _accountTitleController.text.trim().isNotEmpty
                 ? _accountTitleController.text.trim()
                 : null,
