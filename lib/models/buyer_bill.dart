@@ -14,6 +14,10 @@ class BuyerBill {
   final String paymentMethod;
   final String? notes;
   final String? billNumber;
+  /// Applied discount % (saved when "Apply discount to bill" used with %).
+  final double? discountPercent;
+  /// Applied fixed discount amount in Rs. (saved when "Apply discount to bill" used with fixed).
+  final double? discountFixedAmount;
 
   BuyerBill({
     required this.id,
@@ -29,6 +33,8 @@ class BuyerBill {
     this.paymentMethod = 'cash',
     this.notes,
     this.billNumber,
+    this.discountPercent,
+    this.discountFixedAmount,
   });
 
   Map<String, dynamic> toMap() {
@@ -46,6 +52,8 @@ class BuyerBill {
       'paymentMethod': paymentMethod,
       'notes': notes,
       'billNumber': billNumber,
+      'discountPercent': discountPercent,
+      'discountFixedAmount': discountFixedAmount,
     };
   }
 
@@ -69,6 +77,8 @@ class BuyerBill {
       paymentMethod: map['paymentMethod'] ?? 'cash',
       notes: map['notes'],
       billNumber: map['billNumber'],
+      discountPercent: (map['discountPercent'] as num?)?.toDouble(),
+      discountFixedAmount: (map['discountFixedAmount'] as num?)?.toDouble(),
     );
   }
 }

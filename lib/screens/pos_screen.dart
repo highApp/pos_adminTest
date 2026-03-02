@@ -3078,8 +3078,8 @@ class _CartItemTileState extends State<_CartItemTile> {
     });
 
     final quantity = double.tryParse(value);
-    final minQuantity = widget.cartItem.supportsFractionalQuantity ? 0.1 : 1.0;
-    
+    final minQuantity = widget.cartItem.supportsFractionalQuantity ? CartItem.fractionalMinQuantity : 1.0;
+
     if (quantity == null || quantity < minQuantity) {
       _quantityController.text = widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3106,6 +3106,7 @@ class _CartItemTileState extends State<_CartItemTile> {
 
     if (quantity < minQuantity) {
       context.read<CartProvider>().removeItem(widget.cartItem.product.id);
+      return;
     } else {
       context.read<CartProvider>().updateQuantity(widget.cartItem.product.id, quantity);
       _subtotalController.text = (widget.cartItem.unitPrice * quantity).toStringAsFixed(2);

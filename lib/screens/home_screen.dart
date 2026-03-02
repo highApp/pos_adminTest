@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../utils/app_shortcuts.dart';
 import 'dashboard_screen.dart';
 import 'products_screen.dart';
 import 'pos_screen.dart';
@@ -16,6 +18,8 @@ import 'zakat_screen.dart';
 import '../services/auth_service.dart';
 import '../models/user.dart';
 import '../widgets/reminder_alert_listener.dart';
+import '../widgets/sellers_quick_access_dialog.dart';
+import '../services/sellers_shortcut_web.dart' if (dart.library.io) '../services/sellers_shortcut_io.dart' as sellers_shortcut;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -31,10 +35,27 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _userName;
   bool _isLoading = true;
 
+  void _onSellersShortcutPressed() {
+    if (!mounted || _userRole != UserRole.admin) return;
+    final ctx = context;
+    // Run in next frame so dialog opens from DOM key event in valid Flutter context
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      SellersQuickAccessDialog.show(ctx);
+    });
+  }
+
   @override
   void initState() {
     super.initState();
     _loadUserInfo();
+    sellers_shortcut.initSellersShortcut(_onSellersShortcutPressed);
+  }
+
+  @override
+  void dispose() {
+    sellers_shortcut.disposeSellersShortcut();
+    super.dispose();
   }
 
   Future<void> _loadUserInfo() async {
@@ -170,41 +191,112 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Managers can only access POS
     if (_userRole == UserRole.manager) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('POS'),
-          backgroundColor: Colors.white,
-          foregroundColor: Colors.black87,
-          elevation: 0,
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.calculate_outlined),
-              onPressed: () {
-                _showCalculatorDialog(context);
-              },
-              tooltip: 'Calculator',
+      return Shortcuts(
+        shortcuts: const {
+          SingleActivator(LogicalKeyboardKey.escape): CloseIntent(),
+          SingleActivator(LogicalKeyboardKey.slash, shift: true): KeyboardHelpIntent(),
+          SingleActivator(LogicalKeyboardKey.f1): KeyboardHelpIntent(),
+          SingleActivator(LogicalKeyboardKey.arrowUp): DirectionalFocusIntent(TraversalDirection.up),
+          SingleActivator(LogicalKeyboardKey.arrowDown): DirectionalFocusIntent(TraversalDirection.down),
+          SingleActivator(LogicalKeyboardKey.arrowLeft): DirectionalFocusIntent(TraversalDirection.left),
+          SingleActivator(LogicalKeyboardKey.arrowRight): DirectionalFocusIntent(TraversalDirection.right),
+        },
+        child: Actions(
+          actions: <Type, Action<Intent>>{
+            CloseIntent: CallbackAction<CloseIntent>(onInvoke: (_) {
+              Navigator.maybePop(context);
+              return null;
+            }),
+            KeyboardHelpIntent: CallbackAction<KeyboardHelpIntent>(onInvoke: (_) {
+              showKeyboardShortcutsHelp(context);
+              return null;
+            }),
+            DirectionalFocusIntent: DirectionalFocusAction(),
+          },
+          child: Scaffold(
+            appBar: AppBar(
+              title: const Text('POS'),
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.black87,
+              elevation: 0,
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.keyboard),
+                  onPressed: () => showKeyboardShortcutsHelp(context),
+                  tooltip: 'Keyboard shortcuts (? or F1)',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.calculate_outlined),
+                  onPressed: () {
+                    _showCalculatorDialog(context);
+                  },
+                  tooltip: 'Calculator',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.scale_outlined),
+                  onPressed: () {
+                    _showWeightCalculatorDialog(context);
+                  },
+                  tooltip: 'Weight Calculator',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.menu),
+                  onPressed: () {
+                    Scaffold.of(context).openDrawer();
+                  },
+                ),
+              ],
             ),
-            IconButton(
-              icon: const Icon(Icons.scale_outlined),
-              onPressed: () {
-                _showWeightCalculatorDialog(context);
-              },
-              tooltip: 'Weight Calculator',
-            ),
-            IconButton(
-              icon: const Icon(Icons.menu),
-              onPressed: () {
-                Scaffold.of(context).openDrawer();
-              },
-            ),
-          ],
+            drawer: _buildDrawer(),
+            body: const POSScreen(),
+          ),
         ),
-        drawer: _buildDrawer(),
-        body: const POSScreen(),
       );
     }
 
-    return Scaffold(
+    final maxTabIndex = _drawerItems.isEmpty ? 0 : _drawerItems.length - 1;
+    final shortcutMap = <ShortcutActivator, Intent>{
+      const SingleActivator(LogicalKeyboardKey.escape): const CloseIntent(),
+      const SingleActivator(LogicalKeyboardKey.slash, shift: true): const KeyboardHelpIntent(), // ?
+      const SingleActivator(LogicalKeyboardKey.f1): const KeyboardHelpIntent(),
+      const SingleActivator(LogicalKeyboardKey.arrowUp): const DirectionalFocusIntent(TraversalDirection.up),
+      const SingleActivator(LogicalKeyboardKey.arrowDown): const DirectionalFocusIntent(TraversalDirection.down),
+      const SingleActivator(LogicalKeyboardKey.arrowLeft): const DirectionalFocusIntent(TraversalDirection.left),
+      const SingleActivator(LogicalKeyboardKey.arrowRight): const DirectionalFocusIntent(TraversalDirection.right),
+    };
+    const digitKeys = [
+      LogicalKeyboardKey.digit1,
+      LogicalKeyboardKey.digit2,
+      LogicalKeyboardKey.digit3,
+      LogicalKeyboardKey.digit4,
+      LogicalKeyboardKey.digit5,
+    ];
+    for (int i = 0; i <= 4 && i <= maxTabIndex; i++) {
+      shortcutMap[SingleActivator(digitKeys[i], control: true)] = SwitchTabIntent(i);
+      shortcutMap[SingleActivator(digitKeys[i], meta: true)] = SwitchTabIntent(i);
+    }
+
+    return Shortcuts(
+      shortcuts: shortcutMap,
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          CloseIntent: CallbackAction<CloseIntent>(onInvoke: (_) {
+            Navigator.maybePop(context);
+            return null;
+          }),
+          KeyboardHelpIntent: CallbackAction<KeyboardHelpIntent>(onInvoke: (_) {
+            showKeyboardShortcutsHelp(context);
+            return null;
+          }),
+          SwitchTabIntent: CallbackAction<SwitchTabIntent>(onInvoke: (SwitchTabIntent intent) {
+            if (intent.index >= 0 && intent.index <= maxTabIndex) {
+              setState(() => _selectedIndex = intent.index);
+            }
+            return null;
+          }),
+          DirectionalFocusIntent: DirectionalFocusAction(),
+        },
+        child: Scaffold(
       appBar: AppBar(
         title: Text(_drawerItems.isNotEmpty && _selectedIndex < _drawerItems.length
             ? _drawerItems[_selectedIndex].title
@@ -213,6 +305,17 @@ class _HomeScreenState extends State<HomeScreen> {
         foregroundColor: Colors.black87,
         elevation: 0,
         actions: [
+          if (_userRole == UserRole.admin)
+            IconButton(
+              icon: const Icon(Icons.person_search),
+              onPressed: () => SellersQuickAccessDialog.show(context),
+              tooltip: 'Sellers quick access (Cmd+Option+S / Ctrl+Alt+S)',
+            ),
+          IconButton(
+            icon: const Icon(Icons.keyboard),
+            onPressed: () => showKeyboardShortcutsHelp(context),
+            tooltip: 'Keyboard shortcuts (? or F1)',
+          ),
           IconButton(
             icon: const Icon(Icons.calculate_outlined),
             onPressed: () {
@@ -239,6 +342,8 @@ class _HomeScreenState extends State<HomeScreen> {
       body: _selectedIndex == 0
           ? ReminderAlertListener(child: _screens[_selectedIndex])
           : _screens[_selectedIndex],
+        ),
+      ),
     );
   }
 

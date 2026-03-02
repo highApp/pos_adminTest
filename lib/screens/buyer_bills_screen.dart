@@ -6,8 +6,10 @@ import '../models/buyer.dart';
 import '../models/buyer_bill.dart';
 import '../models/buyer_bill_item.dart';
 import '../models/buyer_payment.dart';
+import '../models/product.dart';
 import '../services/buyer_bill_service.dart';
 import '../services/buyer_payment_service.dart';
+import '../services/product_service.dart';
 import 'create_edit_buyer_bill_screen.dart';
 import 'add_payment_dialog.dart';
 import 'buyer_payment_history_screen.dart';
@@ -26,6 +28,7 @@ class BuyerBillsScreen extends StatefulWidget {
 class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
   final BuyerBillService _billService = BuyerBillService();
   final BuyerPaymentService _paymentService = BuyerPaymentService();
+  final ProductService _productService = ProductService();
   DateTime? _startDate;
   DateTime? _endDate;
   /// Test-only: discount % input per bill (what user typed). Not applied until they click Apply.
@@ -36,6 +39,10 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
   final Map<String, String> _appliedTestDiscountByBillId = {};
   /// Test-only: applied fixed discount amount per bill (Rs.). When set, preview uses this instead of %.
   final Map<String, String> _appliedTestFixedDiscountByBillId = {};
+  /// Apply-to-bill: discount % input (saved when Apply clicked).
+  final Map<String, String> _realDiscountPctByBillId = {};
+  /// Apply-to-bill: fixed discount amount input (Rs.). When Apply clicked, bill is updated.
+  final Map<String, String> _realDiscountFixedByBillId = {};
   /// Keeps which bill expansion tiles are open (so typing discount doesn't collapse them).
   final Set<String> _expandedBillIds = {};
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
@@ -896,6 +903,107 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                             ],
                           ),
                         ),
+                        const SizedBox(height: 12),
+                        // Apply discount to bill (updates & saves)
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.green.shade300),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.discount, size: 18, color: Colors.green.shade800),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Apply discount to bill (updates & saves)',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.green.shade900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  SizedBox(
+                                    width: 80,
+                                    child: TextFormField(
+                                      key: ValueKey('real_discount_${bill.id}'),
+                                      initialValue: _realDiscountPctByBillId[bill.id],
+                                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                      inputFormatters: [
+                                        FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
+                                      ],
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        hintText: 'e.g. 2.5',
+                                        border: OutlineInputBorder(),
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      ),
+                                      onChanged: (v) {
+                                        _realDiscountPctByBillId[bill.id] = v;
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Text('%', style: TextStyle(fontWeight: FontWeight.w500)),
+                                  const SizedBox(width: 12),
+                                  ElevatedButton.icon(
+                                    onPressed: () async {
+                                      await _applyRealDiscount(
+                                        bill,
+                                        _realDiscountPctByBillId[bill.id],
+                                        _realDiscountFixedByBillId[bill.id],
+                                      );
+                                    },
+                                    icon: const Icon(Icons.check_circle, size: 18),
+                                    label: const Text('Apply'),
+                                    style: ElevatedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                      backgroundColor: Colors.green.shade700,
+                                      foregroundColor: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  Text('Or fixed amount: ', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                  SizedBox(
+                                    width: 100,
+                                    child: TextFormField(
+                                      key: ValueKey('real_fixed_${bill.id}'),
+                                      initialValue: _realDiscountFixedByBillId[bill.id],
+                                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                      inputFormatters: [
+                                        FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
+                                      ],
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        hintText: 'e.g. 2000',
+                                        border: OutlineInputBorder(),
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      ),
+                                      onChanged: (v) {
+                                        _realDiscountFixedByBillId[bill.id] = v;
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text('Rs.', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
                         const SizedBox(height: 16),
                         
                         // Items Heading
@@ -908,19 +1016,33 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                         ),
                         const SizedBox(height: 12),
                         
-                        // Items List
+                        // Items List (saved discount or test discount → per-item "after discount" like image)
                         ...bill.items.map((item) {
                           final packSize = item.packSize > 0 ? item.packSize : 1.0;
                           final totalQty = (item.quantity * packSize) + item.bonusQty;
                           final unitPrice = packSize > 1 ? (item.price / packSize) : item.price;
-                          final discountPct = double.tryParse(_appliedTestDiscountByBillId[bill.id] ?? '');
-                          final fixedAmount = double.tryParse(_appliedTestFixedDiscountByBillId[bill.id] ?? '');
-                          final usePct = discountPct != null && discountPct >= 0 && discountPct <= 100;
-                          final useFixed = fixedAmount != null && fixedAmount > 0 && fixedAmount < bill.finalPrice;
-                          final multiplier = useFixed
-                              ? ((bill.finalPrice - fixedAmount) / bill.finalPrice)
-                              : (usePct ? (1 - discountPct! / 100) : 1.0);
-                          final validDiscount = usePct || useFixed;
+                          double multiplier = 1.0;
+                          bool validDiscount = false;
+                          if (bill.discountPercent != null && bill.discountPercent! >= 0 && bill.discountPercent! <= 100) {
+                            multiplier = 1 - (bill.discountPercent! / 100);
+                            validDiscount = true;
+                          } else if (bill.discountFixedAmount != null && bill.discountFixedAmount! > 0) {
+                            final originalTotal = bill.finalPrice + bill.discountFixedAmount!;
+                            if (originalTotal > 0) {
+                              multiplier = bill.finalPrice / originalTotal;
+                              validDiscount = true;
+                            }
+                          }
+                          if (!validDiscount) {
+                            final discountPct = double.tryParse(_appliedTestDiscountByBillId[bill.id] ?? '');
+                            final fixedAmount = double.tryParse(_appliedTestFixedDiscountByBillId[bill.id] ?? '');
+                            final usePct = discountPct != null && discountPct >= 0 && discountPct <= 100;
+                            final useFixed = fixedAmount != null && fixedAmount > 0 && fixedAmount < bill.finalPrice;
+                            multiplier = useFixed
+                                ? ((bill.finalPrice - fixedAmount) / bill.finalPrice)
+                                : (usePct ? (1 - discountPct! / 100) : 1.0);
+                            validDiscount = usePct || useFixed;
+                          }
                           final itemAfterDiscount = item.subtotal * multiplier;
                           final unitPriceAfterDiscount = unitPrice * multiplier;
                           return Padding(
@@ -1462,6 +1584,106 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
       setState(() {
         _endDate = picked;
       });
+    }
+  }
+
+  Future<void> _applyRealDiscount(BuyerBill bill, String? pctStr, String? fixedStr) async {
+    final fixedVal = fixedStr != null && fixedStr.trim().isNotEmpty
+        ? double.tryParse(fixedStr.trim())
+        : null;
+    final pctVal = pctStr != null && pctStr.trim().isNotEmpty
+        ? double.tryParse(pctStr.trim())
+        : null;
+    final useFixed = fixedVal != null && fixedVal > 0 && fixedVal < bill.finalPrice;
+    final usePct = pctVal != null && pctVal >= 0 && pctVal <= 100;
+    if (!useFixed && !usePct) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Enter a valid discount % (0–100) or fixed amount (Rs.) less than bill total'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+    double newFinalPrice = useFixed
+        ? (bill.finalPrice - fixedVal!)
+        : bill.finalPrice * (1 - (pctVal! / 100));
+    newFinalPrice = newFinalPrice.clamp(0.0, double.infinity);
+    final updatedBill = BuyerBill(
+      id: bill.id,
+      buyerId: bill.buyerId,
+      buyerName: bill.buyerName,
+      items: bill.items,
+      total: bill.total,
+      totalExpense: bill.totalExpense,
+      finalPrice: newFinalPrice,
+      amountPaid: bill.amountPaid,
+      change: bill.change,
+      createdAt: bill.createdAt,
+      paymentMethod: bill.paymentMethod,
+      notes: bill.notes,
+      billNumber: bill.billNumber,
+      discountPercent: usePct ? pctVal : null,
+      discountFixedAmount: useFixed ? fixedVal : null,
+    );
+    await _billService.addBill(updatedBill);
+
+    // Update each product's average purchase price to reflect the discounted cost
+    final originalTotal = useFixed ? (newFinalPrice + fixedVal!) : bill.finalPrice;
+    final multiplier = originalTotal > 0 ? newFinalPrice / originalTotal : 1.0;
+    await _updateProductAvgPriceAfterDiscount(bill.items, multiplier);
+
+    if (mounted) {
+      setState(() {
+        _realDiscountPctByBillId.remove(bill.id);
+        _realDiscountFixedByBillId.remove(bill.id);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Discount applied. New final: ${_currencyFormatter.format(newFinalPrice)}. Product average purchase prices updated.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  /// After applying a real discount, adjust each product's average purchase price so inventory cost reflects the discounted rate.
+  Future<void> _updateProductAvgPriceAfterDiscount(List<BuyerBillItem> items, double multiplier) async {
+    if (multiplier >= 1.0 || multiplier <= 0) return;
+    // Per product name: total value adjustment = sum of item.subtotal * (multiplier - 1)
+    final Map<String, double> adjustmentByProductName = {};
+    for (final item in items) {
+      final name = item.itemName.trim();
+      if (name.isEmpty) continue;
+      final delta = item.subtotal * (multiplier - 1);
+      adjustmentByProductName[name] = (adjustmentByProductName[name] ?? 0) + delta;
+    }
+    for (final entry in adjustmentByProductName.entries) {
+      final productName = entry.key;
+      final adjustment = entry.value;
+      if (adjustment >= 0) continue; // only reduce value when discount (multiplier < 1)
+      try {
+        final products = await _productService.searchProducts(productName);
+        Product? product;
+        for (final p in products) {
+          if (p.name.toLowerCase() == productName.toLowerCase()) {
+            product = p;
+            break;
+          }
+        }
+        if (product == null) continue;
+        final currentValue = product.stock * product.purchasePrice;
+        final newValue = currentValue + adjustment; // adjustment is negative
+        final newAvg = product.stock > 0 ? (newValue / product.stock).clamp(0.0, double.infinity) : product.purchasePrice;
+        await _productService.updateProduct(product.copyWith(
+          purchasePrice: newAvg,
+          updatedAt: DateTime.now(),
+        ));
+      } catch (_) {
+        // Skip if product not found or update fails
+      }
     }
   }
 

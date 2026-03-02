@@ -42,6 +42,15 @@
   <script src="https://www.gstatic.com/firebasejs/12.6.0/firebase-storage-compat.js"></script>
   
   <script>
+    // Sellers quick access: Cmd+Option+S / Ctrl+Alt+S — capture phase so Flutter can open dialog
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === 's' || e.key === 'S') && (e.metaKey || e.ctrlKey) && e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('sellers-quick-access'));
+      }
+    }, true);
+
     // Error handling for script loading
     window.addEventListener('error', function(e) {
       console.error('Script loading error:', e.filename, e.message, e.lineno, e.colno);

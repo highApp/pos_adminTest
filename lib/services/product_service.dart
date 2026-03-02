@@ -4,6 +4,9 @@ import '../models/product.dart';
 class ProductService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String _collection = 'products';
+  List<Product>? _productListCache;
+  DateTime? _productListCacheTime;
+  static const _searchCacheDuration = Duration(seconds: 60);
 
   // Get all products stream
   Stream<List<Product>> getProductsStream() {
@@ -32,46 +35,47 @@ class ProductService {
     });
   }
 
-  // Search products
+  // Search products (cached 60s so Add Item search doesn't hit Firestore every keystroke)
   Future<List<Product>> searchProducts(String query) async {
+    final now = DateTime.now();
+    if (_productListCache != null &&
+        _productListCacheTime != null &&
+        now.difference(_productListCacheTime!) < _searchCacheDuration) {
+      return _filterProductsByQuery(_productListCache!, query);
+    }
     final snapshot = await _firestore.collection(_collection).get();
     final products = snapshot.docs.map((doc) => Product.fromMap(doc.data())).toList();
-    
+    _productListCache = products;
+    _productListCacheTime = now;
+    return _filterProductsByQuery(products, query);
+  }
+
+  List<Product> _filterProductsByQuery(List<Product> products, String query) {
+    final searchQuery = query.toLowerCase();
+    if (searchQuery.isEmpty) return products;
     return products.where((product) {
-      final searchQuery = query.toLowerCase();
-      
-      // Search in display name (backward compatible)
-      if (product.displayName.toLowerCase().contains(searchQuery)) {
-        return true;
-      }
-      
-      // Search in all language names
+      if (product.displayName.toLowerCase().contains(searchQuery)) return true;
       if (product.names != null) {
         for (final name in product.names!.values) {
-          if (name.toLowerCase().contains(searchQuery)) {
-            return true;
-          }
+          if (name.toLowerCase().contains(searchQuery)) return true;
         }
       }
-      
-      // Search in barcode, product code and description
-      if (product.barcode?.toLowerCase().contains(searchQuery) ?? false) {
-        return true;
-      }
-      if (product.productCode?.toLowerCase().contains(searchQuery) ?? false) {
-        return true;
-      }
-      if (product.description?.toLowerCase().contains(searchQuery) ?? false) {
-        return true;
-      }
-      
+      if (product.barcode?.toLowerCase().contains(searchQuery) ?? false) return true;
+      if (product.productCode?.toLowerCase().contains(searchQuery) ?? false) return true;
+      if (product.description?.toLowerCase().contains(searchQuery) ?? false) return true;
       return false;
     }).toList();
+  }
+
+  void _invalidateSearchCache() {
+    _productListCache = null;
+    _productListCacheTime = null;
   }
 
   // Add product
   Future<void> addProduct(Product product) async {
     await _firestore.collection(_collection).doc(product.id).set(product.toMap());
+    _invalidateSearchCache();
   }
 
   // Update product
@@ -81,11 +85,13 @@ class ProductService {
         .collection(_collection)
         .doc(product.id)
         .update(updatedProduct.toMap());
+    _invalidateSearchCache();
   }
 
   // Delete product
   Future<void> deleteProduct(String productId) async {
     await _firestore.collection(_collection).doc(productId).delete();
+    _invalidateSearchCache();
   }
 
   // Update stock

@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -11,8 +12,11 @@ import '../models/seller_reminder.dart';
 import '../services/seller_service.dart';
 import '../services/seller_reminder_service.dart';
 import '../services/csv_export_service.dart';
+import '../services/sellers_list_pdf_service.dart';
 // Web download helper - use stub on mobile
 import '../utils/html_stub.dart' as html;
+import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
+import 'package:printing/printing.dart';
 import 'seller_history_screen.dart';
 
 class SellersScreen extends StatefulWidget {
@@ -33,6 +37,10 @@ class _SellersScreenState extends State<SellersScreen> {
   int _currentPage = 1;
   static const int _itemsPerPage = 12;
   bool _isExporting = false;
+  bool _isGeneratingPdf = false;
+  DateTime? _startDate;
+  DateTime? _endDate;
+  static final DateFormat _dateFormatter = DateFormat('MMM d, y');
 
   @override
   void dispose() {
@@ -45,6 +53,33 @@ class _SellersScreenState extends State<SellersScreen> {
       _searchQuery = query.toLowerCase();
       _currentPage = 1; // Reset to first page when searching
     });
+  }
+
+  Future<void> _selectStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null && picked != _startDate) {
+      setState(() {
+        _startDate = picked;
+        if (_endDate != null && _endDate!.isBefore(picked)) _endDate = null;
+      });
+    }
+  }
+
+  Future<void> _selectEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate ?? _startDate ?? DateTime.now(),
+      firstDate: _startDate ?? DateTime(2000),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null && picked != _endDate) {
+      setState(() => _endDate = picked);
+    }
   }
 
   List<Seller> _getPaginatedSellers(List<Seller> sellers) {
@@ -250,19 +285,135 @@ class _SellersScreenState extends State<SellersScreen> {
     );
   }
 
+  Future<void> _createSellersPdf() async {
+    if (_isGeneratingPdf) return;
+    setState(() => _isGeneratingPdf = true);
+    try {
+      final allSellers = await _sellerService.getSellersStream().first;
+      var filtered = _filterSellers(allSellers);
+      if (_startDate != null && _endDate != null) {
+        final activitySet = await _sellerService.getSellerIdsWithDueOrCreditActivityInDateRange(_startDate!, _endDate!);
+        filtered = filtered.where((s) => activitySet.contains(s.id)).toList();
+      }
+      if (filtered.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                _startDate != null && _endDate != null
+                    ? 'No sellers with due or credit activity in selected period.'
+                    : 'No sellers to export. Adjust search or add sellers.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+      final dueAmounts = await Future.wait(
+        filtered.map((s) => _sellerService.getTotalDueAmountForSeller(s.id)),
+      );
+      final pdfBytes = await SellersListPdfService.generatePdf(
+        sellers: filtered,
+        dueAmounts: dueAmounts,
+        searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+        startDate: _startDate,
+        endDate: _endDate,
+      );
+      if (!mounted) return;
+      _showPdfOptionsDialog(context, pdfBytes, filtered.length);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error generating PDF: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isGeneratingPdf = false);
+    }
+  }
+
+  void _showPdfOptionsDialog(BuildContext context, Uint8List pdfBytes, int sellerCount) {
+    String filename = _searchQuery.isNotEmpty
+        ? 'sellers_${_searchQuery.replaceAll(' ', '_')}_${DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now())}.pdf'
+        : 'sellers_list_${DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now())}.pdf';
+    if (_startDate != null && _endDate != null) {
+      filename = 'sellers_${DateFormat('yyyy-MM-dd').format(_startDate!)}_to_${DateFormat('yyyy-MM-dd').format(_endDate!)}.pdf';
+    }
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.picture_as_pdf, color: Colors.red),
+            SizedBox(width: 12),
+            Text('PDF Ready'),
+          ],
+        ),
+        content: Text(
+          'Sellers list PDF ($sellerCount seller${sellerCount == 1 ? '' : 's'}) has been generated. View or download it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await Printing.layoutPdf(onLayout: (_) async => pdfBytes);
+            },
+            icon: const Icon(Icons.visibility, size: 18),
+            label: const Text('View'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              pdf_download.downloadPdf(pdfBytes, filename);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Downloaded: $filename'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
+            },
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text('Download'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _exportToCsv(List<Seller> sellers) async {
     if (_isExporting) {
       debugPrint('Export already in progress');
       return;
     }
-    
-    if (sellers.isEmpty) {
+
+    var listToExport = sellers;
+    if (_startDate != null && _endDate != null) {
+      final activitySet = await _sellerService.getSellerIdsWithDueOrCreditActivityInDateRange(_startDate!, _endDate!);
+      listToExport = sellers.where((s) => activitySet.contains(s.id)).toList();
+    }
+
+    if (listToExport.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No sellers to export'),
+          SnackBar(
+            content: Text(
+              _startDate != null && _endDate != null
+                  ? 'No sellers with due or credit activity in selected period.'
+                  : 'No sellers to export',
+            ),
             backgroundColor: Colors.orange,
-            duration: Duration(seconds: 2),
+            duration: const Duration(seconds: 2),
           ),
         );
       }
@@ -274,12 +425,12 @@ class _SellersScreenState extends State<SellersScreen> {
     });
 
     try {
-      debugPrint('Starting CSV export for ${sellers.length} sellers');
+      debugPrint('Starting CSV export for ${listToExport.length} sellers');
       
       if (kIsWeb) {
         // Web: Generate CSV and trigger download
         final csvString = await _csvExportService.getSellersCsvString(
-          sellers: sellers,
+          sellers: listToExport,
           searchQuery: _searchQuery.isNotEmpty ? _searchQuery : null,
         );
         
@@ -299,7 +450,7 @@ class _SellersScreenState extends State<SellersScreen> {
           if (downloadSuccess) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Sellers exported successfully: $filename'),
+                content: Text('Sellers exported: $filename (${listToExport.length} seller${listToExport.length == 1 ? '' : 's'})'),
                 backgroundColor: Colors.green,
                 duration: const Duration(seconds: 3),
               ),
@@ -317,7 +468,7 @@ class _SellersScreenState extends State<SellersScreen> {
       } else {
         // Mobile: Use the service method
         await _csvExportService.exportSellersToCsv(
-          sellers: sellers,
+          sellers: listToExport,
           context: context,
           searchQuery: _searchQuery.isNotEmpty ? _searchQuery : null,
         );
@@ -414,6 +565,92 @@ class _SellersScreenState extends State<SellersScreen> {
               onChanged: _searchSellers,
             ),
           ),
+          // Date filter (Start / End)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: Colors.white,
+            child: Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: _selectStartDate,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300!),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.calendar_today, size: 20, color: Colors.grey.shade600),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _startDate != null
+                                  ? _dateFormatter.format(_startDate!)
+                                  : 'Start date',
+                              style: TextStyle(
+                                color: _startDate != null ? Colors.black87 : Colors.grey.shade600,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                          if (_startDate != null)
+                            IconButton(
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () => setState(() => _startDate = null),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: InkWell(
+                    onTap: _selectEndDate,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300!),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.calendar_today, size: 20, color: Colors.grey.shade600),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _endDate != null
+                                  ? _dateFormatter.format(_endDate!)
+                                  : 'End date',
+                              style: TextStyle(
+                                color: _endDate != null ? Colors.black87 : Colors.grey.shade600,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                          if (_endDate != null)
+                            IconButton(
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () => setState(() => _endDate = null),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
           // Alert reminder banner for today's reminders
           if (!_reminderBannerDismissed)
             StreamBuilder<List<SellerReminder>>(
@@ -505,60 +742,98 @@ class _SellersScreenState extends State<SellersScreen> {
 
                 final allSellers = snapshot.data ?? [];
                 final filteredSellers = _filterSellers(allSellers);
-                final totalPages = _getTotalPages(filteredSellers.length);
-                
-                // Ensure current page is valid
-                if (_currentPage > totalPages && totalPages > 0) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    setState(() {
-                      _currentPage = totalPages;
-                    });
-                  });
-                }
+                final hasDateRange = _startDate != null && _endDate != null;
 
-                if (allSellers.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.people_outline, size: 64, color: Colors.grey[400]),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'No sellers yet',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Add your first seller to get started',
-                          style: TextStyle(color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                  );
-                }
+                return FutureBuilder<Set<String>?>(
+                  future: hasDateRange
+                      ? _sellerService.getSellerIdsWithDueOrCreditActivityInDateRange(_startDate!, _endDate!)
+                      : Future.value(null),
+                  builder: (context, activitySnapshot) {
+                    final List<Seller> sellersToShow;
+                    if (hasDateRange && activitySnapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (activitySnapshot.data == null) {
+                      sellersToShow = filteredSellers;
+                    } else {
+                      final activitySet = activitySnapshot.data!;
+                      sellersToShow = filteredSellers.where((s) => activitySet.contains(s.id)).toList();
+                    }
 
-                if (filteredSellers.isEmpty && _searchQuery.isNotEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.search_off, size: 64, color: Colors.grey[400]),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'No sellers found',
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Try a different search term',
-                          style: TextStyle(color: Colors.grey[600]),
-                        ),
-                      ],
-                    ),
-                  );
-                }
+                    final totalPages = _getTotalPages(sellersToShow.length);
+                    if (_currentPage > totalPages && totalPages > 0) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        setState(() {
+                          _currentPage = totalPages;
+                        });
+                      });
+                    }
 
-                final paginatedSellers = _getPaginatedSellers(filteredSellers);
+                    if (allSellers.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.people_outline, size: 64, color: Colors.grey[400]),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'No sellers yet',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Add your first seller to get started',
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    if (filteredSellers.isEmpty && _searchQuery.isNotEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.search_off, size: 64, color: Colors.grey[400]),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'No sellers found',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Try a different search term',
+                              style: TextStyle(color: Colors.grey[600]),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    if (hasDateRange && sellersToShow.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.date_range, size: 64, color: Colors.grey[400]),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'No sellers with due or credit activity in this period',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '${_dateFormatter.format(_startDate!)} – ${_dateFormatter.format(_endDate!)}',
+                              style: TextStyle(color: Colors.grey[600]),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    final paginatedSellers = _getPaginatedSellers(sellersToShow);
                 final startIndex = (_currentPage - 1) * _itemsPerPage;
 
                 return Column(
@@ -775,6 +1050,26 @@ class _SellersScreenState extends State<SellersScreen> {
                         },
                       ),
                       IconButton(
+                        icon: Icon(Icons.pending_actions, size: 22, color: Colors.orange.shade700),
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => SellerHistoryScreen(seller: seller, initialAction: 'due_payment'),
+                          ),
+                        ),
+                        tooltip: 'Add due payment',
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.add_shopping_cart, size: 22, color: Colors.green.shade700),
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => SellerHistoryScreen(seller: seller, initialAction: 'manual_sale'),
+                          ),
+                        ),
+                        tooltip: 'Add manual sale',
+                      ),
+                      IconButton(
                         icon: const Icon(Icons.visibility, color: Colors.green),
                         onPressed: () => Navigator.push(
                           context,
@@ -923,7 +1218,7 @@ class _SellersScreenState extends State<SellersScreen> {
                             ),
                             const SizedBox(width: 16),
                             Text(
-                              'Showing ${startIndex + 1}-${startIndex + paginatedSellers.length} of ${filteredSellers.length} sellers',
+                              'Showing ${startIndex + 1}-${startIndex + paginatedSellers.length} of ${sellersToShow.length} sellers',
                               style: TextStyle(
                                 color: Colors.grey[600],
                                 fontSize: 12,
@@ -934,6 +1229,8 @@ class _SellersScreenState extends State<SellersScreen> {
                       ),
                   ],
                 );
+                  },
+                );
               },
             ),
           ),
@@ -943,13 +1240,27 @@ class _SellersScreenState extends State<SellersScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           FloatingActionButton(
+            heroTag: "pdf",
+            onPressed: _isGeneratingPdf ? null : _createSellersPdf,
+            backgroundColor: Colors.green,
+            child: _isGeneratingPdf
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.picture_as_pdf),
+            tooltip: 'Create PDF (view & download)',
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton(
             heroTag: "import",
             onPressed: _showBatchImportDialog,
-            backgroundColor: Colors.green,
+            backgroundColor: Colors.teal,
             child: const Icon(Icons.upload_file),
             tooltip: 'Batch Import Sellers',
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           FloatingActionButton.extended(
             heroTag: "add",
             onPressed: _showAddSellerDialog,

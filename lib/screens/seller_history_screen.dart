@@ -21,8 +21,10 @@ import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_do
 
 class SellerHistoryScreen extends StatefulWidget {
   final Seller seller;
+  /// If set, open this dialog after the screen loads. 'due_payment' | 'manual_sale'
+  final String? initialAction;
 
-  const SellerHistoryScreen({super.key, required this.seller});
+  const SellerHistoryScreen({super.key, required this.seller, this.initialAction});
 
   @override
   State<SellerHistoryScreen> createState() => _SellerHistoryScreenState();
@@ -37,11 +39,24 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
   final DateFormat _dateTimeFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
   late TabController _tabController;
+  bool _initialActionHandled = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    if (widget.initialAction != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_initialActionHandled && mounted) {
+          _initialActionHandled = true;
+          if (widget.initialAction == 'due_payment') {
+            _showDuePaymentHistory(context, 0);
+          } else if (widget.initialAction == 'manual_sale') {
+            _showAddManualSaleDialog(context);
+          }
+        }
+      });
+    }
   }
 
   @override
@@ -273,18 +288,46 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             return sum + (data['duePayment'] ?? 0).toDouble();
           },
         );
-        
-        // Calculate total sale by fetching actual sale data to account for returns
-        // This ensures we use netTotal (total - returnedAmount) instead of relying on seller_history.saleAmount
+
+        // When date range is set, compute period totals (due payments received + sales in period)
+        final hasDateRange = _startDate != null && _endDate != null;
+        final periodDocs = hasDateRange
+            ? _filterRecordsByDateRange(allRecords, _startDate!, _endDate!)
+            : <QueryDocumentSnapshot>[];
+        final saleDocsInPeriod = hasDateRange
+            ? periodDocs
+                .where((d) =>
+                    !_isPaymentRecord(d.data() as Map<String, dynamic>))
+                .toList()
+            : <QueryDocumentSnapshot>[];
+        final periodDuePaymentsReceived = periodDocs.fold<double>(
+          0.0,
+          (sum, doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            return sum +
+                (_isPaymentRecord(data)
+                    ? (data['saleAmount'] ?? 0).toDouble()
+                    : 0);
+          },
+        );
+
         return FutureBuilder<List<double>>(
           future: Future.wait([
             _calculateTotalSaleFromActualSales(allRecords),
             _sellerService.getCreditBalance(widget.seller.id),
+            hasDateRange
+                ? _calculateTotalSaleFromActualSales(saleDocsInPeriod)
+                : Future.value(0.0),
           ]),
           builder: (context, saleSnapshot) {
             final totalSale = saleSnapshot.data?[0] ?? 0.0;
             final creditBalance = saleSnapshot.data?[1] ?? 0.0;
-            
+            final periodSales = saleSnapshot.data?[2] ?? 0.0;
+
+            final periodLabel = hasDateRange
+                ? ' (${_dateFormatter.format(_startDate!)} - ${_dateFormatter.format(_endDate!)})'
+                : '';
+
             return Container(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -307,25 +350,43 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                       Icon(Icons.pending_actions,
                                           color: Colors.orange.shade700),
                                       const SizedBox(width: 8),
-                                      Text(
-                                        'Due Payment',
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          color: Colors.orange.shade900,
-                                          fontWeight: FontWeight.w500,
+                                      Expanded(
+                                        child: Text(
+                                          hasDateRange
+                                              ? 'Due payments received$periodLabel'
+                                              : 'Due Payment',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.orange.shade900,
+                                            fontWeight: FontWeight.w500,
+                                          ),
                                         ),
                                       ),
                                     ],
                                   ),
                                   const SizedBox(height: 8),
                                   SelectableText(
-                                    _currencyFormatter.format(totalDue),
+                                    hasDateRange
+                                        ? _currencyFormatter
+                                            .format(periodDuePaymentsReceived)
+                                        : _currencyFormatter.format(totalDue),
                                     style: TextStyle(
                                       fontSize: 24,
                                       fontWeight: FontWeight.bold,
                                       color: Colors.orange.shade700,
                                     ),
                                   ),
+                                  if (hasDateRange && totalDue > 0)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Text(
+                                        'Outstanding: ${_currencyFormatter.format(totalDue)}',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.orange.shade800,
+                                        ),
+                                      ),
+                                    ),
                                 ],
                               ),
                             ),
@@ -346,25 +407,35 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                     Icon(Icons.shopping_cart,
                                         color: Colors.green.shade700),
                                     const SizedBox(width: 8),
-                                    Text(
-                                      'Total Sale',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: Colors.green.shade900,
-                                        fontWeight: FontWeight.w500,
+                                    Expanded(
+                                      child: Text(
+                                        hasDateRange
+                                            ? 'Sales$periodLabel'
+                                            : 'Total Sale',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          color: Colors.green.shade900,
+                                          fontWeight: FontWeight.w500,
+                                        ),
                                       ),
                                     ),
                                   ],
                                 ),
                                 const SizedBox(height: 8),
-                                saleSnapshot.connectionState == ConnectionState.waiting
+                                saleSnapshot.connectionState ==
+                                        ConnectionState.waiting
                                     ? const SizedBox(
                                         height: 24,
                                         width: 24,
-                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2),
                                       )
                                     : SelectableText(
-                                        _currencyFormatter.format(totalSale),
+                                        hasDateRange
+                                            ? _currencyFormatter
+                                                .format(periodSales)
+                                            : _currencyFormatter
+                                                .format(totalSale),
                                         style: TextStyle(
                                           fontSize: 24,
                                           fontWeight: FontWeight.bold,
@@ -446,6 +517,33 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         );
       },
     );
+  }
+
+  /// True if this seller_history record is a due payment (money received), not a sale.
+  bool _isPaymentRecord(Map<String, dynamic> data) {
+    if (data['recordType'] == 'payment') return true;
+    final isManual = data['isManual'] == true;
+    final duePayment = (data['duePayment'] ?? 0).toDouble();
+    final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+    final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+    return isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0;
+  }
+
+  /// Filter seller_history docs to those whose saleDate is within [startDate, endDate].
+  List<QueryDocumentSnapshot> _filterRecordsByDateRange(
+    List<QueryDocumentSnapshot> docs,
+    DateTime startDate,
+    DateTime endDate,
+  ) {
+    final start = DateTime(startDate.year, startDate.month, startDate.day);
+    final end = DateTime(endDate.year, endDate.month, endDate.day);
+    return docs.where((doc) {
+      final saleDateStr = (doc.data() as Map<String, dynamic>)['saleDate'];
+      if (saleDateStr == null) return false;
+      final saleDate = DateTime.parse(saleDateStr);
+      final d = DateTime(saleDate.year, saleDate.month, saleDate.day);
+      return !d.isBefore(start) && !d.isAfter(end);
+    }).toList();
   }
 
   // Calculate total sale by fetching actual sale data to account for returns
@@ -716,6 +814,11 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     final pdf = pw.Document();
     final dateRangeStr = '${_dateFormatter.format(_startDate!)} - ${_dateFormatter.format(_endDate!)}';
 
+    // Overall (all time) for this seller
+    final overallSales = await _sellerService.getTotalSalesForSeller(widget.seller.id);
+    final overallOutstandingDue = await _sellerService.getTotalDueAmountForSeller(widget.seller.id);
+    final overallTotalPaymentsReceived = await _sellerService.getTotalPaymentsReceivedForSeller(widget.seller.id);
+
     // Resolve record types for existing data: isManual=true can be Sale (manual sale) or Payment (manual due payment)
     final resolvedTypes = <int, bool>{}; // index -> isPayment (true = payment, false = sale)
     for (int i = 0; i < history.length; i++) {
@@ -933,6 +1036,24 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                   'Note: Sales show current Paid/Due. Payments are separate entries when you add manual payment.',
                   style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
                 ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 12),
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.blue50,
+              borderRadius: pw.BorderRadius.circular(4),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('Overall (All time)', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)),
+                pw.SizedBox(height: 8),
+                pw.Text('Overall Sales: ${_currencyFormatter.format(overallSales)}', style: const pw.TextStyle(fontSize: 11)),
+                pw.Text('Overall Outstanding Due: ${_currencyFormatter.format(overallOutstandingDue)}', style: const pw.TextStyle(fontSize: 11)),
+                pw.Text('Overall Total Payments Received: ${_currencyFormatter.format(overallTotalPaymentsReceived)}', style: const pw.TextStyle(fontSize: 11)),
               ],
             ),
           ),

@@ -29,6 +29,11 @@ class CartItem {
     final weightUnits = ['kg', 'g', 'l', 'ml', 'lb', 'oz', 'ton'];
     return weightUnits.contains(product.unit.toLowerCase());
   }
+
+  /// Minimum quantity for fractional units (e.g. 0.001 kg = 1 gram).
+  static const double fractionalMinQuantity = 0.001;
+  /// Default increment for +/- buttons (e.g. 0.1 kg = 100 g).
+  static const double fractionalIncrement = 0.1;
 }
 
 class CartProvider with ChangeNotifier {
@@ -70,14 +75,14 @@ class CartProvider with ChangeNotifier {
     if (_items.containsKey(product.id)) {
       // Check if we can add more
       final currentQuantity = _items[product.id]!.quantity;
-      final increment = _items[product.id]!.supportsFractionalQuantity ? 0.1 : 1.0;
-      
+      final increment = _items[product.id]!.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
+
       if (currentQuantity + increment <= product.stock) {
         _items[product.id]!.quantity += increment;
         notifyListeners();
       }
     } else {
-      final initialQuantity = CartItem(product: product, quantity: 0, saleType: _saleType).supportsFractionalQuantity ? 0.1 : 1.0;
+      final initialQuantity = CartItem(product: product, quantity: 0, saleType: _saleType).supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
       _items[product.id] = CartItem(product: product, quantity: initialQuantity, saleType: _saleType);
       notifyListeners();
     }
@@ -116,8 +121,8 @@ class CartProvider with ChangeNotifier {
   void increaseQuantity(String productId) {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
-      final increment = cartItem.supportsFractionalQuantity ? 0.1 : 1.0;
-      
+      final increment = cartItem.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
+
       if (cartItem.quantity + increment <= cartItem.product.stock) {
         cartItem.quantity += increment;
         notifyListeners();
@@ -128,8 +133,8 @@ class CartProvider with ChangeNotifier {
   void decreaseQuantity(String productId) {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
-      final decrement = cartItem.supportsFractionalQuantity ? 0.1 : 1.0;
-      final minQuantity = cartItem.supportsFractionalQuantity ? 0.1 : 1.0;
+      final decrement = cartItem.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
+      final minQuantity = cartItem.supportsFractionalQuantity ? CartItem.fractionalMinQuantity : 1.0;
       
       if (cartItem.quantity > minQuantity) {
         cartItem.quantity -= decrement;
@@ -148,8 +153,8 @@ class CartProvider with ChangeNotifier {
   bool canAddMore(String productId) {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
-      final increment = cartItem.supportsFractionalQuantity ? 0.1 : 1.0;
-      return cartItem.quantity + increment <= cartItem.product.stock;
+      final increment = cartItem.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
+    return cartItem.quantity + increment <= cartItem.product.stock;
     }
     return true;
   }

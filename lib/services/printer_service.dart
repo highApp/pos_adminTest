@@ -1220,28 +1220,27 @@ class PrinterService {
     _addText(commands, _formatLine('Total Items:', sale.items.length.toString()));
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
-    // Print totals with right alignment for amounts
-    _addText(commands, _formatLine('Subtotal:', sale.total.toStringAsFixed(2)));
-    
+    // Totals: match preview (Sale Amount, Existing Due, Amount Paid, Change, Due Balance)
+    final saleAmount = sale.total - sale.creditUsed;
+    _addText(commands, _formatLine('Sale Amount:', saleAmount.toStringAsFixed(2)));
     if (sale.creditUsed > 0) {
       _addText(commands, _formatLine('Credit Used:', sale.creditUsed.toStringAsFixed(2)));
     }
-    
+    if (existingDueTotal > 0.01) {
+      _addText(commands, _formatLine('Existing Due:', existingDueTotal.toStringAsFixed(2)));
+    }
     if (sale.recoveryBalance > 0) {
-      _addText(commands, _formatLine('Recovery:', sale.recoveryBalance.toStringAsFixed(2)));
-      _addText(commands, _formatLine('Previous Due:', existingDueTotal.toStringAsFixed(2)));
-      _addText(commands, _formatLine('Remaining Balance:', (existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity).toStringAsFixed(2)));
+      _addText(commands, _formatLine('Applied to Dues:', sale.recoveryBalance.toStringAsFixed(2)));
+      _addText(commands, _formatLine('Remaining Due:', (existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity).toStringAsFixed(2)));
     }
-
-    _addText(commands, _formatLine('Paid:', sale.amountPaid.toStringAsFixed(2)));
-    
-    if (sale.change > 0) {
-      _addText(commands, _formatLine('Change:', sale.change.toStringAsFixed(2)));
-    }
-
-    if (seller != null && existingDueTotal > 0 && sale.recoveryBalance <= 0) {
+    _addText(commands, _formatLine('Amount Paid:', sale.amountPaid.toStringAsFixed(2)));
+    _addText(commands, _formatLine('Change:', sale.change.toStringAsFixed(2)));
+    // Due Balance = (Existing Due + Sale Amount) - Amount Paid (same as preview)
+    final totalOwedBeforePayment = existingDueTotal + saleAmount;
+    final dueBalance = (totalOwedBeforePayment - sale.amountPaid).clamp(0.0, double.infinity);
+    if (dueBalance > 0.01) {
       _addText(commands, '${_repeatChar('-', 32)}\n');
-      _addText(commands, _formatLine('Previous Due:', existingDueTotal.toStringAsFixed(2)));
+      _addText(commands, _formatLine('Due Balance:', dueBalance.toStringAsFixed(2)));
     }
 
     _addText(commands, '${_repeatChar('-', 32)}\n');

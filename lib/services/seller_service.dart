@@ -8,9 +8,26 @@ import '../models/expense.dart';
 import '../models/credit_history.dart';
 import 'expense_service.dart';
 
+// Set to true only when debugging seller/borrow/profit logic (avoid log I/O in production)
+bool get _sellerServiceDebug => kDebugMode && false;
+
+/// Emit at most every [interval] so dashboard doesn't recompute on every Firestore change.
+Stream<T> _throttleStream<T>(Stream<T> source, Duration interval) {
+  DateTime? lastEmit;
+  return source.map((T value) {
+    final now = DateTime.now();
+    if (lastEmit == null || now.difference(lastEmit!) >= interval) {
+      lastEmit = now;
+      return value;
+    }
+    return null;
+  }).where((v) => v != null).cast<T>();
+}
+
 class SellerService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String _collection = 'sellers';
+  static const _dashboardThrottle = Duration(seconds: 25);
 
   // Get all sellers stream
   Stream<List<Seller>> getSellersStream() {
@@ -26,10 +43,9 @@ class SellerService {
     });
   }
 
-  // Get total credit balance across all sellers (real-time stream)
-  // This automatically updates when credit balance changes (used in sales or edited)
+  // Get total credit balance across all sellers (throttled for dashboard performance)
   Stream<double> getTotalCreditBalanceStream() {
-    return _firestore
+    final source = _firestore
         .collection(_collection)
         .snapshots()
         .map((snapshot) {
@@ -44,6 +60,7 @@ class SellerService {
       }
       return totalCreditBalance;
     });
+    return _throttleStream(source, _dashboardThrottle);
   }
 
   // Add seller
@@ -104,7 +121,7 @@ class SellerService {
       
       return snapshot.docs.isNotEmpty;
     } catch (e) {
-      debugPrint('Error checking seller name existence: $e');
+      if (_sellerServiceDebug) debugPrint('Error checking seller name existence: $e');
       return false;
     }
   }
@@ -159,9 +176,9 @@ class SellerService {
     if (returnAmount <= 0) return; // No return, nothing to update
     
     try {
-      debugPrint('=== UPDATING SELLER HISTORY FOR RETURN ===');
-      debugPrint('Sale ID: $saleId');
-      debugPrint('Return Amount: $returnAmount');
+      if (_sellerServiceDebug) debugPrint('=== UPDATING SELLER HISTORY FOR RETURN ===');
+      if (_sellerServiceDebug) debugPrint('Sale ID: $saleId');
+      if (_sellerServiceDebug) debugPrint('Return Amount: $returnAmount');
       
       // Find the seller_history record for this sale
       final snapshot = await _firestore
@@ -170,7 +187,7 @@ class SellerService {
           .get();
       
       if (snapshot.docs.isEmpty) {
-        debugPrint('No seller_history record found for sale: $saleId');
+        if (_sellerServiceDebug) debugPrint('No seller_history record found for sale: $saleId');
         return; // No seller history, nothing to update
       }
       
@@ -181,10 +198,10 @@ class SellerService {
         final saleAmount = (data['saleAmount'] ?? 0).toDouble();
         final amountPaid = (data['amountPaid'] ?? 0).toDouble();
         
-        debugPrint('Current seller_history record:');
-        debugPrint('  - Sale Amount: $saleAmount');
-        debugPrint('  - Amount Paid: $amountPaid');
-        debugPrint('  - Current Due: $currentDue');
+        if (_sellerServiceDebug) debugPrint('Current seller_history record:');
+        if (_sellerServiceDebug) debugPrint('  - Sale Amount: $saleAmount');
+        if (_sellerServiceDebug) debugPrint('  - Amount Paid: $amountPaid');
+        if (_sellerServiceDebug) debugPrint('  - Current Due: $currentDue');
         
         // Reduce saleAmount by return amount (net sale amount after return)
         final newSaleAmount = saleAmount - returnAmount;
@@ -193,10 +210,10 @@ class SellerService {
         // This ensures the due payment reflects the actual amount owed after return
         final newDue = (newSaleAmount - amountPaid).clamp(0.0, double.infinity);
         
-        debugPrint('After return:');
-        debugPrint('  - Return Amount: $returnAmount');
-        debugPrint('  - New Sale Amount: $newSaleAmount');
-        debugPrint('  - New Due: $newDue');
+        if (_sellerServiceDebug) debugPrint('After return:');
+        if (_sellerServiceDebug) debugPrint('  - Return Amount: $returnAmount');
+        if (_sellerServiceDebug) debugPrint('  - New Sale Amount: $newSaleAmount');
+        if (_sellerServiceDebug) debugPrint('  - New Due: $newDue');
         
         // Update the seller_history record
         await _firestore.collection('seller_history').doc(doc.id).update({
@@ -204,12 +221,12 @@ class SellerService {
           'duePayment': newDue,
         });
         
-        debugPrint('✓ Seller history updated for return');
+        if (_sellerServiceDebug) debugPrint('✓ Seller history updated for return');
       }
       
-      debugPrint('=== END UPDATING SELLER HISTORY ===');
+      if (_sellerServiceDebug) debugPrint('=== END UPDATING SELLER HISTORY ===');
     } catch (e) {
-      debugPrint('Error updating seller history for return: $e');
+      if (_sellerServiceDebug) debugPrint('Error updating seller history for return: $e');
       // Don't throw - return processing should continue even if seller history update fails
     }
   }
@@ -221,12 +238,12 @@ class SellerService {
 
   // Get due payments for a seller from seller_history table (unpaid only)
   Future<List<DuePayment>> getDuePaymentsForSeller(String sellerId) async {
-    debugPrint('=== FETCHING DUE PAYMENTS FOR SELLER ===');
-    debugPrint('Seller ID: $sellerId');
+    if (_sellerServiceDebug) debugPrint('=== FETCHING DUE PAYMENTS FOR SELLER ===');
+    if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
     
     try {
       // Try to fetch with composite query (requires index)
-      debugPrint('Attempting composite query...');
+      if (_sellerServiceDebug) debugPrint('Attempting composite query...');
       final snapshot = await _firestore
           .collection('seller_history')
           .where('sellerId', isEqualTo: sellerId)
@@ -234,13 +251,13 @@ class SellerService {
           .orderBy('createdAt', descending: true)
           .get();
 
-      debugPrint('Composite query successful. Found ${snapshot.docs.length} documents');
+      if (_sellerServiceDebug) debugPrint('Composite query successful. Found ${snapshot.docs.length} documents');
       
       // Convert seller_history records to DuePayment objects
       final payments = snapshot.docs.map((doc) {
         final data = doc.data();
         final duePayment = (data['duePayment'] ?? 0).toDouble();
-        debugPrint('Document ${doc.id}: duePayment = $duePayment');
+        if (_sellerServiceDebug) debugPrint('Document ${doc.id}: duePayment = $duePayment');
         return DuePayment(
           id: doc.id, // Use document ID from seller_history
           sellerId: data['sellerId'] ?? '',
@@ -255,16 +272,16 @@ class SellerService {
         );
       }).toList();
       
-      debugPrint('Converted ${payments.length} due payments');
-      debugPrint('Total due amount: ${payments.fold(0.0, (sum, p) => sum + p.dueAmount)}');
-      debugPrint('=== END FETCHING DUE PAYMENTS ===');
+      if (_sellerServiceDebug) debugPrint('Converted ${payments.length} due payments');
+      if (_sellerServiceDebug) debugPrint('Total due amount: ${payments.fold(0.0, (sum, p) => sum + p.dueAmount)}');
+      if (_sellerServiceDebug) debugPrint('=== END FETCHING DUE PAYMENTS ===');
       
       return payments;
     } catch (e) {
       // Fallback: Fetch all seller_history records and filter in memory
       // This avoids needing a composite index
-      debugPrint('Composite index may be needed. Using fallback method: $e');
-      debugPrint('Fetching all seller_history records for seller...');
+      if (_sellerServiceDebug) debugPrint('Composite index may be needed. Using fallback method: $e');
+      if (_sellerServiceDebug) debugPrint('Fetching all seller_history records for seller...');
       
       final snapshot = await _firestore
           .collection('seller_history')
@@ -283,7 +300,7 @@ class SellerService {
           return bDate.compareTo(aDate);
         });
 
-      debugPrint('Found ${snapshot.docs.length} total seller_history records');
+      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} total seller_history records');
 
       // Filter and convert seller_history records to DuePayment objects
       final allPayments = <DuePayment>[];
@@ -294,10 +311,10 @@ class SellerService {
         final saleAmount = (data['saleAmount'] ?? 0).toDouble();
         final amountPaid = (data['amountPaid'] ?? 0).toDouble();
         
-        debugPrint('Document ${doc.id}:');
-        debugPrint('  - saleAmount: $saleAmount');
-        debugPrint('  - amountPaid: $amountPaid');
-        debugPrint('  - duePayment: $duePayment');
+        if (_sellerServiceDebug) debugPrint('Document ${doc.id}:');
+        if (_sellerServiceDebug) debugPrint('  - saleAmount: $saleAmount');
+        if (_sellerServiceDebug) debugPrint('  - amountPaid: $amountPaid');
+        if (_sellerServiceDebug) debugPrint('  - duePayment: $duePayment');
         
         if (duePayment > 0) {
           allPayments.add(DuePayment(
@@ -317,9 +334,9 @@ class SellerService {
       
       final payments = allPayments;
 
-      debugPrint('Filtered to ${payments.length} due payments');
-      debugPrint('Total due amount: ${payments.fold(0.0, (sum, p) => sum + p.dueAmount)}');
-      debugPrint('=== END FETCHING DUE PAYMENTS (FALLBACK) ===');
+      if (_sellerServiceDebug) debugPrint('Filtered to ${payments.length} due payments');
+      if (_sellerServiceDebug) debugPrint('Total due amount: ${payments.fold(0.0, (sum, p) => sum + p.dueAmount)}');
+      if (_sellerServiceDebug) debugPrint('=== END FETCHING DUE PAYMENTS (FALLBACK) ===');
       
       return payments;
     }
@@ -328,9 +345,9 @@ class SellerService {
   // Update seller_history due payments when payment is applied
   // Returns remaining payment amount (which should be stored as credit if > 0)
   Future<double> applyPaymentToDuePayments(String sellerId, double paymentAmount) async {
-    debugPrint('=== APPLYING PAYMENT TO DUE PAYMENTS ===');
-    debugPrint('Seller ID: $sellerId');
-    debugPrint('Payment Amount: $paymentAmount');
+    if (_sellerServiceDebug) debugPrint('=== APPLYING PAYMENT TO DUE PAYMENTS ===');
+    if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
+    if (_sellerServiceDebug) debugPrint('Payment Amount: $paymentAmount');
     
     try {
       // Try to fetch with composite query
@@ -341,7 +358,7 @@ class SellerService {
           .orderBy('createdAt') // Oldest first (ascending by default)
           .get();
       
-      debugPrint('Found ${snapshot.docs.length} records with due payments');
+      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} records with due payments');
       
       double remainingPayment = paymentAmount;
       
@@ -357,10 +374,10 @@ class SellerService {
           final newDue = currentDue - paymentApplied;
           remainingPayment -= paymentApplied;
           
-          debugPrint('Record ${doc.id}:');
-          debugPrint('  - Current Due: $currentDue');
-          debugPrint('  - Payment Applied: $paymentApplied');
-          debugPrint('  - New Due: $newDue');
+          if (_sellerServiceDebug) debugPrint('Record ${doc.id}:');
+          if (_sellerServiceDebug) debugPrint('  - Current Due: $currentDue');
+          if (_sellerServiceDebug) debugPrint('  - Payment Applied: $paymentApplied');
+          if (_sellerServiceDebug) debugPrint('  - New Due: $newDue');
           
           // Update the seller_history record
           await _firestore.collection('seller_history').doc(doc.id).update({
@@ -370,13 +387,13 @@ class SellerService {
         }
       }
       
-      debugPrint('Remaining payment after applying to dues: $remainingPayment');
-      debugPrint('=== END APPLYING PAYMENT ===');
+      if (_sellerServiceDebug) debugPrint('Remaining payment after applying to dues: $remainingPayment');
+      if (_sellerServiceDebug) debugPrint('=== END APPLYING PAYMENT ===');
       
       return remainingPayment; // Return remaining payment amount (should be stored as credit if > 0)
     } catch (e) {
       // Fallback: Fetch all and sort manually
-      debugPrint('Composite index may be needed. Using fallback: $e');
+      if (_sellerServiceDebug) debugPrint('Composite index may be needed. Using fallback: $e');
       final snapshot = await _firestore
           .collection('seller_history')
           .where('sellerId', isEqualTo: sellerId)
@@ -408,10 +425,10 @@ class SellerService {
           final newDue = currentDue - paymentApplied;
           remainingPayment -= paymentApplied;
           
-          debugPrint('Record ${doc.id}:');
-          debugPrint('  - Current Due: $currentDue');
-          debugPrint('  - Payment Applied: $paymentApplied');
-          debugPrint('  - New Due: $newDue');
+          if (_sellerServiceDebug) debugPrint('Record ${doc.id}:');
+          if (_sellerServiceDebug) debugPrint('  - Current Due: $currentDue');
+          if (_sellerServiceDebug) debugPrint('  - Payment Applied: $paymentApplied');
+          if (_sellerServiceDebug) debugPrint('  - New Due: $newDue');
           
           // Update the seller_history record
           await _firestore.collection('seller_history').doc(doc.id).update({
@@ -421,8 +438,8 @@ class SellerService {
         }
       }
       
-      debugPrint('Remaining payment after applying to dues: $remainingPayment');
-      debugPrint('=== END APPLYING PAYMENT (FALLBACK) ===');
+      if (_sellerServiceDebug) debugPrint('Remaining payment after applying to dues: $remainingPayment');
+      if (_sellerServiceDebug) debugPrint('=== END APPLYING PAYMENT (FALLBACK) ===');
       
       return remainingPayment;
     }
@@ -432,9 +449,9 @@ class SellerService {
   Future<void> addCreditBalance(String sellerId, double creditAmount, {String? description, String? referenceNumber}) async {
     if (creditAmount <= 0) return;
     
-    debugPrint('=== ADDING CREDIT BALANCE ===');
-    debugPrint('Seller ID: $sellerId');
-    debugPrint('Credit Amount: $creditAmount');
+    if (_sellerServiceDebug) debugPrint('=== ADDING CREDIT BALANCE ===');
+    if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
+    if (_sellerServiceDebug) debugPrint('Credit Amount: $creditAmount');
     
     try {
       final sellerRef = _firestore.collection('sellers').doc(sellerId);
@@ -459,14 +476,14 @@ class SellerService {
           referenceNumber: referenceNumber,
         );
         
-        debugPrint('Credit balance updated: $currentCredit + $creditAmount = $newCredit');
+        if (_sellerServiceDebug) debugPrint('Credit balance updated: $currentCredit + $creditAmount = $newCredit');
       } else {
-        debugPrint('Seller not found: $sellerId');
+        if (_sellerServiceDebug) debugPrint('Seller not found: $sellerId');
       }
       
-      debugPrint('=== END ADDING CREDIT BALANCE ===');
+      if (_sellerServiceDebug) debugPrint('=== END ADDING CREDIT BALANCE ===');
     } catch (e) {
-      debugPrint('Error adding credit balance: $e');
+      if (_sellerServiceDebug) debugPrint('Error adding credit balance: $e');
       rethrow;
     }
   }
@@ -480,7 +497,7 @@ class SellerService {
       }
       return 0.0;
     } catch (e) {
-      debugPrint('Error getting credit balance: $e');
+      if (_sellerServiceDebug) debugPrint('Error getting credit balance: $e');
       return 0.0;
     }
   }
@@ -490,9 +507,9 @@ class SellerService {
   Future<double> useCreditBalance(String sellerId, double amountToUse) async {
     if (amountToUse <= 0) return 0.0;
     
-    debugPrint('=== USING CREDIT BALANCE ===');
-    debugPrint('Seller ID: $sellerId');
-    debugPrint('Amount to Use: $amountToUse');
+    if (_sellerServiceDebug) debugPrint('=== USING CREDIT BALANCE ===');
+    if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
+    if (_sellerServiceDebug) debugPrint('Amount to Use: $amountToUse');
     
     try {
       final sellerRef = _firestore.collection('sellers').doc(sellerId);
@@ -519,16 +536,16 @@ class SellerService {
           );
         }
         
-        debugPrint('Credit balance used: $currentCredit - $creditUsed = $newCredit');
-        debugPrint('=== END USING CREDIT BALANCE ===');
+        if (_sellerServiceDebug) debugPrint('Credit balance used: $currentCredit - $creditUsed = $newCredit');
+        if (_sellerServiceDebug) debugPrint('=== END USING CREDIT BALANCE ===');
         
         return creditUsed;
       } else {
-        debugPrint('Seller not found: $sellerId');
+        if (_sellerServiceDebug) debugPrint('Seller not found: $sellerId');
         return 0.0;
       }
     } catch (e) {
-      debugPrint('Error using credit balance: $e');
+      if (_sellerServiceDebug) debugPrint('Error using credit balance: $e');
       return 0.0;
     }
   }
@@ -543,23 +560,23 @@ class SellerService {
   }) async {
     if (amountToReduce <= 0) return;
     
-    debugPrint('=== REDUCING CREDIT BALANCE ===');
-    debugPrint('Seller ID: $sellerId');
-    debugPrint('Amount to Reduce: $amountToReduce');
+    if (_sellerServiceDebug) debugPrint('=== REDUCING CREDIT BALANCE ===');
+    if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
+    if (_sellerServiceDebug) debugPrint('Amount to Reduce: $amountToReduce');
     
     try {
       final sellerRef = _firestore.collection('sellers').doc(sellerId);
       final sellerDoc = await sellerRef.get();
       
       if (!sellerDoc.exists) {
-        debugPrint('Seller not found: $sellerId');
+        if (_sellerServiceDebug) debugPrint('Seller not found: $sellerId');
         throw Exception('Seller not found');
       }
       
       final currentCredit = (sellerDoc.data()?['creditBalance'] ?? 0).toDouble();
       
       if (currentCredit <= 0) {
-        debugPrint('No credit balance to reduce');
+        if (_sellerServiceDebug) debugPrint('No credit balance to reduce');
         throw Exception('No credit balance available');
       }
       
@@ -570,8 +587,8 @@ class SellerService {
         'creditBalance': newCredit,
       });
       
-      debugPrint('Credit balance reduced by: $amountReduced');
-      debugPrint('Credit balance: $currentCredit -> $newCredit');
+      if (_sellerServiceDebug) debugPrint('Credit balance reduced by: $amountReduced');
+      if (_sellerServiceDebug) debugPrint('Credit balance: $currentCredit -> $newCredit');
       
       // Add credit history
       await addCreditHistory(
@@ -584,10 +601,10 @@ class SellerService {
         referenceNumber: referenceNumber,
       );
       
-      debugPrint('Credit balance reduced: $currentCredit - $amountReduced = $newCredit');
-      debugPrint('=== END REDUCING CREDIT BALANCE ===');
+      if (_sellerServiceDebug) debugPrint('Credit balance reduced: $currentCredit - $amountReduced = $newCredit');
+      if (_sellerServiceDebug) debugPrint('=== END REDUCING CREDIT BALANCE ===');
     } catch (e) {
-      debugPrint('Error reducing credit balance: $e');
+      if (_sellerServiceDebug) debugPrint('Error reducing credit balance: $e');
       rethrow;
     }
   }
@@ -620,9 +637,9 @@ class SellerService {
           .doc(creditHistory.id)
           .set(creditHistory.toMap());
       
-      debugPrint('Credit history added: ${creditHistory.id}');
+      if (_sellerServiceDebug) debugPrint('Credit history added: ${creditHistory.id}');
     } catch (e) {
-      debugPrint('Error adding credit history: $e');
+      if (_sellerServiceDebug) debugPrint('Error adding credit history: $e');
       // Don't throw - credit history is not critical for the main operation
     }
   }
@@ -679,31 +696,30 @@ class SellerService {
     });
   }
 
-  // Get total credit reductions (sum of all negative amounts from credit_history)
-  // This represents money that was paid to reduce credit balance and should reduce revenue
+  // Get total credit reductions (throttled for dashboard performance)
   Stream<double> getTotalCreditReductionsStream() {
-    return _firestore
+    final source = _firestore
         .collection('credit_history')
         .snapshots()
         .map((snapshot) {
       double totalReductions = 0.0;
-      debugPrint('=== CALCULATING TOTAL CREDIT REDUCTIONS ===');
-      debugPrint('Total credit_history records: ${snapshot.docs.length}');
+      if (_sellerServiceDebug) debugPrint('=== CALCULATING TOTAL CREDIT REDUCTIONS ===');
+      if (_sellerServiceDebug) debugPrint('Total credit_history records: ${snapshot.docs.length}');
       for (var doc in snapshot.docs) {
         final data = doc.data();
         final amount = (data['amount'] ?? 0).toDouble();
         final type = data['type'] ?? '';
         final sellerId = data['sellerId'] ?? '';
-        // Only count negative amounts (reductions) with type 'payment' (manual payments to reduce credit)
         if (amount < 0 && type == 'payment') {
-          totalReductions += amount.abs(); // Add absolute value (since amount is negative)
-          debugPrint('Found credit reduction: ${doc.id}, amount: ${amount.abs()}, seller: $sellerId');
+          totalReductions += amount.abs();
+          if (_sellerServiceDebug) debugPrint('Found credit reduction: ${doc.id}, amount: ${amount.abs()}, seller: $sellerId');
         }
       }
-      debugPrint('Total Credit Reductions: $totalReductions');
-      debugPrint('=== END CALCULATING CREDIT REDUCTIONS ===');
+      if (_sellerServiceDebug) debugPrint('Total Credit Reductions: $totalReductions');
+      if (_sellerServiceDebug) debugPrint('=== END CALCULATING CREDIT REDUCTIONS ===');
       return totalReductions;
     });
+    return _throttleStream(source, _dashboardThrottle);
   }
 
   // Get total credit reductions by date range
@@ -729,13 +745,13 @@ class SellerService {
               totalReductions += amount.abs(); // Add absolute value
             }
           } catch (e) {
-            debugPrint('Error parsing createdAt in credit_history ${doc.id}: $e');
+            if (_sellerServiceDebug) debugPrint('Error parsing createdAt in credit_history ${doc.id}: $e');
           }
         }
       }
       return totalReductions;
     } catch (e) {
-      debugPrint('Error getting credit reductions by date range: $e');
+      if (_sellerServiceDebug) debugPrint('Error getting credit reductions by date range: $e');
       return 0.0;
     }
   }
@@ -765,16 +781,16 @@ class SellerService {
   // When credit balance is reduced, creates an expense entry to reduce Revenue and Total Revenue
   // This ensures that reducing credit balance properly reflects in the dashboard metrics
   Future<void> updateCreditBalance(String sellerId, double newCreditBalance) async {
-    debugPrint('=== UPDATING CREDIT BALANCE ===');
-    debugPrint('Seller ID: $sellerId');
-    debugPrint('New Credit Balance: $newCreditBalance');
+    if (_sellerServiceDebug) debugPrint('=== UPDATING CREDIT BALANCE ===');
+    if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
+    if (_sellerServiceDebug) debugPrint('New Credit Balance: $newCreditBalance');
     
     try {
       final sellerRef = _firestore.collection('sellers').doc(sellerId);
       final sellerDoc = await sellerRef.get();
       
       if (!sellerDoc.exists) {
-        debugPrint('Seller not found: $sellerId');
+        if (_sellerServiceDebug) debugPrint('Seller not found: $sellerId');
         throw Exception('Seller not found');
       }
       
@@ -783,26 +799,26 @@ class SellerService {
       final oldCreditBalance = (sellerData['creditBalance'] ?? 0).toDouble();
       final creditDifference = oldCreditBalance - newCreditBalance;
       
-      debugPrint('Old Credit Balance: $oldCreditBalance');
-      debugPrint('New Credit Balance: $newCreditBalance');
-      debugPrint('Credit Difference: $creditDifference');
+      if (_sellerServiceDebug) debugPrint('Old Credit Balance: $oldCreditBalance');
+      if (_sellerServiceDebug) debugPrint('New Credit Balance: $newCreditBalance');
+      if (_sellerServiceDebug) debugPrint('Credit Difference: $creditDifference');
       
       // Update the credit balance
       await sellerRef.update({
         'creditBalance': newCreditBalance.clamp(0.0, double.infinity),
       });
       
-      debugPrint('Credit balance updated: $oldCreditBalance -> $newCreditBalance');
+      if (_sellerServiceDebug) debugPrint('Credit balance updated: $oldCreditBalance -> $newCreditBalance');
       if (creditDifference > 0) {
-        debugPrint('Credit balance reduced by: $creditDifference');
+        if (_sellerServiceDebug) debugPrint('Credit balance reduced by: $creditDifference');
       } else if (creditDifference < 0) {
-        debugPrint('Credit balance increased by: ${creditDifference.abs()}');
+        if (_sellerServiceDebug) debugPrint('Credit balance increased by: ${creditDifference.abs()}');
       }
       
-      debugPrint('Credit balance updated to: $newCreditBalance');
-      debugPrint('=== END UPDATING CREDIT BALANCE ===');
+      if (_sellerServiceDebug) debugPrint('Credit balance updated to: $newCreditBalance');
+      if (_sellerServiceDebug) debugPrint('=== END UPDATING CREDIT BALANCE ===');
     } catch (e) {
-      debugPrint('Error updating credit balance: $e');
+      if (_sellerServiceDebug) debugPrint('Error updating credit balance: $e');
       rethrow;
     }
   }
@@ -811,8 +827,8 @@ class SellerService {
   // This deletes all records related to the seller (seller_history entries)
   // Also creates an expense entry for the deleted credit balance amount to reduce revenue
   Future<void> deleteCreditBalanceWithHistory(String sellerId) async {
-    debugPrint('=== DELETING CREDIT BALANCE AND HISTORY ===');
-    debugPrint('Seller ID: $sellerId');
+    if (_sellerServiceDebug) debugPrint('=== DELETING CREDIT BALANCE AND HISTORY ===');
+    if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
     
     try {
       // Get seller info and current credit balance before deleting
@@ -820,7 +836,7 @@ class SellerService {
       final sellerDoc = await sellerRef.get();
       
       if (!sellerDoc.exists) {
-        debugPrint('Seller not found: $sellerId');
+        if (_sellerServiceDebug) debugPrint('Seller not found: $sellerId');
         throw Exception('Seller not found');
       }
       
@@ -828,8 +844,8 @@ class SellerService {
       final seller = Seller.fromMap(sellerData);
       final currentCreditBalance = (sellerData['creditBalance'] ?? 0).toDouble();
       
-      debugPrint('Current credit balance: $currentCreditBalance');
-      debugPrint('Seller name: ${seller.name}');
+      if (_sellerServiceDebug) debugPrint('Current credit balance: $currentCreditBalance');
+      if (_sellerServiceDebug) debugPrint('Seller name: ${seller.name}');
       
       // If credit balance > 0, create an expense entry to reduce revenue
       if (currentCreditBalance > 0) {
@@ -843,7 +859,7 @@ class SellerService {
         );
         
         await expenseService.addExpense(expense);
-        debugPrint('Created expense entry: Rs. $currentCreditBalance to reduce revenue');
+        if (_sellerServiceDebug) debugPrint('Created expense entry: Rs. $currentCreditBalance to reduce revenue');
       }
       
       // Reset credit balance to 0
@@ -857,21 +873,21 @@ class SellerService {
           .where('sellerId', isEqualTo: sellerId)
           .get();
       
-      debugPrint('Found ${historySnapshot.docs.length} seller_history records to delete');
+      if (_sellerServiceDebug) debugPrint('Found ${historySnapshot.docs.length} seller_history records to delete');
       
       // Delete each history record
       for (var doc in historySnapshot.docs) {
         await doc.reference.delete();
-        debugPrint('Deleted seller_history record: ${doc.id}');
+        if (_sellerServiceDebug) debugPrint('Deleted seller_history record: ${doc.id}');
       }
       
-      debugPrint('Credit balance reset and ${historySnapshot.docs.length} history records deleted');
+      if (_sellerServiceDebug) debugPrint('Credit balance reset and ${historySnapshot.docs.length} history records deleted');
       if (currentCreditBalance > 0) {
-        debugPrint('Expense created to reduce revenue by: Rs. $currentCreditBalance');
+        if (_sellerServiceDebug) debugPrint('Expense created to reduce revenue by: Rs. $currentCreditBalance');
       }
-      debugPrint('=== END DELETING CREDIT BALANCE AND HISTORY ===');
+      if (_sellerServiceDebug) debugPrint('=== END DELETING CREDIT BALANCE AND HISTORY ===');
     } catch (e) {
-      debugPrint('Error deleting credit balance and history: $e');
+      if (_sellerServiceDebug) debugPrint('Error deleting credit balance and history: $e');
       rethrow;
     }
   }
@@ -918,7 +934,7 @@ class SellerService {
       }
       return updated;
     } catch (e) {
-      debugPrint('Error migrating seller payment records: $e');
+      if (_sellerServiceDebug) debugPrint('Error migrating seller payment records: $e');
       rethrow;
     }
   }
@@ -960,8 +976,126 @@ class SellerService {
 
       return (totalDue, referenceNumber);
     } catch (e) {
-      debugPrint('Error getTotalDueAndReferenceForSeller: $e');
+      if (_sellerServiceDebug) debugPrint('Error getTotalDueAndReferenceForSeller: $e');
       return (0.0, null);
+    }
+  }
+
+  /// Total payments received from this seller (all time): manual due payments only.
+  Future<double> getTotalPaymentsReceivedForSeller(String sellerId) async {
+    try {
+      final snapshot = await _firestore
+          .collection('seller_history')
+          .where('sellerId', isEqualTo: sellerId)
+          .get();
+
+      double total = 0.0;
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final recordType = data['recordType'] as String?;
+        final isManual = data['isManual'] == true;
+        final duePayment = (data['duePayment'] ?? 0).toDouble();
+        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+
+        final isPayment = recordType == 'payment' ||
+            (isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0);
+        if (isPayment) total += saleAmount;
+      }
+      return total;
+    } catch (e) {
+      if (_sellerServiceDebug) debugPrint('Error getTotalPaymentsReceivedForSeller: $e');
+      return 0.0;
+    }
+  }
+
+  /// Returns seller IDs that had due payment (money received) or credit (add/reduce) activity
+  /// during [startDate]–[endDate]. Used to filter the Sellers list by “activity in period”.
+  Future<Set<String>> getSellerIdsWithDueOrCreditActivityInDateRange(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final start = DateTime(startDate.year, startDate.month, startDate.day);
+    final end = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59);
+    final sellerIds = <String>{};
+
+    try {
+      // Due payments: seller_history records that are "payment" type with saleDate in range
+      final historySnapshot = await _firestore.collection('seller_history').get();
+      for (var doc in historySnapshot.docs) {
+        final data = doc.data();
+        final saleDateStr = data['saleDate'];
+        if (saleDateStr == null) continue;
+        DateTime? saleDate;
+        try {
+          saleDate = DateTime.parse(saleDateStr);
+        } catch (_) {
+          continue;
+        }
+        if (saleDate.isBefore(start) || saleDate.isAfter(end)) continue;
+
+        final recordType = data['recordType'] as String?;
+        final isManual = data['isManual'] == true;
+        final duePayment = (data['duePayment'] ?? 0).toDouble();
+        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+        final isPayment = recordType == 'payment' ||
+            (isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0);
+        if (isPayment) {
+          final sid = data['sellerId'] as String?;
+          if (sid != null && sid.isNotEmpty) sellerIds.add(sid);
+        }
+      }
+
+      // Credit activity: credit_history with createdAt in range
+      final creditSnapshot = await _firestore.collection('credit_history').get();
+      for (var doc in creditSnapshot.docs) {
+        final data = doc.data();
+        final createdAtStr = data['createdAt'];
+        if (createdAtStr == null) continue;
+        DateTime? createdAt;
+        try {
+          createdAt = DateTime.parse(createdAtStr);
+        } catch (_) {
+          continue;
+        }
+        if (createdAt.isBefore(start) || createdAt.isAfter(end)) continue;
+        final sid = data['sellerId'] as String?;
+        if (sid != null && sid.isNotEmpty) sellerIds.add(sid);
+      }
+
+      return sellerIds;
+    } catch (e) {
+      if (_sellerServiceDebug) debugPrint('Error getSellerIdsWithDueOrCreditActivityInDateRange: $e');
+      return {};
+    }
+  }
+
+  /// Total sales amount for this seller (all time): sum of sale amounts from sale records only (excludes payment entries).
+  Future<double> getTotalSalesForSeller(String sellerId) async {
+    try {
+      final snapshot = await _firestore
+          .collection('seller_history')
+          .where('sellerId', isEqualTo: sellerId)
+          .get();
+
+      double total = 0.0;
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final recordType = data['recordType'] as String?;
+        final isManual = data['isManual'] == true;
+        final duePayment = (data['duePayment'] ?? 0).toDouble();
+        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+
+        final isPayment = recordType == 'payment' ||
+            (isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0);
+        if (!isPayment) total += saleAmount;
+      }
+      return total;
+    } catch (e) {
+      if (_sellerServiceDebug) debugPrint('Error getTotalSalesForSeller: $e');
+      return 0.0;
     }
   }
 
@@ -969,9 +1103,9 @@ class SellerService {
   // This calculates the actual current due amounts (which are updated when payments are made)
   Future<double> getTotalUnpaidSalesByDateRange(DateTime startDate, DateTime endDate) async {
     try {
-      debugPrint('=== CALCULATING TOTAL UNPAID SALES BY DATE RANGE ===');
-      debugPrint('Start Date: $startDate');
-      debugPrint('End Date: $endDate');
+      if (_sellerServiceDebug) debugPrint('=== CALCULATING TOTAL UNPAID SALES BY DATE RANGE ===');
+      if (_sellerServiceDebug) debugPrint('Start Date: $startDate');
+      if (_sellerServiceDebug) debugPrint('End Date: $endDate');
       
       // Get all seller_history records and filter by date range in memory
       // This avoids needing a composite index and ensures we get accurate data
@@ -979,7 +1113,7 @@ class SellerService {
           .collection('seller_history')
           .get();
 
-      debugPrint('Found ${snapshot.docs.length} total seller_history records');
+      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} total seller_history records');
 
       double totalUnpaid = 0.0;
       for (var doc in snapshot.docs) {
@@ -995,20 +1129,20 @@ class SellerService {
                 saleDate.isAfter(startDate.subtract(const Duration(seconds: 1))) &&
                 saleDate.isBefore(endDate.add(const Duration(seconds: 1)))) {
               totalUnpaid += duePayment;
-              debugPrint('Record ${doc.id}: duePayment = $duePayment (Sale Date: $saleDate, Total so far: $totalUnpaid)');
+              if (_sellerServiceDebug) debugPrint('Record ${doc.id}: duePayment = $duePayment (Sale Date: $saleDate, Total so far: $totalUnpaid)');
             }
           }
         } catch (parseError) {
-          debugPrint('Error parsing seller_history record ${doc.id}: $parseError');
+          if (_sellerServiceDebug) debugPrint('Error parsing seller_history record ${doc.id}: $parseError');
           continue;
         }
       }
 
-      debugPrint('Total Unpaid Sales: $totalUnpaid');
-      debugPrint('=== END CALCULATION ===');
+      if (_sellerServiceDebug) debugPrint('Total Unpaid Sales: $totalUnpaid');
+      if (_sellerServiceDebug) debugPrint('=== END CALCULATION ===');
       return totalUnpaid;
     } catch (e) {
-      debugPrint('Error getting unpaid sales: $e');
+      if (_sellerServiceDebug) debugPrint('Error getting unpaid sales: $e');
       return 0.0;
     }
   }
@@ -1017,14 +1151,14 @@ class SellerService {
   // This is used for the borrow section to show current total owed
   Future<double> getTotalUnpaidSales() async {
     try {
-      debugPrint('=== CALCULATING TOTAL UNPAID SALES (ALL) ===');
+      if (_sellerServiceDebug) debugPrint('=== CALCULATING TOTAL UNPAID SALES (ALL) ===');
       
       // Get all seller_history records
       final snapshot = await _firestore
           .collection('seller_history')
           .get();
 
-      debugPrint('Found ${snapshot.docs.length} total seller_history records');
+      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} total seller_history records');
 
       double totalUnpaid = 0.0;
       for (var doc in snapshot.docs) {
@@ -1035,18 +1169,18 @@ class SellerService {
         }
       }
 
-      debugPrint('Total Unpaid Sales (All): $totalUnpaid');
-      debugPrint('=== END CALCULATION ===');
+      if (_sellerServiceDebug) debugPrint('Total Unpaid Sales (All): $totalUnpaid');
+      if (_sellerServiceDebug) debugPrint('=== END CALCULATION ===');
       return totalUnpaid;
     } catch (e) {
-      debugPrint('Error getting total unpaid sales: $e');
+      if (_sellerServiceDebug) debugPrint('Error getting total unpaid sales: $e');
       return 0.0;
     }
   }
 
-  // Get total unpaid sales stream (all unpaid sales regardless of date) - for real-time updates
+  // Get total unpaid sales stream (all unpaid sales regardless of date) - throttled for performance
   Stream<double> getTotalUnpaidSalesStream() {
-    return _firestore
+    final source = _firestore
         .collection('seller_history')
         .snapshots()
         .map((snapshot) {
@@ -1060,6 +1194,7 @@ class SellerService {
       }
       return totalUnpaid;
     });
+    return _throttleStream(source, _dashboardThrottle);
   }
 
   // Get total borrow profit stream (profit from unpaid portions of sales)
@@ -1085,7 +1220,7 @@ class SellerService {
             salesMap[sale.id] = sale;
           }
         } catch (e) {
-          debugPrint('Error parsing sale ${doc.id}: $e');
+          if (_sellerServiceDebug) debugPrint('Error parsing sale ${doc.id}: $e');
         }
       }
       
@@ -1106,12 +1241,12 @@ class SellerService {
             final netProfit = sale.netProfit; // Profit after returns
             final borrowProfit = netProfit * unpaidRatio;
             totalBorrowProfit += borrowProfit;
-            debugPrint('Borrow Profit: Sale $saleId, Due: $duePayment, SaleAmount: $saleAmount, Ratio: $unpaidRatio, Profit: $borrowProfit');
+            if (_sellerServiceDebug) debugPrint('Borrow Profit: Sale $saleId, Due: $duePayment, SaleAmount: $saleAmount, Ratio: $unpaidRatio, Profit: $borrowProfit');
           }
         }
       }
       
-      debugPrint('Total Borrow Profit: $totalBorrowProfit');
+      if (_sellerServiceDebug) debugPrint('Total Borrow Profit: $totalBorrowProfit');
       return totalBorrowProfit;
     });
   }
@@ -1140,7 +1275,7 @@ class SellerService {
             salesMap[sale.id] = sale;
           }
         } catch (e) {
-          debugPrint('Error parsing sale ${doc.id}: $e');
+          if (_sellerServiceDebug) debugPrint('Error parsing sale ${doc.id}: $e');
         }
       }
       
@@ -1180,7 +1315,7 @@ class SellerService {
             final netProfit = sale.netProfit; // Profit after returns
             final realProfit = netProfit * paidRatio;
             totalRealProfit += realProfit;
-            debugPrint('Real Profit: Sale $saleId, Total Paid: $totalPaid, SaleAmount: $saleAmount, Ratio: $paidRatio, Profit: $realProfit');
+            if (_sellerServiceDebug) debugPrint('Real Profit: Sale $saleId, Total Paid: $totalPaid, SaleAmount: $saleAmount, Ratio: $paidRatio, Profit: $realProfit');
           }
         }
       }
@@ -1204,20 +1339,19 @@ class SellerService {
             // Sale is fully paid, add full net profit
             final netProfit = sale.netProfit; // Profit after returns
             totalRealProfit += netProfit;
-            debugPrint('Real Profit (No Seller): Sale ${sale.id}, Amount Paid: ${sale.amountPaid}, Change: ${sale.change}, Amount Received: $amountReceived, Net Total: $netTotal, Profit: $netProfit');
+            if (_sellerServiceDebug) debugPrint('Real Profit (No Seller): Sale ${sale.id}, Amount Paid: ${sale.amountPaid}, Change: ${sale.change}, Amount Received: $amountReceived, Net Total: $netTotal, Profit: $netProfit');
           }
         }
       }
       
-      debugPrint('Total Real Profit from Paid: $totalRealProfit');
+      if (_sellerServiceDebug) debugPrint('Total Real Profit from Paid: $totalRealProfit');
       return totalRealProfit;
     });
   }
 
-  // Get real profit from paid portions by date range
-  // This calculates profit from all paid amounts within the specified date range
+  // Get real profit from paid portions by date range (throttled for dashboard performance)
   Stream<double> getRealProfitFromPaidStreamByDateRange(DateTime startDate, DateTime endDate) {
-    return _firestore
+    final source = _firestore
         .collection('seller_history')
         .snapshots()
         .asyncMap((snapshot) async {
@@ -1237,7 +1371,7 @@ class SellerService {
             salesMap[sale.id] = sale;
           }
         } catch (e) {
-          debugPrint('Error parsing sale ${doc.id}: $e');
+          if (_sellerServiceDebug) debugPrint('Error parsing sale ${doc.id}: $e');
         }
       }
       
@@ -1262,7 +1396,7 @@ class SellerService {
               continue; // Skip if outside date range
             }
           } catch (e) {
-            debugPrint('Error parsing saleDate in seller_history ${doc.id}: $e');
+            if (_sellerServiceDebug) debugPrint('Error parsing saleDate in seller_history ${doc.id}: $e');
             continue;
           }
         } else {
@@ -1294,7 +1428,7 @@ class SellerService {
             final netProfit = sale.netProfit; // Profit after returns
             final realProfit = netProfit * paidRatio;
             totalRealProfit += realProfit;
-            debugPrint('Real Profit (Filtered): Sale $saleId, Total Paid: $totalPaid, SaleAmount: $saleAmount, Ratio: $paidRatio, Profit: $realProfit');
+            if (_sellerServiceDebug) debugPrint('Real Profit (Filtered): Sale $saleId, Total Paid: $totalPaid, SaleAmount: $saleAmount, Ratio: $paidRatio, Profit: $realProfit');
           }
         }
       }
@@ -1320,20 +1454,20 @@ class SellerService {
             // Sale is fully paid, add full net profit
             final netProfit = sale.netProfit; // Profit after returns
             totalRealProfit += netProfit;
-            debugPrint('Real Profit (No Seller, Filtered): Sale ${sale.id}, Amount Paid: ${sale.amountPaid}, Change: ${sale.change}, Amount Received: $amountReceived, Net Total: $netTotal, Profit: $netProfit');
+            if (_sellerServiceDebug) debugPrint('Real Profit (No Seller, Filtered): Sale ${sale.id}, Amount Paid: ${sale.amountPaid}, Change: ${sale.change}, Amount Received: $amountReceived, Net Total: $netTotal, Profit: $netProfit');
           }
         }
       }
       
-      debugPrint('Total Real Profit from Paid (Filtered): $totalRealProfit');
+      if (_sellerServiceDebug) debugPrint('Total Real Profit from Paid (Filtered): $totalRealProfit');
       return totalRealProfit;
     });
+    return _throttleStream(source, _dashboardThrottle);
   }
 
-  // Get borrow profit by date range
-  // This calculates profit from unpaid portions of sales within the specified date range
+  // Get borrow profit by date range (throttled for dashboard performance)
   Stream<double> getBorrowProfitStreamByDateRange(DateTime startDate, DateTime endDate) {
-    return _firestore
+    final source = _firestore
         .collection('seller_history')
         .snapshots()
         .asyncMap((snapshot) async {
@@ -1353,7 +1487,7 @@ class SellerService {
             salesMap[sale.id] = sale;
           }
         } catch (e) {
-          debugPrint('Error parsing sale ${doc.id}: $e');
+          if (_sellerServiceDebug) debugPrint('Error parsing sale ${doc.id}: $e');
         }
       }
       
@@ -1374,7 +1508,7 @@ class SellerService {
               continue; // Skip if outside date range
             }
           } catch (e) {
-            debugPrint('Error parsing saleDate in seller_history ${doc.id}: $e');
+            if (_sellerServiceDebug) debugPrint('Error parsing saleDate in seller_history ${doc.id}: $e');
             continue;
           }
         } else {
@@ -1390,14 +1524,15 @@ class SellerService {
             final netProfit = sale.netProfit; // Profit after returns
             final borrowProfit = netProfit * unpaidRatio;
             totalBorrowProfit += borrowProfit;
-            debugPrint('Borrow Profit (Filtered): Sale $saleId, Due: $duePayment, SaleAmount: $saleAmount, Ratio: $unpaidRatio, Profit: $borrowProfit');
+            if (_sellerServiceDebug) debugPrint('Borrow Profit (Filtered): Sale $saleId, Due: $duePayment, SaleAmount: $saleAmount, Ratio: $unpaidRatio, Profit: $borrowProfit');
           }
         }
       }
       
-      debugPrint('Total Borrow Profit (Filtered): $totalBorrowProfit');
+      if (_sellerServiceDebug) debugPrint('Total Borrow Profit (Filtered): $totalBorrowProfit');
       return totalBorrowProfit;
     });
+    return _throttleStream(source, _dashboardThrottle);
   }
 }
 

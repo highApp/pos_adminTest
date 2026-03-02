@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../utils/app_shortcuts.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import '../models/buyer.dart';
@@ -10,6 +12,7 @@ import '../models/category.dart';
 import '../services/buyer_bill_service.dart';
 import '../services/product_service.dart';
 import '../services/category_service.dart';
+import '../services/add_item_prefs.dart';
 
 class CreateEditBuyerBillScreen extends StatefulWidget {
   final Buyer buyer;
@@ -31,7 +34,9 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
   final _formKey = GlobalKey<FormState>();
   final List<BuyerBillItem> _items = [];
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
-  
+  /// Last category used in Add Item dialog — pre-select when adding another item from same category.
+  String? _lastAddItemCategory;
+
   String _paymentMethod = 'cash';
   String? _notes;
   double _amountPaid = 0.0;
@@ -59,7 +64,47 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
         text: _generateBillNumber(),
       );
       _finalPriceWithoutExpenseController = TextEditingController(text: '');
+      _offerRestoreDraft();
     }
+  }
+
+  Future<void> _offerRestoreDraft() async {
+    final draft = await AddItemPrefs.getDraftItems();
+    if (draft == null || draft.isEmpty || !mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final restore = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Restore draft?'),
+          content: Text(
+            'You had ${draft.length} item${draft.length == 1 ? '' : 's'} in your last bill. Restore them?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Discard'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (restore == true) {
+        setState(() {
+          _items.clear();
+          _items.addAll(draft.map((m) => BuyerBillItem.fromMap(m)));
+          _syncFinalPriceWithoutExpenseFromTotal();
+        });
+        await AddItemPrefs.clearDraft();
+      } else {
+        await AddItemPrefs.clearDraft();
+      }
+    });
   }
 
   void _syncFinalPriceWithoutExpenseFromTotal() {
@@ -111,13 +156,22 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
     return 0.0; // Not used anymore
   }
 
-  void _addItem() {
+  Future<void> _addItem() async {
+    final lastCat = _lastAddItemCategory ?? await AddItemPrefs.getLastCategory();
+    final recentCats = await AddItemPrefs.getRecentCategories();
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (context) => _AddItemDialog(
+        initialCategory: lastCat,
+        recentCategories: recentCats,
         onAdd: (item) {
           setState(() {
             _items.add(item);
+            if (item.category != null && item.category!.isNotEmpty) {
+              _lastAddItemCategory = item.category;
+              AddItemPrefs.saveCategory(item.category!);
+            }
             _syncFinalPriceWithoutExpenseFromTotal();
           });
         },
@@ -316,6 +370,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
       await _billService.addBill(bill);
 
       if (mounted) {
+        await AddItemPrefs.clearDraft();
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -346,9 +401,23 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
     }
   }
 
+  Future<void> _saveDraftAndPop() async {
+    if (widget.bill == null && _items.isNotEmpty) {
+      await AddItemPrefs.saveDraftItems(_items.map((e) => e.toMap()).toList());
+    }
+    if (mounted) Navigator.pop(context);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final hasDraft = widget.bill == null && _items.isNotEmpty;
+    return PopScope(
+      canPop: !hasDraft,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await _saveDraftAndPop();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: Text(widget.bill == null ? 'Create Bill' : 'Edit Bill'),
         elevation: 0,
@@ -685,6 +754,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
         backgroundColor: Colors.purple,
         child: const Icon(Icons.add),
       ),
+    ),
     );
   }
 }
@@ -892,10 +962,16 @@ class _CalculatorDialogState extends State<_CalculatorDialog> {
 class _AddItemDialog extends StatefulWidget {
   final BuyerBillItem? item;
   final Function(BuyerBillItem) onAdd;
+  /// When adding a new item, pre-select this category so user doesn't have to pick again.
+  final String? initialCategory;
+  /// Recent categories for one-tap select (saved across sessions).
+  final List<String> recentCategories;
 
   const _AddItemDialog({
     this.item,
     required this.onAdd,
+    this.initialCategory,
+    this.recentCategories = const [],
   });
 
   @override
@@ -918,12 +994,18 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   late TextEditingController _totalQtyController;
   late TextEditingController _bonusQtyController;
   late TextEditingController _taxPercentController;
+  late TextEditingController _salePriceController;
+  late TextEditingController _wholesalePriceController;
   bool _isSyncingQtyPackSize = false;
   DateTime? _selectedDate;
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
   bool _isManualTotalEdit = false;
-  String? _selectedCategory;
+  String? _selectedCategory; // set from widget.initialCategory for new item, or from product when editing
   Product? _selectedProduct;
+  /// Rebuild only the calculated-fields section (stops full-dialog setState on every keystroke).
+  final ValueNotifier<int> _calculatedVersion = ValueNotifier<int>(0);
+  Timer? _productSearchDebounce;
+  Timer? _stockUpdateDebounce;
   double? _currentProductStock; // Track current stock for real-time updates
   String? _selectedPackingType;
   final List<String> _packingTypes = [
@@ -963,7 +1045,13 @@ class _AddItemDialogState extends State<_AddItemDialog> {
             ? (widget.item?.bonusQty ?? 0).toInt().toString()
             : (widget.item?.bonusQty ?? 0).toStringAsFixed(2)));
     _taxPercentController = TextEditingController(text: '0');
+    _salePriceController = TextEditingController();
+    _wholesalePriceController = TextEditingController();
     _selectedDate = widget.item?.date ?? DateTime.now();
+    // When adding new item, keep last-used category so user doesn't have to select again
+    if (widget.item == null && widget.initialCategory != null && widget.initialCategory!.isNotEmpty) {
+      _selectedCategory = widget.initialCategory;
+    }
     // Restore packing type when editing (match unit to packing types if applicable)
     _selectedPackingType = widget.item?.packingType;
     if (_selectedPackingType == null && widget.item?.unit != null) {
@@ -1034,6 +1122,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
           _selectedProduct = matchingProduct;
           _currentProductStock = matchingProduct.stock;
           _productSearchController.text = matchingProduct.name;
+          _salePriceController.text = matchingProduct.salePrice.toStringAsFixed(2);
+          _wholesalePriceController.text = matchingProduct.wholesalePrice?.toStringAsFixed(2) ?? '';
           // When editing, restore category from product so dropdown shows correct value
           if (widget.item != null && matchingProduct.category.isNotEmpty) {
             _selectedCategory = matchingProduct.category;
@@ -1047,8 +1137,10 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   }
   
   void _onProductSearchChanged() {
-    // Trigger rebuild to update filtered products
-    setState(() {});
+    _productSearchDebounce?.cancel();
+    _productSearchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) setState(() {});
+    });
   }
   
   void _onCategorySelected(String? category) {
@@ -1059,9 +1151,11 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _nameController.clear();
       _priceController.clear();
       _unitController.clear();
+      _salePriceController.clear();
+      _wholesalePriceController.clear();
     });
   }
-  
+
   List<Product> _getFilteredProducts(List<Product> allProducts) {
     var products = allProducts;
     
@@ -1113,8 +1207,25 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _nameController.text = _selectedProduct!.name;
       // Use purchase price instead of sale price for buyer bills
       _priceController.text = _selectedProduct!.purchasePrice.toStringAsFixed(2);
+      _salePriceController.text = _selectedProduct!.salePrice.toStringAsFixed(2);
+      _wholesalePriceController.text = _selectedProduct!.wholesalePrice?.toStringAsFixed(2) ?? '';
       _unitController.text = _selectedProduct!.unit;
       _productSearchController.text = _selectedProduct!.name;
+      // Auto-select packing type when product's unit matches a known packing type
+      final unit = _selectedProduct!.unit.trim().toLowerCase();
+      if (unit.isNotEmpty) {
+        if (_packingTypes.any((t) => t.toLowerCase() == unit)) {
+          _selectedPackingType = _packingTypes.firstWhere(
+            (t) => t.toLowerCase() == unit,
+          );
+        } else if (unit == 'pcs' || unit == 'pieces') {
+          _selectedPackingType = 'Piece';
+        } else {
+          _selectedPackingType = null;
+        }
+      } else {
+        _selectedPackingType = null;
+      }
     });
     _onPriceOrQuantityChanged();
   }
@@ -1156,9 +1267,12 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _totalPriceController.text = calculatedTotal > 0 ? calculatedTotal.toStringAsFixed(2) : '';
       _totalPriceController.addListener(_onTotalPriceChanged);
     }
-    
-    // Update stock info when quantity changes
-    _updateStockInfo();
+    _calculatedVersion.value++;
+    // Debounce stock refresh so typing doesn't trigger repeated fetches/rebuilds
+    _stockUpdateDebounce?.cancel();
+    _stockUpdateDebounce = Timer(const Duration(milliseconds: 500), () {
+      _updateStockInfo();
+    });
   }
 
   void _onExpenseChanged() {
@@ -1174,9 +1288,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _totalPriceController.removeListener(_onTotalPriceChanged);
       _totalPriceController.text = calculatedTotal > 0 ? calculatedTotal.toStringAsFixed(2) : '';
       _totalPriceController.addListener(_onTotalPriceChanged);
-      
-      // Force UI update (e.g. Single Unit Price changes with expense)
-      setState(() {});
+      _calculatedVersion.value++;
     }
   }
   
@@ -1196,6 +1308,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _priceController.removeListener(_onPriceOrQuantityChanged);
       _priceController.text = newPrice > 0 ? newPrice.toStringAsFixed(2) : '';
       _priceController.addListener(_onPriceOrQuantityChanged);
+      _calculatedVersion.value++;
     }
   }
   
@@ -1228,10 +1341,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     } else {
       _singleUnitPriceController.text = '';
     }
-    
-    if (mounted) {
-      setState(() {});
-    }
+    _calculatedVersion.value++;
   }
 
   void _updateTotalQty() {
@@ -1248,10 +1358,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
         ? totalQty.toStringAsFixed(totalQty % 1 == 0 ? 0 : 2)
         : '';
     _isSyncingQtyPackSize = false;
-
-    if (mounted) {
-      setState(() {});
-    }
+    _calculatedVersion.value++;
   }
 
   void _onTotalQtyChanged() {
@@ -1271,7 +1378,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
           ? newBonus.toInt().toString()
           : newBonus.toStringAsFixed(2);
       _bonusQtyController.addListener(_updateTotalQty);
-      if (mounted) setState(() {});
+      _calculatedVersion.value++;
       return;
     }
 
@@ -1284,14 +1391,14 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _isSyncingQtyPackSize = false;
       _updateSingleUnitPrice();
     }
-
-    if (mounted) {
-      setState(() {});
-    }
+    _calculatedVersion.value++;
   }
 
   @override
   void dispose() {
+    _productSearchDebounce?.cancel();
+    _stockUpdateDebounce?.cancel();
+    _calculatedVersion.dispose();
     _priceController.removeListener(_onPriceOrQuantityChanged);
     _quantityController.removeListener(_onPriceOrQuantityChanged);
     _totalPriceController.removeListener(_onTotalPriceChanged);
@@ -1306,6 +1413,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _bonusQtyController.removeListener(_updateTotalQty);
     _totalQtyController.removeListener(_onTotalQtyChanged);
     _taxPercentController.removeListener(_onTaxPercentChanged);
+    _salePriceController.dispose();
+    _wholesalePriceController.dispose();
     _nameController.dispose();
     _priceController.dispose();
     _quantityController.dispose();
@@ -1354,6 +1463,41 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       // Store category for new product creation at bill save
       final itemCategory = _selectedCategory ?? _selectedProduct?.category;
 
+      // Real-time update product sale/wholesale in database if user edited them
+      if (_selectedProduct != null) {
+        final newSale = double.tryParse(_salePriceController.text.trim());
+        final newWholesale = double.tryParse(_wholesalePriceController.text.trim());
+        final saleChanged = newSale != null && newSale != _selectedProduct!.salePrice;
+        final wholesaleChanged = newWholesale != _selectedProduct!.wholesalePrice;
+        if (saleChanged || wholesaleChanged) {
+          try {
+            await _productService.updateProduct(_selectedProduct!.copyWith(
+              salePrice: saleChanged ? newSale! : _selectedProduct!.salePrice,
+              wholesalePrice: wholesaleChanged ? newWholesale : _selectedProduct!.wholesalePrice,
+            ));
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Product sale/wholesale prices updated in database'),
+                  duration: Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Could not update product prices: $e'),
+                  backgroundColor: Colors.orange,
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            }
+          }
+        }
+      }
+
       final item = BuyerBillItem(
         id: widget.item?.id ?? const Uuid().v4(),
         itemName: name,
@@ -1392,7 +1536,30 @@ class _AddItemDialogState extends State<_AddItemDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
+    final shortcuts = Map<ShortcutActivator, Intent>.from(dialogShortcuts)
+      ..addAll({
+        const SingleActivator(LogicalKeyboardKey.arrowUp): const DirectionalFocusIntent(TraversalDirection.up),
+        const SingleActivator(LogicalKeyboardKey.arrowDown): const DirectionalFocusIntent(TraversalDirection.down),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): const DirectionalFocusIntent(TraversalDirection.left),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): const DirectionalFocusIntent(TraversalDirection.right),
+      });
+    return Shortcuts(
+      shortcuts: shortcuts,
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          CloseIntent: CallbackAction<CloseIntent>(onInvoke: (_) {
+            Navigator.pop(context);
+            return null;
+          }),
+          SubmitIntent: CallbackAction<SubmitIntent>(onInvoke: (_) {
+            if (_formKey.currentState?.validate() ?? false) {
+              _saveItem();
+            }
+            return null;
+          }),
+          DirectionalFocusIntent: DirectionalFocusAction(),
+        },
+        child: AlertDialog(
       title: Text(widget.item == null ? 'Add Item' : 'Edit Item'),
       content: SizedBox(
         width: double.maxFinite,
@@ -1402,6 +1569,45 @@ class _AddItemDialogState extends State<_AddItemDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+              // Recent categories: one-tap to select (very easy)
+              if (widget.item == null && widget.recentCategories.isNotEmpty) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Recent',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: Colors.grey.shade600,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: widget.recentCategories.map((name) {
+                    final isSelected = _selectedCategory == name;
+                    return ActionChip(
+                      label: Text(name),
+                      avatar: Icon(
+                        isSelected ? Icons.check_circle : Icons.category_outlined,
+                        size: 18,
+                        color: isSelected ? Colors.white : Colors.grey.shade600,
+                      ),
+                      backgroundColor: isSelected
+                          ? Theme.of(context).primaryColor
+                          : Colors.grey.shade200,
+                      side: BorderSide(
+                        color: isSelected
+                            ? Theme.of(context).primaryColor
+                            : Colors.grey.shade400,
+                      ),
+                      onPressed: () => _onCategorySelected(name),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 14),
+              ],
               // Category Dropdown
               StreamBuilder<List<Category>>(
                 stream: _categoryService.getCategoriesStream(),
@@ -1468,6 +1674,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                       _priceController.clear();
                                       _unitController.clear();
                                       _productSearchController.clear();
+                                      _salePriceController.clear();
+                                      _wholesalePriceController.clear();
                                     });
                                   },
                                 )
@@ -1476,8 +1684,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                               ? 'Type to search or see all products below'
                               : 'Select a category first to see products',
                         ),
-                        onChanged: (value) {
-                          setState(() {});
+                        onChanged: (_) {
+                          // Rebuild deferred via _onProductSearchChanged debounce
                         },
                         validator: (value) {
                           if (_selectedProduct == null && _nameController.text.isEmpty) {
@@ -1575,12 +1783,32 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                             Row(
                                               children: [
                                                 Text(
-                                                  'Rs. ${product.purchasePrice.toStringAsFixed(2)}',
+                                                  'Purchase Rs. ${product.purchasePrice.toStringAsFixed(2)}',
                                                   style: TextStyle(
                                                     color: Colors.purple.shade700,
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  '| Sale Rs. ${product.salePrice.toStringAsFixed(2)}',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: Colors.blue.shade700,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                                if (product.wholesalePrice != null) ...[
+                                                  const SizedBox(width: 6),
+                                                  Text(
+                                                    '| Wholesale Rs. ${product.wholesalePrice!.toStringAsFixed(2)}',
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      color: Colors.teal.shade700,
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                ],
                                                 const SizedBox(width: 8),
                                                 Text(
                                                   '| ${product.unit}',
@@ -1667,8 +1895,12 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                 },
               ),
               const SizedBox(height: 16),
-              // Stock Information Display
-              if (_selectedProduct != null && _currentProductStock != null)
+              // Stock Information Display (rebuilds only when _calculatedVersion changes)
+              ValueListenableBuilder<int>(
+                valueListenable: _calculatedVersion,
+                builder: (context, _, __) {
+                  if (_selectedProduct == null || _currentProductStock == null) return const SizedBox.shrink();
+                  return
                 Container(
                   padding: const EdgeInsets.all(12),
                   margin: const EdgeInsets.only(bottom: 16),
@@ -1754,7 +1986,55 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                       ),
                     ],
                   ),
+                );
+                },
+              ),
+              // Sale price & Wholesale price (editable when product selected)
+              if (_selectedProduct != null)
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _salePriceController,
+                        decoration: InputDecoration(
+                          labelText: 'Sale price',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.sell, size: 20),
+                          prefixText: 'Rs. ',
+                          filled: true,
+                          fillColor: Colors.blue.shade50,
+                          helperText: 'Editable; tap "Use sale" on Price to apply',
+                        ),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                        onChanged: (_) => _calculatedVersion.value++,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _wholesalePriceController,
+                        decoration: InputDecoration(
+                          labelText: 'Wholesale price',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.store, size: 20),
+                          prefixText: 'Rs. ',
+                          filled: true,
+                          fillColor: Colors.teal.shade50,
+                          helperText: 'Editable; tap "Use wholesale" on Price to apply',
+                        ),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                        onChanged: (_) => _calculatedVersion.value++,
+                      ),
+                    ),
+                  ],
                 ),
+              if (_selectedProduct != null) const SizedBox(height: 16),
               // Packing Type and Pack Size Row
               Row(
                 children: [
@@ -1795,8 +2075,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                       ],
-                      onChanged: (value) {
-                        setState(() {}); // Trigger rebuild for single unit price calculation
+                      onChanged: (_) {
+                        // Listeners update calculated fields via _calculatedVersion
                       },
                       validator: (value) {
                         if (value != null && value.isNotEmpty) {
@@ -1826,28 +2106,72 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.currency_rupee),
                         prefixText: 'Rs. ',
-                        helperText: 'Purchase price',
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.calculate),
-                          tooltip: 'Calculator',
-                          onPressed: () async {
-                            final v = await _CalculatorDialog.show(
-                              context,
-                              initialValue: _priceController.text,
-                            );
-                            if (v != null && mounted) {
-                              _priceController.text = v.toStringAsFixed(2);
-                              setState(() {});
-                            }
-                          },
-                        ),
+                        helperText: _selectedProduct != null
+                            ? 'Purchase price (use Sale/Wholesale above as reference or tap buttons to fill)'
+                            : 'Purchase price',
+                        suffixIcon: _selectedProduct != null
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.store, size: 20),
+                                    tooltip: 'Use wholesale price',
+                                    onPressed: () {
+                                      final v = double.tryParse(_wholesalePriceController.text.trim());
+                                      if (v != null && v >= 0) {
+                                        _priceController.text = v.toStringAsFixed(2);
+                                        _calculatedVersion.value++;
+                                      }
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.sell, size: 20),
+                                    tooltip: 'Use sale price',
+                                    onPressed: () {
+                                      final v = double.tryParse(_salePriceController.text.trim());
+                                      if (v != null && v >= 0) {
+                                        _priceController.text = v.toStringAsFixed(2);
+                                        _calculatedVersion.value++;
+                                      }
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.calculate),
+                                    tooltip: 'Calculator',
+                                    onPressed: () async {
+                                      final v = await _CalculatorDialog.show(
+                                        context,
+                                        initialValue: _priceController.text,
+                                      );
+                                      if (v != null && mounted) {
+                                        _priceController.text = v.toStringAsFixed(2);
+                                        _calculatedVersion.value++;
+                                      }
+                                    },
+                                  ),
+                                ],
+                              )
+                            : IconButton(
+                                icon: const Icon(Icons.calculate),
+                                tooltip: 'Calculator',
+                                onPressed: () async {
+                                  final v = await _CalculatorDialog.show(
+                                    context,
+                                    initialValue: _priceController.text,
+                                  );
+                                  if (v != null && mounted) {
+                                    _priceController.text = v.toStringAsFixed(2);
+                                    _calculatedVersion.value++;
+                                  }
+                                },
+                              ),
                       ),
                       keyboardType: TextInputType.number,
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                       ],
-                      onChanged: (value) {
-                        setState(() {}); // Trigger rebuild for real-time average price and single unit price calculation
+                      onChanged: (_) {
+                        // Listeners update calculated fields via _calculatedVersion
                       },
                       validator: (value) {
                         if (value == null || value.isEmpty) {
@@ -1881,9 +2205,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                       ],
-                      onChanged: (value) {
-                        setState(() {}); // Trigger rebuild for real-time stock display and total qty
-                        _updateTotalQty(); // Also update total qty when quantity changes
+                      onChanged: (_) {
+                        _updateTotalQty();
                       },
                       validator: (value) {
                         if (value == null || value.isEmpty) {
@@ -1916,7 +2239,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                 inputFormatters: [
                   FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                 ],
-                onChanged: (value) => setState(() {}),
+                onChanged: (_) {
+                  // _onTaxPercentChanged listener updates calculated fields
+                },
                 validator: (value) {
                   if (value != null && value.isNotEmpty) {
                     final v = double.tryParse(value);
@@ -1939,7 +2264,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                 inputFormatters: [
                   FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                 ],
-                onChanged: (value) => setState(() {}),
+                onChanged: (_) {
+                  // _updateTotalQty listener runs via controller
+                },
                 validator: (value) {
                   if (value != null && value.isNotEmpty) {
                     if (double.tryParse(value) == null) {
@@ -1953,26 +2280,31 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                 },
               ),
               const SizedBox(height: 16),
-              // Single Unit Price Field (Read-only, calculated)
-              TextFormField(
-                controller: _singleUnitPriceController,
-                readOnly: true,
-                decoration: InputDecoration(
-                  labelText: 'Single Unit Price',
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.attach_money),
-                  prefixText: 'Rs. ',
-                  filled: true,
-                  fillColor: Colors.blue.shade50,
-                  helperText: _selectedPackingType != null
-                      ? 'Total Price ÷ (Pack Size × $_selectedPackingType)'
-                      : 'Total Price ÷ (Pack Size × Qty)',
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Total Qty Field (calculated: base + bonus)
-              TextFormField(
-                controller: _totalQtyController,
+              ValueListenableBuilder<int>(
+                valueListenable: _calculatedVersion,
+                builder: (context, _, __) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextFormField(
+                        controller: _singleUnitPriceController,
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: 'Single Unit Price',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.attach_money),
+                          prefixText: 'Rs. ',
+                          filled: true,
+                          fillColor: Colors.blue.shade50,
+                          helperText: _selectedPackingType != null
+                              ? 'Total Price ÷ (Pack Size × $_selectedPackingType)'
+                              : 'Total Price ÷ (Pack Size × Qty)',
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _totalQtyController,
                 readOnly: false,
                 decoration: InputDecoration(
                   labelText: 'Total Qty',
@@ -2013,7 +2345,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                           );
                           if (v != null && mounted) {
                             _totalPriceController.text = v.toStringAsFixed(2);
-                            setState(() {});
+                            _calculatedVersion.value++;
                           }
                         },
                       ),
@@ -2051,6 +2383,10 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                     return 'Cannot be negative';
                   }
                   return null;
+                },
+              ),
+                    ],
+                  );
                 },
               ),
               const SizedBox(height: 16),
@@ -2112,7 +2448,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
+          child: const Text('Cancel (Esc)'),
         ),
         ElevatedButton(
           onPressed: _saveItem,
@@ -2120,9 +2456,11 @@ class _AddItemDialogState extends State<_AddItemDialog> {
             backgroundColor: Colors.purple,
             foregroundColor: Colors.white,
           ),
-          child: Text(widget.item == null ? 'Add' : 'Update'),
+          child: Text(widget.item == null ? 'Add (Enter)' : 'Update (Enter)'),
         ),
       ],
+        ),
+      ),
     );
   }
 }
