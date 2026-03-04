@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
@@ -10,6 +11,17 @@ import 'expense_service.dart';
 
 // Set to true only when debugging seller/borrow/profit logic (avoid log I/O in production)
 bool get _sellerServiceDebug => kDebugMode && false;
+
+/// Merge two streams so that when either emits, the merged stream emits (used for listening to sales + seller_history).
+Stream<Object?> _mergeStreams(Stream<QuerySnapshot> a, Stream<QuerySnapshot> b) {
+  final controller = StreamController<Object?>.broadcast(sync: true);
+  void onData(_) {
+    if (!controller.isClosed) controller.add(null);
+  }
+  a.listen(onData);
+  b.listen(onData);
+  return controller.stream;
+}
 
 /// Emit at most every [interval] so dashboard doesn't recompute on every Firestore change.
 Stream<T> _throttleStream<T>(Stream<T> source, Duration interval) {
@@ -1309,9 +1321,10 @@ class SellerService {
         if (totalPaid > 0 && saleAmount > 0 && salesMap.containsKey(saleId)) {
           final sale = salesMap[saleId]!;
           if (sale.profit > 0) {
-            // Calculate profit proportion for total paid amount
-            // This includes initial payment + payments made to cover dues
-            final paidRatio = totalPaid / saleAmount;
+            // Calculate profit proportion for total paid amount. Cap ratio at 1.0: after a return,
+            // seller_history.saleAmount is reduced but amountPaid can stay at original total, so
+            // totalPaid/saleAmount can exceed 1 and would incorrectly inflate profit.
+            final paidRatio = (totalPaid / saleAmount).clamp(0.0, 1.0);
             final netProfit = sale.netProfit; // Profit after returns
             final realProfit = netProfit * paidRatio;
             totalRealProfit += realProfit;
@@ -1350,17 +1363,18 @@ class SellerService {
   }
 
   // Get real profit from paid portions by date range (throttled for dashboard performance)
+  // Listens to BOTH sales and seller_history so that when a return is applied (sales doc updated),
+  // profit recalculates and dashboard shows reduced profit (netProfit).
   Stream<double> getRealProfitFromPaidStreamByDateRange(DateTime startDate, DateTime endDate) {
-    final source = _firestore
-        .collection('seller_history')
-        .snapshots()
-        .asyncMap((snapshot) async {
+    final source = _mergeStreams(
+      _firestore.collection('sales').snapshots(),
+      _firestore.collection('seller_history').snapshots(),
+    ).asyncMap((_) async {
       double totalRealProfit = 0.0;
       
-      // Get all sales to calculate profit
-      final salesSnapshot = await FirebaseFirestore.instance
-          .collection('sales')
-          .get();
+      // Fetch latest sales (including updated returnedAmount so netProfit is correct after returns)
+      final salesSnapshot = await _firestore.collection('sales').get();
+      final historySnapshot = await _firestore.collection('seller_history').get();
       
       final salesMap = <String, Sale>{};
       for (var doc in salesSnapshot.docs) {
@@ -1380,7 +1394,7 @@ class SellerService {
       final saleAmounts = <String, double>{};
       final salesWithSellerHistory = <String>{};
       
-      for (var doc in snapshot.docs) {
+      for (var doc in historySnapshot.docs) {
         final data = doc.data();
         final saleId = data['saleId'] ?? '';
         final amountPaid = (data['amountPaid'] ?? 0).toDouble();
@@ -1422,9 +1436,9 @@ class SellerService {
         if (totalPaid > 0 && saleAmount > 0 && salesMap.containsKey(saleId)) {
           final sale = salesMap[saleId]!;
           if (sale.profit > 0) {
-            // Calculate profit proportion for total paid amount
-            // This includes initial payment + payments made to cover dues
-            final paidRatio = totalPaid / saleAmount;
+            // Calculate profit proportion for total paid amount. Cap ratio at 1.0: after a return,
+            // seller_history.saleAmount is reduced but amountPaid can stay at original total.
+            final paidRatio = (totalPaid / saleAmount).clamp(0.0, 1.0);
             final netProfit = sale.netProfit; // Profit after returns
             final realProfit = netProfit * paidRatio;
             totalRealProfit += realProfit;
@@ -1466,23 +1480,21 @@ class SellerService {
   }
 
   // Get borrow profit by date range (throttled for dashboard performance)
+  // Listens to BOTH sales and seller_history so returns reduce borrow profit (netProfit) and dashboard updates.
   Stream<double> getBorrowProfitStreamByDateRange(DateTime startDate, DateTime endDate) {
-    final source = _firestore
-        .collection('seller_history')
-        .snapshots()
-        .asyncMap((snapshot) async {
+    final source = _mergeStreams(
+      _firestore.collection('sales').snapshots(),
+      _firestore.collection('seller_history').snapshots(),
+    ).asyncMap((_) async {
       double totalBorrowProfit = 0.0;
       
-      // Get all sales to calculate profit
-      final salesSnapshot = await FirebaseFirestore.instance
-          .collection('sales')
-          .get();
+      final salesSnapshot = await _firestore.collection('sales').get();
+      final historySnapshot = await _firestore.collection('seller_history').get();
       
       final salesMap = <String, Sale>{};
       for (var doc in salesSnapshot.docs) {
         try {
           final sale = Sale.fromMap(doc.data());
-          // Only include actual sales, not borrow payments
           if (!sale.isBorrowPayment) {
             salesMap[sale.id] = sale;
           }
@@ -1491,8 +1503,7 @@ class SellerService {
         }
       }
       
-      // Calculate profit from unpaid portions (filtered by date)
-      for (var doc in snapshot.docs) {
+      for (var doc in historySnapshot.docs) {
         final data = doc.data();
         final duePayment = (data['duePayment'] ?? 0).toDouble();
         final saleId = data['saleId'] ?? '';

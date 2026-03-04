@@ -641,7 +641,7 @@ class PrinterService {
       final isAvailable = isAvailableResult is bool ? isAvailableResult : false;
       
       if (!isAvailable) {
-        throw Exception('Web USB API is not supported in this browser. Please use Chrome, Edge, or Opera.');
+        throw Exception('Web USB API is not supported in this browser. Open this app in standalone Google Chrome (copy the URL and paste in Chrome), not in Cursor or VS Code\'s built-in browser.');
       }
 
       // Request device - use callback-based approach
@@ -816,6 +816,37 @@ class PrinterService {
     } catch (e) {
       debugPrint('Error checking USB availability: $e');
       return false;
+    }
+  }
+
+  /// Returns why Web USB might be unavailable (web only). Use for error messages.
+  Map<String, dynamic>? getUsbDiagnostics() {
+    if (!kIsWeb) return null;
+    try {
+      if (!js.context.hasProperty('getUsbDiagnostics')) return null;
+      final r = js.context.callMethod('getUsbDiagnostics', []);
+      if (r == null) return null;
+      return <String, dynamic>{
+        'hasUsb': r['hasUsb'] == true,
+        'isIframe': r['isIframe'] == true,
+        'isSecureContext': r['isSecureContext'] == true,
+      };
+    } catch (e) {
+      debugPrint('Error getting USB diagnostics: $e');
+      return null;
+    }
+  }
+
+  /// Returns current page URL (web only). Use for "Copy URL and open in Chrome".
+  String? getCurrentPageUrl() {
+    if (!kIsWeb) return null;
+    try {
+      if (!js.context.hasProperty('getCurrentPageUrl')) return null;
+      final r = js.context.callMethod('getCurrentPageUrl', []);
+      return r?.toString();
+    } catch (e) {
+      debugPrint('Error getting current page URL: $e');
+      return null;
     }
   }
 

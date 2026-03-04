@@ -17,7 +17,9 @@ import '../models/sale.dart';
 import '../models/sale_item.dart';
 import '../models/seller.dart';
 import '../models/due_payment.dart';
+import '../models/pos_draft.dart';
 import '../providers/cart_provider.dart';
+import '../services/pos_draft_service.dart';
 import '../services/product_service.dart';
 import '../services/sales_service.dart';
 import '../services/seller_service.dart';
@@ -37,6 +39,7 @@ class _POSScreenState extends State<POSScreen> {
   final ProductService _productService = ProductService();
   final SalesService _salesService = SalesService();
   final CategoryService _categoryService = CategoryService();
+  final PosDraftService _draftService = PosDraftService();
   final TextEditingController _searchController = TextEditingController();
   List<Product>? _searchResults;
   String _selectedCategory = 'All';
@@ -59,6 +62,259 @@ class _POSScreenState extends State<POSScreen> {
     setState(() {
       _searchResults = results;
     });
+  }
+
+  Future<void> _saveDraft() async {
+    final cart = context.read<CartProvider>();
+    if (cart.items.isEmpty) return;
+    final draft = PosDraft(
+      id: const Uuid().v4(),
+      createdAt: DateTime.now(),
+      saleType: cart.saleType,
+      items: cart.items.values
+          .map((item) => PosDraftItem(
+                productId: item.product.id,
+                productName: item.product.name,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                saleType: item.saleType,
+              ))
+          .toList(),
+    );
+    await _draftService.saveDraft(draft);
+    cart.clear();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Order saved as draft. Start a new bill.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  void _showDraftsSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.95,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Icon(Icons.drafts, color: Colors.green.shade700, size: 28),
+                    const SizedBox(width: 12),
+                    const Text(
+                      'Drafts',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: StreamBuilder<List<PosDraft>>(
+                  stream: _draftService.getDraftsStream(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final drafts = snapshot.data ?? [];
+                    if (drafts.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.drafts_outlined,
+                                size: 64, color: Colors.grey[400]),
+                            const SizedBox(height: 16),
+                            Text(
+                              'No drafts yet',
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Save current order as draft to see it here',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey[500],
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    final formatter = NumberFormat.currency(symbol: 'Rs. ');
+                    final dateFormat = DateFormat('MMM d, y • HH:mm');
+                    return ListView.builder(
+                      controller: scrollController,
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      itemCount: drafts.length,
+                      itemBuilder: (context, index) {
+                        final draft = drafts[index];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.green.shade100,
+                            child: Icon(
+                              Icons.receipt_long,
+                              color: Colors.green.shade700,
+                            ),
+                          ),
+                          title: Text(
+                            '${draft.itemCount} item(s) • ${formatter.format(draft.totalAmount)}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            dateFormat.format(draft.createdAt),
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 12,
+                            ),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.grey[600],
+                                  size: 22,
+                                ),
+                                onPressed: () async {
+                                  final confirm = await showDialog<bool>(
+                                    context: context,
+                                    builder: (ctx) => AlertDialog(
+                                      title: const Text('Delete draft?'),
+                                      content: const Text(
+                                        'This draft will be removed. You can still start a new bill.',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(ctx, false),
+                                          child: const Text('Cancel'),
+                                        ),
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(ctx, true),
+                                          child: Text(
+                                            'Delete',
+                                            style: TextStyle(
+                                                color: Colors.red.shade700),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  if (confirm == true) {
+                                    await _draftService.deleteDraft(draft.id);
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Draft deleted'),
+                                          behavior:
+                                              SnackBarBehavior.floating,
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                              ),
+                              Icon(
+                                Icons.chevron_right,
+                                color: Colors.grey[400],
+                              ),
+                            ],
+                          ),
+                          onTap: () async {
+                            Navigator.pop(context);
+                            await _loadDraftIntoCart(draft);
+                          },
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _loadDraftIntoCart(PosDraft draft) async {
+    final cart = context.read<CartProvider>();
+    final List<DraftLoadItem> toLoad = [];
+    int skipped = 0;
+    for (final item in draft.items) {
+      final product = await _productService.getProductById(item.productId);
+      if (product != null) {
+        toLoad.add(DraftLoadItem(
+          product: product,
+          quantity: item.quantity,
+        ));
+      } else {
+        skipped++;
+      }
+    }
+    cart.loadFromDraft(draft.saleType, toLoad);
+    for (final item in draft.items) {
+      if (cart.items.containsKey(item.productId)) {
+        cart.updatePrice(item.productId, item.unitPrice);
+      }
+    }
+    if (mounted) {
+      if (skipped > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Draft loaded. $skipped item(s) no longer available and were skipped.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Draft loaded. You can edit and pay when ready.'),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -267,6 +523,8 @@ class _POSScreenState extends State<POSScreen> {
             ),
             child: _CartPanel(
               onPayNow: () => _showCheckoutDialog(context),
+              onSaveDraft: _saveDraft,
+              onOpenDrafts: _showDraftsSheet,
             ),
           ),
         ],
@@ -1494,7 +1752,7 @@ class _POSScreenState extends State<POSScreen> {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
                     child: Text(
-                      'USB may require Chrome/Edge on web. If the button below does not work, use WiFi instead.',
+                      'USB needs standalone Chrome (open the app URL in Chrome, not in Cursor\'s browser). Otherwise use WiFi.',
                       style: TextStyle(fontSize: 12, color: Colors.orange[700]),
                     ),
                   ),
@@ -1699,7 +1957,9 @@ class _POSScreenState extends State<POSScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Web USB API requires Chrome, Edge, or Opera browser.\nMake sure your printer is connected via USB cable.\nThe browser will prompt you to select the device.',
+                          'Use standalone Chrome/Edge/Opera — not Cursor or VS Code\'s built-in browser. '
+                          'Copy the URL from the address bar and open it in Google Chrome (from Applications/Start menu).\n'
+                          'Printer must be connected via USB cable and powered ON. Chrome will then prompt you to select the device.',
                           style: TextStyle(fontSize: 11, color: Colors.blue[800]),
                         ),
                       ],
@@ -1778,13 +2038,59 @@ class _POSScreenState extends State<POSScreen> {
                         }
                       } catch (e) {
                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Error: ${e.toString()}'),
-                              backgroundColor: Colors.red,
-                              duration: const Duration(seconds: 5),
-                            ),
-                          );
+                          final msg = e.toString();
+                          final isWebUsbUnsupported = msg.contains('Web USB') || msg.contains('not supported');
+                          if (isWebUsbUnsupported) {
+                            final diag = printerService.getUsbDiagnostics();
+                            final inIframe = diag?['isIframe'] == true;
+                            final bodyText = inIframe
+                                ? 'This page is running inside a frame (e.g. Cursor or VS Code preview). '
+                                  'Copy the URL below and paste it into the address bar of a new tab in Google Chrome.'
+                                : 'Web USB is not available in this window. Try:\n\n'
+                                  '1. If you\'re in Chrome: open a new tab, go to chrome://flags, search "WebUSB", set to Enabled, then restart Chrome.\n\n'
+                                  '2. Or copy the URL below and open it in Microsoft Edge (desktop).';
+                            final url = printerService.getCurrentPageUrl();
+                            showDialog<void>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: const Text('USB not available'),
+                                content: SingleChildScrollView(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(bodyText),
+                                      if (url != null && url.isNotEmpty) ...[
+                                        const SizedBox(height: 12),
+                                        SelectableText(url, style: TextStyle(fontSize: 12, color: Colors.grey[700])),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                actions: [
+                                  if (url != null && url.isNotEmpty)
+                                    TextButton.icon(
+                                      onPressed: () {
+                                        Clipboard.setData(ClipboardData(text: url));
+                                        ScaffoldMessenger.of(ctx).showSnackBar(
+                                          const SnackBar(content: Text('URL copied to clipboard'), duration: Duration(seconds: 2)),
+                                        );
+                                      },
+                                      icon: const Icon(Icons.copy, size: 18),
+                                      label: const Text('Copy URL'),
+                                    ),
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx),
+                                    child: const Text('OK'),
+                                  ),
+                                ],
+                              ),
+                            );
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Error: $msg'), backgroundColor: Colors.red, duration: const Duration(seconds: 5)),
+                            );
+                          }
                         }
                       }
                     },
@@ -2515,8 +2821,14 @@ class _ProductCard extends StatelessWidget {
 
 class _CartPanel extends StatelessWidget {
   final VoidCallback onPayNow;
-  
-  const _CartPanel({required this.onPayNow});
+  final VoidCallback? onSaveDraft;
+  final VoidCallback? onOpenDrafts;
+
+  const _CartPanel({
+    required this.onPayNow,
+    this.onSaveDraft,
+    this.onOpenDrafts,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2540,7 +2852,7 @@ class _CartPanel extends StatelessWidget {
                   color: Colors.white.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(Icons.shopping_cart, 
+                child: const Icon(Icons.shopping_cart,
                     color: Colors.white, size: 24),
               ),
               const SizedBox(width: 12),
@@ -2553,6 +2865,13 @@ class _CartPanel extends StatelessWidget {
                 ),
               ),
               const Spacer(),
+              if (onOpenDrafts != null)
+                IconButton(
+                  icon: const Icon(Icons.drafts, color: Colors.white, size: 24),
+                  tooltip: 'Drafts',
+                  onPressed: onOpenDrafts,
+                ),
+              const SizedBox(width: 4),
               Consumer<CartProvider>(
                 builder: (context, cart, child) {
                   return Container(
@@ -2702,6 +3021,7 @@ class _CartPanel extends StatelessWidget {
         
         _CartSummary(
           onPayNow: onPayNow,
+          onSaveDraft: onSaveDraft,
         ),
       ],
     );
@@ -3166,8 +3486,9 @@ class _CartItemTileState extends State<_CartItemTile> {
 
 class _CartSummary extends StatelessWidget {
   final VoidCallback onPayNow;
-  
-  const _CartSummary({required this.onPayNow});
+  final VoidCallback? onSaveDraft;
+
+  const _CartSummary({required this.onPayNow, this.onSaveDraft});
 
   @override
   Widget build(BuildContext context) {
@@ -3246,7 +3567,7 @@ class _CartSummary extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              // Action Buttons
+              // Action Buttons: Clear, Save as draft, Pay Now
               Row(
                 children: [
                   Expanded(
@@ -3273,13 +3594,28 @@ class _CartSummary extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
+                  if (onSaveDraft != null)
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: cart.items.isEmpty ? null : onSaveDraft,
+                        icon: const Icon(Icons.save_outlined, size: 20),
+                        label: const Text('Save as draft'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          side: BorderSide(color: Colors.orange[300]!),
+                          foregroundColor: Colors.orange[700],
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (onSaveDraft != null) const SizedBox(width: 8),
                   Expanded(
-                    flex: 2,
+                    flex: onSaveDraft != null ? 1 : 2,
                     child: ElevatedButton.icon(
-                      onPressed: cart.items.isEmpty
-                          ? null
-                          : onPayNow,
+                      onPressed: cart.items.isEmpty ? null : onPayNow,
                       icon: const Icon(Icons.payment, size: 22),
                       label: const Text(
                         'Pay Now',

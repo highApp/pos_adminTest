@@ -8,11 +8,35 @@ window.isUsbAvailable = function() {
   return navigator.usb !== undefined;
 };
 
+// Diagnostics for why USB might be unavailable (for better error messages)
+window.getUsbDiagnostics = function() {
+  var inIframe = false;
+  try {
+    inIframe = window.self !== window.top;
+  } catch (e) {
+    inIframe = true;
+  }
+  return {
+    hasUsb: typeof navigator !== 'undefined' && navigator.usb !== undefined,
+    isIframe: inIframe,
+    isSecureContext: typeof window !== 'undefined' && window.isSecureContext
+  };
+};
+
+// Return current page URL (for "Copy URL and open in Chrome")
+window.getCurrentPageUrl = function() {
+  try {
+    return window.location.href || '';
+  } catch (e) {
+    return '';
+  }
+};
+
 // Request USB device (callback-based for better Dart interop)
 window.requestUsbDeviceWithCallback = function(onSuccess, onError) {
   try {
     if (!navigator.usb) {
-      if (onError) onError('Web USB API is not supported in this browser. Please use Chrome, Edge, or Opera.');
+      if (onError) onError('Web USB API is not supported here. Open this page in standalone Google Chrome (copy the URL from the address bar and paste it in Chrome), not in Cursor or VS Code\'s built-in browser.');
       return;
     }
 

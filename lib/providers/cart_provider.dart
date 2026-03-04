@@ -36,6 +36,14 @@ class CartItem {
   static const double fractionalIncrement = 0.1;
 }
 
+/// Used when loading a draft into the cart (product + quantity).
+class DraftLoadItem {
+  final Product product;
+  final double quantity;
+
+  DraftLoadItem({required this.product, required this.quantity});
+}
+
 class CartProvider with ChangeNotifier {
   final Map<String, CartItem> _items = {};
   SaleType _saleType = SaleType.regular;
@@ -147,6 +155,37 @@ class CartProvider with ChangeNotifier {
 
   void clear() {
     _items.clear();
+    notifyListeners();
+  }
+
+  /// Add a product with a specific quantity (e.g. when loading from draft).
+  /// Uses current sale type. Does not check stock so draft can restore out-of-stock items.
+  void addItemWithQuantity(Product product, double quantity) {
+    if (quantity <= 0) return;
+    if (_items.containsKey(product.id)) {
+      _items[product.id]!.quantity = quantity;
+    } else {
+      _items[product.id] = CartItem(
+        product: product,
+        quantity: quantity,
+        saleType: _saleType,
+      );
+    }
+    notifyListeners();
+  }
+
+  /// Replace cart with draft data. Clears current cart, sets sale type, then adds each item.
+  /// [items] should contain product and quantity; sale type is set once from [saleType].
+  void loadFromDraft(SaleType saleType, List<DraftLoadItem> items) {
+    _items.clear();
+    _saleType = saleType;
+    for (final entry in items) {
+      _items[entry.product.id] = CartItem(
+        product: entry.product,
+        quantity: entry.quantity,
+        saleType: saleType,
+      );
+    }
     notifyListeners();
   }
 
