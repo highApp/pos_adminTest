@@ -996,7 +996,14 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   late TextEditingController _taxPercentController;
   late TextEditingController _salePriceController;
   late TextEditingController _wholesalePriceController;
+  late TextEditingController _dozenPriceController;
+  late TextEditingController _bundlePriceController;
+  late TextEditingController _bundleSizeController;
   bool _isSyncingQtyPackSize = false;
+  bool _isUpdatingBundleFromWholesale = false;
+  bool _isUpdatingWholesaleFromBundle = false;
+  bool _isUpdatingDozenFromWholesale = false;
+  bool _isUpdatingWholesaleFromDozen = false;
   DateTime? _selectedDate;
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
   bool _isManualTotalEdit = false;
@@ -1047,6 +1054,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _taxPercentController = TextEditingController(text: '0');
     _salePriceController = TextEditingController();
     _wholesalePriceController = TextEditingController();
+    _dozenPriceController = TextEditingController();
+    _bundlePriceController = TextEditingController();
+    _bundleSizeController = TextEditingController();
     _selectedDate = widget.item?.date ?? DateTime.now();
     // When adding new item, keep last-used category so user doesn't have to select again
     if (widget.item == null && widget.initialCategory != null && widget.initialCategory!.isNotEmpty) {
@@ -1087,6 +1097,13 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _priceController.addListener(_updateSingleUnitPrice);
     _packSizeController.addListener(_updateSingleUnitPrice);
     _quantityController.addListener(_updateSingleUnitPrice);
+
+    // Bundle ↔ Wholesale and Dozen ↔ Wholesale real-time sync (same as Add/Edit Product)
+    _wholesalePriceController.addListener(_updateBundlePriceFromWholesale);
+    _wholesalePriceController.addListener(_updateDozenPriceFromWholesale);
+    _bundleSizeController.addListener(_updateBundlePriceFromWholesale);
+    _bundlePriceController.addListener(_updateWholesalePriceFromBundle);
+    _dozenPriceController.addListener(_updateWholesalePriceFromDozen);
     _expenseController.addListener(_updateSingleUnitPrice);
     _taxPercentController.addListener(_onTaxPercentChanged);
 
@@ -1124,6 +1141,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
           _productSearchController.text = matchingProduct.name;
           _salePriceController.text = matchingProduct.salePrice.toStringAsFixed(2);
           _wholesalePriceController.text = matchingProduct.wholesalePrice?.toStringAsFixed(2) ?? '';
+          _dozenPriceController.text = matchingProduct.dozenPrice?.toStringAsFixed(2) ?? '';
+          _bundlePriceController.text = matchingProduct.bundlePrice?.toStringAsFixed(2) ?? '';
+          _bundleSizeController.text = matchingProduct.bundleSize?.toString() ?? '';
           // When editing, restore category from product so dropdown shows correct value
           if (widget.item != null && matchingProduct.category.isNotEmpty) {
             _selectedCategory = matchingProduct.category;
@@ -1142,7 +1162,60 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       if (mounted) setState(() {});
     });
   }
-  
+
+  /// When wholesale price changes: dozen price = wholesale × 12.
+  void _updateDozenPriceFromWholesale() {
+    if (_isUpdatingWholesaleFromDozen) return;
+    final wholesale = double.tryParse(_wholesalePriceController.text.trim());
+    if (wholesale != null && wholesale > 0) {
+      _isUpdatingDozenFromWholesale = true;
+      _dozenPriceController.text = (wholesale * 12).toStringAsFixed(2);
+      _isUpdatingDozenFromWholesale = false;
+      _calculatedVersion.value++;
+    }
+  }
+
+  /// When dozen price changes: wholesale price = dozen price / 12.
+  void _updateWholesalePriceFromDozen() {
+    if (_isUpdatingDozenFromWholesale) return;
+    final dozen = double.tryParse(_dozenPriceController.text.trim());
+    if (dozen != null && dozen > 0) {
+      _isUpdatingWholesaleFromDozen = true;
+      _wholesalePriceController.text = (dozen / 12).toStringAsFixed(2);
+      _isUpdatingWholesaleFromDozen = false;
+      _updateBundlePriceFromWholesale();
+      _calculatedVersion.value++;
+    }
+  }
+
+  /// When wholesale price or bundle size changes: bundle price = wholesale × bundle size.
+  void _updateBundlePriceFromWholesale() {
+    if (_isUpdatingWholesaleFromBundle) return;
+    final wholesale = double.tryParse(_wholesalePriceController.text.trim());
+    final sizeStr = _bundleSizeController.text.trim();
+    final size = sizeStr.isEmpty ? null : int.tryParse(sizeStr);
+    if (wholesale != null && wholesale > 0 && size != null && size > 0) {
+      _isUpdatingBundleFromWholesale = true;
+      _bundlePriceController.text = (wholesale * size).toStringAsFixed(2);
+      _isUpdatingBundleFromWholesale = false;
+      _calculatedVersion.value++;
+    }
+  }
+
+  /// When bundle price changes: wholesale price = bundle price / bundle size.
+  void _updateWholesalePriceFromBundle() {
+    if (_isUpdatingBundleFromWholesale) return;
+    final bundlePrice = double.tryParse(_bundlePriceController.text.trim());
+    final sizeStr = _bundleSizeController.text.trim();
+    final size = sizeStr.isEmpty ? null : int.tryParse(sizeStr);
+    if (bundlePrice != null && bundlePrice > 0 && size != null && size > 0) {
+      _isUpdatingWholesaleFromBundle = true;
+      _wholesalePriceController.text = (bundlePrice / size).toStringAsFixed(2);
+      _isUpdatingWholesaleFromBundle = false;
+      _calculatedVersion.value++;
+    }
+  }
+
   void _onCategorySelected(String? category) {
     setState(() {
       _selectedCategory = category;
@@ -1153,6 +1226,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _unitController.clear();
       _salePriceController.clear();
       _wholesalePriceController.clear();
+      _dozenPriceController.clear();
+      _bundlePriceController.clear();
+      _bundleSizeController.clear();
     });
   }
 
@@ -1209,6 +1285,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _priceController.text = _selectedProduct!.purchasePrice.toStringAsFixed(2);
       _salePriceController.text = _selectedProduct!.salePrice.toStringAsFixed(2);
       _wholesalePriceController.text = _selectedProduct!.wholesalePrice?.toStringAsFixed(2) ?? '';
+      _dozenPriceController.text = _selectedProduct!.dozenPrice?.toStringAsFixed(2) ?? '';
+      _bundlePriceController.text = _selectedProduct!.bundlePrice?.toStringAsFixed(2) ?? '';
+      _bundleSizeController.text = _selectedProduct!.bundleSize?.toString() ?? '';
       _unitController.text = _selectedProduct!.unit;
       _productSearchController.text = _selectedProduct!.name;
       // Auto-select packing type when product's unit matches a known packing type
@@ -1415,6 +1494,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _taxPercentController.removeListener(_onTaxPercentChanged);
     _salePriceController.dispose();
     _wholesalePriceController.dispose();
+    _dozenPriceController.dispose();
+    _bundlePriceController.dispose();
+    _bundleSizeController.dispose();
     _nameController.dispose();
     _priceController.dispose();
     _quantityController.dispose();
@@ -1463,22 +1545,37 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       // Store category for new product creation at bill save
       final itemCategory = _selectedCategory ?? _selectedProduct?.category;
 
-      // Real-time update product sale/wholesale in database if user edited them
+      // Real-time update product sale/wholesale/dozen/bundle in database if user edited them
       if (_selectedProduct != null) {
         final newSale = double.tryParse(_salePriceController.text.trim());
         final newWholesale = double.tryParse(_wholesalePriceController.text.trim());
+        final newDozen = _dozenPriceController.text.trim().isEmpty
+            ? null
+            : double.tryParse(_dozenPriceController.text.trim());
+        final newBundlePrice = _bundlePriceController.text.trim().isEmpty
+            ? null
+            : double.tryParse(_bundlePriceController.text.trim());
+        final newBundleSize = _bundleSizeController.text.trim().isEmpty
+            ? null
+            : int.tryParse(_bundleSizeController.text.trim());
         final saleChanged = newSale != null && newSale != _selectedProduct!.salePrice;
         final wholesaleChanged = newWholesale != _selectedProduct!.wholesalePrice;
-        if (saleChanged || wholesaleChanged) {
+        final dozenChanged = newDozen != _selectedProduct!.dozenPrice;
+        final bundlePriceChanged = newBundlePrice != _selectedProduct!.bundlePrice;
+        final bundleSizeChanged = newBundleSize != _selectedProduct!.bundleSize;
+        if (saleChanged || wholesaleChanged || dozenChanged || bundlePriceChanged || bundleSizeChanged) {
           try {
             await _productService.updateProduct(_selectedProduct!.copyWith(
               salePrice: saleChanged ? newSale! : _selectedProduct!.salePrice,
               wholesalePrice: wholesaleChanged ? newWholesale : _selectedProduct!.wholesalePrice,
+              dozenPrice: dozenChanged ? newDozen : _selectedProduct!.dozenPrice,
+              bundlePrice: bundlePriceChanged ? newBundlePrice : _selectedProduct!.bundlePrice,
+              bundleSize: bundleSizeChanged ? newBundleSize : _selectedProduct!.bundleSize,
             ));
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('Product sale/wholesale prices updated in database'),
+                  content: Text('Product prices (sale/wholesale/dozen/bundle) updated in database'),
                   duration: Duration(seconds: 2),
                   behavior: SnackBarBehavior.floating,
                 ),
@@ -1676,6 +1773,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                       _productSearchController.clear();
                                       _salePriceController.clear();
                                       _wholesalePriceController.clear();
+                                      _dozenPriceController.clear();
+                                      _bundlePriceController.clear();
+                                      _bundleSizeController.clear();
                                     });
                                   },
                                 )
@@ -1879,6 +1979,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                     setState(() {
                       _selectedProduct = null;
                       _currentProductStock = null;
+                      _dozenPriceController.clear();
+                      _bundlePriceController.clear();
+                      _bundleSizeController.clear();
                     });
                   }
                 },
@@ -2028,6 +2131,68 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                         keyboardType: TextInputType.number,
                         inputFormatters: [
                           FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                        onChanged: (_) => _calculatedVersion.value++,
+                      ),
+                    ),
+                  ],
+                ),
+              if (_selectedProduct != null) const SizedBox(height: 16),
+              // Dozen price, Bundle price, Bundle size (when product selected)
+              if (_selectedProduct != null)
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _dozenPriceController,
+                        decoration: const InputDecoration(
+                          labelText: 'Dozen price',
+                          hintText: '12 pcs',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.inventory_2, size: 20),
+                          prefixText: 'Rs. ',
+                          helperText: 'Price per 12',
+                        ),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                        onChanged: (_) => _calculatedVersion.value++,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _bundlePriceController,
+                        decoration: const InputDecoration(
+                          labelText: 'Bundle price',
+                          hintText: 'e.g. 10, 16, 20',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.layers, size: 20),
+                          prefixText: 'Rs. ',
+                          helperText: 'Price per bundle',
+                        ),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                        onChanged: (_) => _calculatedVersion.value++,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _bundleSizeController,
+                        decoration: const InputDecoration(
+                          labelText: 'Bundle size',
+                          hintText: 'e.g. 10, 24, 36, 48, 50',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.numbers, size: 20),
+                          helperText: 'Any number (pcs per bundle)',
+                        ),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
                         ],
                         onChanged: (_) => _calculatedVersion.value++,
                       ),

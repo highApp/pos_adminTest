@@ -14,25 +14,70 @@ class CartItem {
     this.saleType = SaleType.regular,
   });
 
+  bool get _isPieceUnit {
+    final unit = product.unit.trim().toLowerCase();
+    if (unit.isEmpty) return true;
+    return unit == 'piece' || unit == 'pieces' || unit == 'pc' || unit == 'pcs';
+  }
+
+  bool get usesDozenPricing =>
+      saleType == SaleType.wholesale && _isPieceUnit && product.dozenPrice != null;
+
+  bool get usesBundlePricing =>
+      saleType == SaleType.wholesale &&
+      _isPieceUnit &&
+      product.bundlePrice != null &&
+      product.bundleSize != null &&
+      product.bundleSize! > 0;
+
   double get unitPrice {
-    if (saleType == SaleType.wholesale && product.wholesalePrice != null) {
-      return product.wholesalePrice!;
+    // Per-piece price for subtotal = unitPrice * quantity.
+    // Dozen: price per 12. Bundle: price per bundleSize. Else wholesale per piece.
+    if (saleType == SaleType.wholesale) {
+      if (usesDozenPricing) return product.dozenPrice! / 12.0;
+      if (usesBundlePricing) return product.bundlePrice! / product.bundleSize!;
+      if (product.wholesalePrice != null) return product.wholesalePrice!;
     }
     return product.salePrice;
   }
 
+  /// What to show in UI as the "unit price" (dozen price, bundle price, or per-unit).
+  double get displayUnitPrice {
+    if (saleType == SaleType.wholesale && usesDozenPricing) return product.dozenPrice!;
+    if (saleType == SaleType.wholesale && usesBundlePricing) return product.bundlePrice!;
+    return unitPrice;
+  }
+
+  /// Bundle size for display (e.g. "bundle (10)").
+  int? get displayBundleSize => product.bundleSize;
+
   double get subtotal => unitPrice * quantity;
-  
-  // Helper method to check if this product supports fractional quantities
+
+  /// Quantity step for +/- buttons. For g, ml, kg, L: step 1 (1 gram, 1 ml, 1 kg, 1 L). Pieces: 1.
+  double get quantityStep {
+    if (!supportsFractionalQuantity) return 1.0;
+    final unit = product.unit.trim().toLowerCase();
+    final normalizedUnit = unit == 'gm' ? 'g' : unit;
+    // For g, ml, kg, L: plus/minus add 1 unit (1g, 1ml, 1kg, 1L)
+    const oneUnitStep = ['g', 'ml', 'kg', 'l'];
+    return oneUnitStep.contains(normalizedUnit) ? 1.0 : CartItem.fractionalIncrement;
+  }
+
+  double get minQuantity {
+    return supportsFractionalQuantity ? CartItem.fractionalMinQuantity : 1.0;
+  }
+
+  // Helper method to check if this product supports fractional quantities (decimals like 0.5, 1.111)
   bool get supportsFractionalQuantity {
-    // Support fractional quantities for weight-based units (kg, g, L, ml, etc.)
-    final weightUnits = ['kg', 'g', 'l', 'ml', 'lb', 'oz', 'ton'];
-    return weightUnits.contains(product.unit.toLowerCase());
+    final unit = product.unit.trim().toLowerCase();
+    final normalizedUnit = unit == 'gm' ? 'g' : unit;
+    const weightVolumeUnits = ['kg', 'g', 'l', 'ml', 'lb', 'oz', 'ton'];
+    return weightVolumeUnits.contains(normalizedUnit);
   }
 
   /// Minimum quantity for fractional units (e.g. 0.001 kg = 1 gram).
   static const double fractionalMinQuantity = 0.001;
-  /// Default increment for +/- buttons (e.g. 0.1 kg = 100 g).
+  /// Fallback increment for other fractional units (e.g. 0.1 for lb, oz, ton).
   static const double fractionalIncrement = 0.1;
 }
 
@@ -75,23 +120,46 @@ class CartProvider with ChangeNotifier {
       return; // Don't add out of stock items
     }
 
-    // Check if wholesale is selected but product doesn't have wholesale price
-    if (_saleType == SaleType.wholesale && product.wholesalePrice == null) {
-      return; // Don't add products without wholesale price when in wholesale mode
+    // In wholesale mode, require at least one: wholesale, dozen, or bundle price.
+    final hasBundle = product.bundlePrice != null &&
+        product.bundleSize != null &&
+        product.bundleSize! > 0;
+    if (_saleType == SaleType.wholesale &&
+        product.wholesalePrice == null &&
+        product.dozenPrice == null &&
+        !hasBundle) {
+      return;
     }
 
     if (_items.containsKey(product.id)) {
       // Check if we can add more
-      final currentQuantity = _items[product.id]!.quantity;
-      final increment = _items[product.id]!.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
+      final cartItem = _items[product.id]!;
+      final currentQuantity = cartItem.quantity;
+      final increment = cartItem.quantityStep;
 
       if (currentQuantity + increment <= product.stock) {
-        _items[product.id]!.quantity += increment;
+        cartItem.quantity += increment;
         notifyListeners();
       }
     } else {
-      final initialQuantity = CartItem(product: product, quantity: 0, saleType: _saleType).supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
-      _items[product.id] = CartItem(product: product, quantity: initialQuantity, saleType: _saleType);
+      // Default quantity: 1 dozen (12), 1 bundle (bundleSize), or 1 unit.
+      final isPieceUnit = () {
+        final unit = product.unit.trim().toLowerCase();
+        if (unit.isEmpty) return true;
+        return unit == 'piece' || unit == 'pieces' || unit == 'pc' || unit == 'pcs';
+      }();
+      double initialQuantity = 1.0;
+      if (_saleType == SaleType.wholesale && isPieceUnit) {
+        if (product.dozenPrice != null) {
+          initialQuantity = 12.0;
+        } else if (product.bundlePrice != null &&
+            product.bundleSize != null &&
+            product.bundleSize! > 0) {
+          initialQuantity = product.bundleSize!.toDouble();
+        }
+      }
+      _items[product.id] =
+          CartItem(product: product, quantity: initialQuantity, saleType: _saleType);
       notifyListeners();
     }
   }
@@ -116,9 +184,19 @@ class CartProvider with ChangeNotifier {
       // Create a new product with updated price for this cart session only
       final originalProduct = _items[productId]!.product;
       final saleType = _items[productId]!.saleType;
-      final updatedProduct = saleType == SaleType.wholesale
-          ? originalProduct.copyWith(wholesalePrice: newPrice)
-          : originalProduct.copyWith(salePrice: newPrice);
+      final cartItem = _items[productId]!;
+      Product updatedProduct;
+      if (saleType == SaleType.wholesale) {
+        if (cartItem.usesDozenPricing) {
+          updatedProduct = originalProduct.copyWith(dozenPrice: newPrice);
+        } else if (cartItem.usesBundlePricing) {
+          updatedProduct = originalProduct.copyWith(bundlePrice: newPrice);
+        } else {
+          updatedProduct = originalProduct.copyWith(wholesalePrice: newPrice);
+        }
+      } else {
+        updatedProduct = originalProduct.copyWith(salePrice: newPrice);
+      }
 
       // Update the cart item with the new product (price only affects this cart)
       _items[productId]!.product = updatedProduct;
@@ -129,7 +207,7 @@ class CartProvider with ChangeNotifier {
   void increaseQuantity(String productId) {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
-      final increment = cartItem.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
+      final increment = cartItem.quantityStep;
 
       if (cartItem.quantity + increment <= cartItem.product.stock) {
         cartItem.quantity += increment;
@@ -141,8 +219,8 @@ class CartProvider with ChangeNotifier {
   void decreaseQuantity(String productId) {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
-      final decrement = cartItem.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
-      final minQuantity = cartItem.supportsFractionalQuantity ? CartItem.fractionalMinQuantity : 1.0;
+      final decrement = cartItem.quantityStep;
+      final minQuantity = cartItem.minQuantity;
       
       if (cartItem.quantity > minQuantity) {
         cartItem.quantity -= decrement;
@@ -192,8 +270,8 @@ class CartProvider with ChangeNotifier {
   bool canAddMore(String productId) {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
-      final increment = cartItem.supportsFractionalQuantity ? CartItem.fractionalIncrement : 1.0;
-    return cartItem.quantity + increment <= cartItem.product.stock;
+      final increment = cartItem.quantityStep;
+      return cartItem.quantity + increment <= cartItem.product.stock;
     }
     return true;
   }

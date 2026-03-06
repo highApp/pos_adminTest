@@ -43,6 +43,14 @@ class _POSScreenState extends State<POSScreen> {
   final TextEditingController _searchController = TextEditingController();
   List<Product>? _searchResults;
   String _selectedCategory = 'All';
+  /// Cached stream so StreamBuilder does not re-subscribe on every build (avoids reload flash).
+  late final Stream<List<Product>> _productsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _productsStream = _productService.getProductsStream();
+  }
 
   @override
   void dispose() {
@@ -415,7 +423,7 @@ class _POSScreenState extends State<POSScreen> {
                 // Products Grid
                 Expanded(
                   child: StreamBuilder<List<Product>>(
-                    stream: _productService.getProductsStream(),
+                    stream: _productsStream,
                     builder: (context, snapshot) {
                       if (snapshot.connectionState == ConnectionState.waiting) {
                         return const Center(child: CircularProgressIndicator());
@@ -488,6 +496,9 @@ class _POSScreenState extends State<POSScreen> {
                             product: product,
                             onTap: () {
                               context.read<CartProvider>().addItem(product);
+                              // Clear search so bar and results reset in real time
+                              _searchController.clear();
+                              _searchProducts('');
                               // Show snackbar
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
@@ -2517,9 +2528,17 @@ class _ProductCard extends StatelessWidget {
     return Consumer<CartProvider>(
       builder: (context, cart, child) {
         final isWholesale = cart.saleType == SaleType.wholesale;
-        final hasWholesalePrice = product.wholesalePrice != null;
-        final displayPrice = isWholesale && hasWholesalePrice 
-            ? product.wholesalePrice! 
+        final hasBundle = product.bundlePrice != null &&
+            product.bundleSize != null &&
+            product.bundleSize! > 0;
+        final hasWholesalePrice = product.wholesalePrice != null ||
+            product.dozenPrice != null ||
+            hasBundle;
+        final displayPrice = isWholesale
+            ? (product.dozenPrice ??
+                (hasBundle ? product.bundlePrice : null) ??
+                product.wholesalePrice ??
+                product.salePrice)
             : product.salePrice;
         final canAddToCart = !isWholesale || hasWholesalePrice;
 
@@ -2757,7 +2776,11 @@ class _ProductCard extends StatelessWidget {
                             children: [
                               if (isWholesale && hasWholesalePrice)
                                 Text(
-                                  'W',
+                                  product.dozenPrice != null
+                                      ? 'D'
+                                      : hasBundle
+                                          ? 'B'
+                                          : 'W',
                                   style: TextStyle(
                                     fontSize: 6,
                                     color: Colors.blue[700],
@@ -2778,7 +2801,11 @@ class _ProductCard extends StatelessWidget {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               Text(
-                                formatter.format(displayPrice),
+                                isWholesale && product.dozenPrice != null
+                                    ? '${formatter.format(displayPrice)} / doz'
+                                    : isWholesale && hasBundle
+                                        ? '${formatter.format(displayPrice)} / bnd (${product.bundleSize})'
+                                        : formatter.format(displayPrice),
                                 style: TextStyle(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 11,
@@ -3049,7 +3076,7 @@ class _CartItemTileState extends State<_CartItemTile> {
   void initState() {
     super.initState();
     _quantityController = TextEditingController(text: widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0));
-    _priceController = TextEditingController(text: widget.cartItem.unitPrice.toStringAsFixed(2));
+    _priceController = TextEditingController(text: widget.cartItem.displayUnitPrice.toStringAsFixed(2));
     _subtotalController = TextEditingController(text: widget.cartItem.subtotal.toStringAsFixed(2));
   }
 
@@ -3058,7 +3085,7 @@ class _CartItemTileState extends State<_CartItemTile> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.cartItem != widget.cartItem) {
       _quantityController.text = widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0);
-      _priceController.text = widget.cartItem.unitPrice.toStringAsFixed(2);
+      _priceController.text = widget.cartItem.displayUnitPrice.toStringAsFixed(2);
       _subtotalController.text = widget.cartItem.subtotal.toStringAsFixed(2);
       setState(() {
         _isEditingQuantity = false;
@@ -3152,7 +3179,21 @@ class _CartItemTileState extends State<_CartItemTile> {
                                 ),
                               )
                             : Text(
-                                '${formatter.format(widget.cartItem.unitPrice)} each',
+                                (() {
+                                  final unit = widget.cartItem.product.unit.trim();
+                                  final unitLower = unit.toLowerCase();
+                                  if (widget.cartItem.usesDozenPricing) {
+                                    return '${formatter.format(widget.cartItem.displayUnitPrice)} / doz';
+                                  }
+                                  if (widget.cartItem.usesBundlePricing &&
+                                      widget.cartItem.displayBundleSize != null) {
+                                    return '${formatter.format(widget.cartItem.displayUnitPrice)} / bnd (${widget.cartItem.displayBundleSize})';
+                                  }
+                                  final suffix = (unit.isEmpty || unitLower == 'piece' || unitLower == 'pieces' || unitLower == 'pc' || unitLower == 'pcs')
+                                      ? ' each'
+                                      : ' / $unit';
+                                  return '${formatter.format(widget.cartItem.displayUnitPrice)}$suffix';
+                                })(),
                                 style: TextStyle(
                                   color: Colors.grey[600],
                                   fontSize: 13,
@@ -3223,7 +3264,7 @@ class _CartItemTileState extends State<_CartItemTile> {
                                         : TextInputType.number,
                                     inputFormatters: widget.cartItem.supportsFractionalQuantity
                                         ? [
-                                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,3}')),
+                                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
                                           ]
                                         : [
                                             FilteringTextInputFormatter.digitsOnly,
@@ -3370,16 +3411,40 @@ class _CartItemTileState extends State<_CartItemTile> {
       return;
     }
 
-    // New unit price = total / quantity; cannot be less than purchase price
-    double newUnitPrice = total / quantity;
+    // New display unit price (dozen, bundle, or per-unit) from total and quantity
+    final bundleSize = widget.cartItem.displayBundleSize ?? 1;
+    double newDisplayUnitPrice;
+    if (quantity == 0) {
+      newDisplayUnitPrice = 0;
+    } else if (widget.cartItem.usesDozenPricing) {
+      newDisplayUnitPrice = (total * 12.0) / quantity;
+    } else if (widget.cartItem.usesBundlePricing) {
+      newDisplayUnitPrice = (total * bundleSize) / quantity;
+    } else {
+      newDisplayUnitPrice = total / quantity;
+    }
     final purchasePrice = widget.cartItem.product.purchasePrice;
-    if (newUnitPrice < purchasePrice) {
-      newUnitPrice = purchasePrice;
-      _subtotalController.text = (purchasePrice * quantity).toStringAsFixed(2);
+    final minAllowed = widget.cartItem.usesDozenPricing
+        ? (purchasePrice * 12.0)
+        : widget.cartItem.usesBundlePricing
+            ? (purchasePrice * bundleSize)
+            : purchasePrice;
+    if (newDisplayUnitPrice < minAllowed) {
+      newDisplayUnitPrice = minAllowed;
+      final newSubtotal = widget.cartItem.usesDozenPricing
+          ? (minAllowed * (quantity / 12.0))
+          : widget.cartItem.usesBundlePricing
+              ? (minAllowed * (quantity / bundleSize))
+              : (minAllowed * quantity);
+      _subtotalController.text = newSubtotal.toStringAsFixed(2);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)}). Unit price set to Rs. ${newUnitPrice.toStringAsFixed(2)}.',
+            widget.cartItem.usesDozenPricing
+                ? 'Dozen price cannot be less than 12× purchase price (Rs. ${(purchasePrice * 12).toStringAsFixed(2)}). Set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.'
+                : widget.cartItem.usesBundlePricing
+                    ? 'Bundle price cannot be less than ${bundleSize}× purchase price (Rs. ${(purchasePrice * bundleSize).toStringAsFixed(2)}). Set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.'
+                    : 'Price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)}). Unit price set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.',
           ),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
@@ -3388,8 +3453,8 @@ class _CartItemTileState extends State<_CartItemTile> {
       );
     }
 
-    context.read<CartProvider>().updatePrice(widget.cartItem.product.id, newUnitPrice);
-    _priceController.text = newUnitPrice.toStringAsFixed(2);
+    context.read<CartProvider>().updatePrice(widget.cartItem.product.id, newDisplayUnitPrice);
+    _priceController.text = newDisplayUnitPrice.toStringAsFixed(2);
   }
 
   void _updateQuantity(String value) {
@@ -3398,7 +3463,7 @@ class _CartItemTileState extends State<_CartItemTile> {
     });
 
     final quantity = double.tryParse(value);
-    final minQuantity = widget.cartItem.supportsFractionalQuantity ? CartItem.fractionalMinQuantity : 1.0;
+    final minQuantity = widget.cartItem.minQuantity;
 
     if (quantity == null || quantity < minQuantity) {
       _quantityController.text = widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0);
@@ -3440,7 +3505,7 @@ class _CartItemTileState extends State<_CartItemTile> {
 
     final price = double.tryParse(value);
     if (price == null || price < 0) {
-      _priceController.text = widget.cartItem.unitPrice.toStringAsFixed(2);
+      _priceController.text = widget.cartItem.displayUnitPrice.toStringAsFixed(2);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please enter a valid price'),
@@ -3451,16 +3516,28 @@ class _CartItemTileState extends State<_CartItemTile> {
       return;
     }
 
-    // Check if price is less than purchase price
+    // Min price: 12× or bundleSize× purchase for dozen/bundle, else purchase price
     final purchasePrice = widget.cartItem.product.purchasePrice;
-    final finalPrice = price < purchasePrice ? purchasePrice : price;
+    final bundleSize = widget.cartItem.displayBundleSize ?? 1;
+    final minAllowed = widget.cartItem.usesDozenPricing
+        ? (purchasePrice * 12.0)
+        : widget.cartItem.usesBundlePricing
+            ? (purchasePrice * bundleSize)
+            : purchasePrice;
+    final finalPrice = price < minAllowed ? minAllowed : price;
 
     // If price was adjusted, update the controller and show message
-    if (price < purchasePrice) {
+    if (price < minAllowed) {
       _priceController.text = finalPrice.toStringAsFixed(2);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)}). Set to purchase price.'),
+          content: Text(
+            widget.cartItem.usesDozenPricing
+                ? 'Dozen price cannot be less than 12× purchase price (Rs. ${(purchasePrice * 12).toStringAsFixed(2)}). Set to minimum.'
+                : widget.cartItem.usesBundlePricing
+                    ? 'Bundle price cannot be less than ${bundleSize}× purchase price (Rs. ${(purchasePrice * bundleSize).toStringAsFixed(2)}). Set to minimum.'
+                    : 'Price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)}). Set to purchase price.',
+          ),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
           backgroundColor: Colors.orange,
@@ -3470,9 +3547,14 @@ class _CartItemTileState extends State<_CartItemTile> {
 
     // Update the cart item with new price (only affects this cart session)
     context.read<CartProvider>().updatePrice(widget.cartItem.product.id, finalPrice);
-    _subtotalController.text = (finalPrice * widget.cartItem.quantity).toStringAsFixed(2);
+    final newSubtotal = widget.cartItem.usesDozenPricing
+        ? (finalPrice * (widget.cartItem.quantity / 12.0))
+        : widget.cartItem.usesBundlePricing
+            ? (finalPrice * (widget.cartItem.quantity / bundleSize))
+            : (finalPrice * widget.cartItem.quantity);
+    _subtotalController.text = newSubtotal.toStringAsFixed(2);
 
-    if (price >= purchasePrice) {
+    if (price >= minAllowed) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Price updated to ${NumberFormat.currency(symbol: 'Rs. ').format(finalPrice)} (cart only)'),

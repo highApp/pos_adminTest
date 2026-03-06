@@ -8,6 +8,7 @@ import '../models/sale.dart';
 import '../models/seller.dart';
 import '../models/product.dart';
 import 'product_service.dart';
+import 'seller_service.dart';
 
 // Web-specific imports for JavaScript interop
 // Note: Conditional imports don't work well for dart:js on mobile
@@ -1164,6 +1165,7 @@ class PrinterService {
     
     // Fetch products to get language-specific names
     final productService = ProductService();
+    final sellerService = SellerService();
     final Map<String, String> productNamesMap = {};
     
     // Fetch all products for this sale
@@ -1256,6 +1258,15 @@ class PrinterService {
     _addText(commands, _formatLine('Sale Amount:', saleAmount.toStringAsFixed(2)));
     if (sale.creditUsed > 0) {
       _addText(commands, _formatLine('Credit Used:', sale.creditUsed.toStringAsFixed(2)));
+      // Print remaining credit balance (after applying credit) for the selected seller.
+      if (seller != null) {
+        try {
+          final remainingCredit = await sellerService.getCreditBalance(seller.id);
+          _addText(commands, _formatLine('Remaining Credit:', remainingCredit.toStringAsFixed(2)));
+        } catch (e) {
+          debugPrint('Error fetching remaining credit for receipt: $e');
+        }
+      }
     }
     if (existingDueTotal > 0.01) {
       _addText(commands, _formatLine('Existing Due:', existingDueTotal.toStringAsFixed(2)));

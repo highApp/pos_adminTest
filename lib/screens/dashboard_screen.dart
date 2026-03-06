@@ -171,6 +171,129 @@ class _DashboardScreenState extends State<DashboardScreen> {
     controller.clear();
   }
 
+  void _showRecoveryDetailsDialog(
+    BuildContext context,
+    List<Map<String, dynamic>> recoveryDetails,
+    SellerService sellerService,
+    NumberFormat formatter,
+  ) {
+    if (recoveryDetails.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No recovery entries in this period')),
+      );
+      return;
+    }
+    // Sort by date descending (newest first)
+    final sorted = List<Map<String, dynamic>>.from(recoveryDetails)
+      ..sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.account_balance_wallet, color: Colors.green.shade700),
+            const SizedBox(width: 10),
+            const Text('Recovery details'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: FutureBuilder<Map<String?, String>>(
+            future: () async {
+              final names = <String?, String>{};
+              for (var e in sorted) {
+                final id = e['sellerId'] as String?;
+                if (id == null || id.isEmpty || names.containsKey(id)) continue;
+                final seller = await sellerService.getSellerById(id);
+                names[id] = seller?.name ?? 'Unknown';
+              }
+              return names;
+            }(),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              final sellerNames = snapshot.data!;
+              return SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Amount collected from sellers (payment against dues)',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ...sorted.map((e) {
+                      final sellerId = e['sellerId'] as String?;
+                      final amount = (e['amount'] as num).toDouble();
+                      final createdAt = e['createdAt'] as DateTime;
+                      final name = (sellerId != null && sellerId.isNotEmpty)
+                          ? (sellerNames[sellerId] ?? 'Unknown')
+                          : '—';
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w500,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    DateFormat('MMM d, h:mm a').format(createdAt),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              formatter.format(amount),
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: Colors.green.shade700,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showCustomDatePicker() async {
     final DateTimeRange? picked = await showDateRangePicker(
       context: context,
@@ -335,7 +458,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       
       // Track sales for profit calculation
       final salesMap = <String, Sale>{};
-      
+      // Recovery details for "tap to see breakdown" (seller, amount, date per sale)
+      final recoveryDetails = <Map<String, dynamic>>[];
+
       // Get today's date range for borrow payments calculation
       final now = DateTime.now();
       final todayStart = DateTime(now.year, now.month, now.day);
@@ -428,6 +553,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // Recovery balance from sales represents money received from paying off due payments
           // This excludes borrow payments which have isBorrowPayment = true
           totalRecoveryBalance += sale.recoveryBalance;
+          if (sale.recoveryBalance > 0) {
+            recoveryDetails.add({
+              'saleId': sale.id,
+              'sellerId': sale.sellerId,
+              'amount': sale.recoveryBalance,
+              'createdAt': sale.createdAt,
+            });
+          }
           // Track net credit balance used (after accounting for returns)
           totalCreditUsed += netCreditUsed;
         } else {
@@ -565,6 +698,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'totalExpenses': totalExpenses,
         'totalReturned': totalReturned, // Total amount returned (for display)
         'totalRecoveryBalance': totalRecoveryBalance, // Recovery balance from actual sales only
+        'recoveryDetails': recoveryDetails, // Per-sale recovery for breakdown dialog (seller, amount, date)
         'totalCreditUsed': totalCredit, // Credit = credit applied in sales (credit used from seller's balance)
         'totalBorrowed': totalBorrowed,
         'totalLent': totalLent,
@@ -592,6 +726,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'totalExpenses': 0.0,
         'totalReturned': 0.0,
         'totalRecoveryBalance': 0.0,
+        'recoveryDetails': <Map<String, dynamic>>[],
         'totalCreditUsed': 0.0,
         'totalBorrowed': 0.0,
         'totalLent': 0.0,
@@ -707,13 +842,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           final effectiveEndDate = endDate;
 
                           return StreamBuilder<List<Sale>>(
-                            stream: salesService.getSalesStream(),
+                            stream: salesService.getSalesByDateRange(effectiveStartDate, effectiveEndDate),
                             builder: (context, salesSnapshot) {
                               return StreamBuilder<List<Expense>>(
-                                stream: expenseService.getExpensesStream(),
+                                stream: expenseService.getExpensesByDateRange(effectiveStartDate, effectiveEndDate),
                                 builder: (context, expensesSnapshot) {
                                   return StreamBuilder<List<Borrow>>(
-                                    stream: borrowService.getBorrowsStream(),
+                                    stream: borrowService.getBorrowsByDateRange(effectiveStartDate, effectiveEndDate),
                                     builder: (context, borrowsSnapshot) {
                                       return StreamBuilder<double>(
                                         stream: sellerService.getTotalUnpaidSalesStream(),
@@ -837,6 +972,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                           totalCreditReductions: periodCreditReductions, // Pass credit reductions for display (filtered by date range)
                                                           isTodaySelected: _selectedDays == 0, // Whether "Today" is selected
                                                           formatter: formatter,
+                                                          recoveryDetails: stats['recoveryDetails'] ?? [],
+                                                          onRecoveryTap: () => _showRecoveryDetailsDialog(context, stats['recoveryDetails'] ?? [], sellerService, formatter),
                                                         ),
                                                       ),
                                                       const SizedBox(width: 16),
@@ -1152,9 +1289,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                       const SizedBox(height: 16),
                       StreamBuilder<List<Sale>>(
-                stream: salesService.getSalesStream(),
+                stream: salesService.getRecentSalesStream(limit: 5),
                 builder: (context, snapshot) {
-                  final sales = (snapshot.data ?? []).take(5).toList();
+                  final sales = snapshot.data ?? [];
 
                   if (sales.isEmpty) {
                     return Container(
@@ -1690,6 +1827,8 @@ class _RevenueCard extends StatelessWidget {
   final double totalCreditReductions; // Total credit reductions (for display)
   final bool isTodaySelected; // Whether "Today" is selected
   final NumberFormat formatter;
+  final List<Map<String, dynamic>> recoveryDetails; // Per-sale recovery for breakdown dialog
+  final VoidCallback? onRecoveryTap; // When user taps Recovery to see details
 
   const _RevenueCard({
     required this.revenue, // This is totalRevenueWithRecovery
@@ -1701,6 +1840,8 @@ class _RevenueCard extends StatelessWidget {
     required this.totalCreditReductions,
     required this.isTodaySelected,
     required this.formatter,
+    this.recoveryDetails = const [],
+    this.onRecoveryTap,
   });
 
   @override
@@ -1819,31 +1960,63 @@ class _RevenueCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // Right side - Recovery Balance
+              // Right side - Recovery Balance (tappable for details)
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    const Text(
-                      'Recovery',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
+                child: InkWell(
+                  onTap: (recoveryBalance > 0 && recoveryDetails.isNotEmpty && onRecoveryTap != null)
+                      ? onRecoveryTap
+                      : null,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text(
+                              'Recovery',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            if (recoveryBalance > 0 && onRecoveryTap != null) ...[
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.info_outline,
+                                size: 14,
+                                color: Colors.white.withOpacity(0.9),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          formatter.format(isTodaySelected 
+                              ? todayRecoveryBalance  // Today's recovery only
+                              : recoveryBalance), // Filtered recovery for date range
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.9),
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (recoveryBalance > 0 && onRecoveryTap != null)
+                          Text(
+                            'Tap for details',
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.75),
+                              fontSize: 10,
+                            ),
+                          ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      formatter.format(isTodaySelected 
-                          ? todayRecoveryBalance  // Today's recovery only
-                          : recoveryBalance), // Filtered recovery for date range
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.9),
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ],

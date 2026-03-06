@@ -1,49 +1,92 @@
-# Performance notes (why the app can feel slow on Blaze)
+# Performance Guide – Why the app can feel slow & what was fixed
 
-Blaze plan gives you more quota; it does **not** by itself make the app faster. Slowness usually comes from **how much data is read** and **how often**.
+You’re on **Firebase Blaze**. Slowness usually comes from **too many Firestore reads** and **heavy UI** (dashboard). Below is what was found and what was changed.
 
-## Main causes in this app
+---
 
-### 1. Dashboard: many real-time streams at once
-The dashboard subscribes to **10+ Firestore streams** at the same time:
-- All sales, expenses, borrows, seller orders, balance entries
-- Total unpaid sales (all `seller_history`), borrow profit, real profit, credit balance, etc.
+## What was fixed (already done)
 
-Each stream uses `.snapshots()` and re-runs when **any** document in that collection changes. So one change can trigger many re-reads and rebuilds.
+### 1. Dashboard: date-range queries instead of full collections
+- **Before:** Dashboard used `getSalesStream()`, `getExpensesStream()`, `getBorrowsStream()` → **all sales, all expenses, all borrows** were read whenever anything changed.
+- **After:** Dashboard now uses:
+  - `getSalesByDateRange(effectiveStartDate, effectiveEndDate)`
+  - `getExpensesByDateRange(...)`
+  - `getBorrowsByDateRange(...)`
+- **Effect:** For “Today” or “Last 7 days” you only read documents in that range. This can cut dashboard reads by **80–95%** depending on data size.
 
-**What you can do:**
-- Avoid leaving the dashboard open on a tab you’re not using.
-- For “Borrow profit” / “Real profit” type stats, consider caching for 1–2 minutes instead of strict real-time.
+### 2. Recent sales: limit 5
+- **Before:** “Recent sales” used `getSalesStream()` and then `.take(5)` in the UI → still loaded **all** sales.
+- **After:** Uses `getRecentSalesStream(limit: 5)` so Firestore only returns 5 docs.
+- **Effect:** Far fewer reads on the dashboard.
 
-### 2. Full collection reads (no filters)
-Some logic loads **entire collections** then filters in memory, for example:
-- **Seller service:** `getTotalUnpaidSales()`, `getTotalUnpaidSalesByDateRange()` read all `seller_history` docs.
-- **Product search:** `searchProducts()` loads all products then filters by name/barcode in the app.
-- **Borrow/real profit streams:** Read all `seller_history` and all `sales` to compute totals.
+---
 
-The more documents you have in `sales`, `seller_history`, `products`, the slower these become and the more reads you use.
+## Remaining causes of slowness (what to watch)
 
-**What you can do:**
-- Add Firestore **indexes** for the queries you use (Firebase Console → Firestore → Indexes).
-- For product search, consider a **search index** (e.g. Algolia, Typesense) or at least a `.limit()` for the initial load.
-- For date-range stats, prefer Firestore `where('date', '>=', start).where('date', '<=', end)` (with a composite index) instead of loading the whole collection.
+### 1. Dashboard: many nested StreamBuilders
+- The dashboard still has **11 nested StreamBuilders + 1 FutureBuilder** (sales, expenses, borrows, unpaid, borrowProfit, realProfit, sellerOrders, balance, creditBalance, creditReductions, periodCreditReductions).
+- **Why it hurts:** Every time any of these streams emits, the whole tree can rebuild. Many streams → many rebuilds.
+- **Already mitigated:** Seller service uses `_dashboardThrottle` (25 seconds) so profit/unpaid streams don’t fire on every doc change.
+- **Optional improvement:** Combine these into one stream (e.g. with `rxdart`’s `CombineLatestStream`) and a single `StreamBuilder` so you get one rebuild per “tick” instead of a deep rebuild chain.
 
-### 3. Debug logging (reduced in code)
-`SellerService` had a lot of `debugPrint` on hot paths (e.g. borrow profit, unpaid sales). Those are now behind a flag so they don’t run in normal use, which reduces I/O and CPU a bit.
+### 2. Seller service: full collection reads on each throttle tick
+- `getRealProfitFromPaidStreamByDateRange` and `getBorrowProfitStreamByDateRange` listen to `sales` and `seller_history`, and on each emission they do:
+  - `_firestore.collection('sales').get()`
+  - `_firestore.collection('seller_history').get()`
+- So **every 25 seconds** (and on any change) they re-read **all** sales and **all** seller_history, then filter by date in memory.
+- **Improvement:** Use Firestore **date-range queries** (e.g. `where('createdAt', ...)` / `where('saleDate', ...)`) so only docs in the selected range are read. You may need composite indexes in Firebase Console.
 
-## Quick checks in Firebase Console
+### 3. Products: no limit on product stream
+- `getProductsStream()` loads **all** products. With thousands of products, that’s slow and expensive.
+- **Improvement:**  
+  - For POS/product list: use **pagination** (e.g. `limit(50)` and “load more”) or load by category.  
+  - Keep “all products” only where you really need it, and consider caching (you already have 60s cache for search).
 
-1. **Firestore → Usage**  
-   See read/write volume. High reads per second = lots of listeners or heavy queries.
+### 4. Buyer bills & seller history: multiple streams
+- Screens like `buyer_bills_screen` and `seller_history_screen` use several `StreamBuilder`s and sometimes full-collection snapshots.
+- **Improvement:** Prefer **date-range or limited** queries where possible; avoid listening to entire collections if the UI only needs a subset.
 
-2. **Firestore → Indexes**  
-   Add composite indexes for any query that the console suggests (e.g. `sellerId` + `createdAt`, or date range queries).
+### 5. Firestore persistence (cache)
+- Enabling **offline persistence** lets Firestore serve repeated reads from local cache, which reduces latency and can reduce read cost.
+- You can enable it once after `Firebase.initializeApp()` (see example in next section).
 
-3. **Reduce listeners**  
-   Don’t keep many tabs open on the admin app; each tab keeps its own listeners and reads.
+---
+
+## Optional: enable Firestore cache (recommended)
+
+In `main.dart`, after `Firebase.initializeApp(...)`:
+
+```dart
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(...);
+
+  // Use cache for faster repeat reads and fewer billable reads
+  FirebaseFirestore.instance.settings = const Settings(
+    persistenceEnabled: true,
+    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+  );
+
+  runApp(const MyApp());
+}
+```
+
+- **persistenceEnabled:** Uses local cache when supported (e.g. web and mobile).
+- **cacheSizeBytes:** `CACHE_SIZE_UNLIMITED` avoids evicting cache too aggressively (Blaze plan can handle it).
+
+---
+
+## Firebase Console checks (Blaze)
+
+1. **Firestore → Usage:** See read/write volume. After the dashboard changes, you should see fewer reads when switching dates or leaving the dashboard open.
+2. **Firestore → Indexes:** Add any composite indexes suggested in the app (e.g. for date-range queries on `sales`, `seller_history`, `expenses`, `borrows`).
+3. **Performance / Network:** If you use Firebase Performance, check for slow screens or high network time.
+
+---
 
 ## Summary
 
-- **Blaze** = higher limits and you can scale; it does **not** automatically optimize reads.
-- **Actual speed** depends on: number of documents read, number of active listeners, and doing work in memory (e.g. filtering big lists).
-- **Improvements:** fewer full-collection reads, more indexed queries, fewer simultaneous streams, and optional caching for heavy stats.
+- **Done:** Dashboard uses **date-range** streams for sales/expenses/borrows and **limit 5** for recent sales. This should make the dashboard much lighter and cheaper.
+- **Next:** Add date-range queries in seller service profit streams, enable Firestore cache, and consider combining dashboard streams or paginating products if you still see slowness or high read counts.

@@ -6,6 +6,13 @@ class Product {
   final double purchasePrice; // Buying/cost price
   final double salePrice; // Selling price
   final double? wholesalePrice; // Wholesale price (optional)
+  /// Price for a full dozen (12 pieces). Optional.
+  /// Used in POS when sale type is wholesale and unit is pieces.
+  final double? dozenPrice;
+  /// Price for a bundle. Optional. Bundle size is in [bundleSize] (e.g. 10, 16, 20).
+  final double? bundlePrice;
+  /// Number of items in one bundle (e.g. 10, 16, 20). Required if [bundlePrice] is set.
+  final int? bundleSize;
   final double stock; // Changed from int to double to support fractional stock
   final String unit; // Unit of measurement (kg, g, L, pieces, etc.)
   final double? value; // Value/size of product (e.g., 500 for 500g, 1 for 1L)
@@ -24,6 +31,9 @@ class Product {
     required this.purchasePrice,
     required this.salePrice,
     this.wholesalePrice,
+    this.dozenPrice,
+    this.bundlePrice,
+    this.bundleSize,
     required this.stock,
     required this.unit,
     this.value,
@@ -66,6 +76,9 @@ class Product {
       'purchasePrice': purchasePrice,
       'salePrice': salePrice,
       'wholesalePrice': wholesalePrice,
+      'dozenPrice': dozenPrice,
+      'bundlePrice': bundlePrice,
+      'bundleSize': bundleSize,
       'stock': stock,
       'unit': unit,
       'value': value,
@@ -132,6 +145,15 @@ class Product {
       wholesalePrice: map['wholesalePrice'] != null 
           ? (map['wholesalePrice'] as num).toDouble() 
           : null,
+      dozenPrice: map['dozenPrice'] != null
+          ? (map['dozenPrice'] as num).toDouble()
+          : null,
+      bundlePrice: map['bundlePrice'] != null
+          ? (map['bundlePrice'] as num).toDouble()
+          : null,
+      bundleSize: map['bundleSize'] != null
+          ? (map['bundleSize'] as num).toInt()
+          : null,
       stock: (map['stock'] ?? 0).toDouble(),
       unit: map['unit'] ?? 'pieces',
       value: map['value'] != null ? (map['value'] as num).toDouble() : null,
@@ -157,6 +179,9 @@ class Product {
     double? purchasePrice,
     double? salePrice,
     double? wholesalePrice,
+    double? dozenPrice,
+    double? bundlePrice,
+    int? bundleSize,
     double? stock,
     String? unit,
     double? value,
@@ -175,6 +200,9 @@ class Product {
       purchasePrice: purchasePrice ?? this.purchasePrice,
       salePrice: salePrice ?? this.salePrice,
       wholesalePrice: wholesalePrice ?? this.wholesalePrice,
+      dozenPrice: dozenPrice ?? this.dozenPrice,
+      bundlePrice: bundlePrice ?? this.bundlePrice,
+      bundleSize: bundleSize ?? this.bundleSize,
       stock: stock ?? this.stock,
       unit: unit ?? this.unit,
       value: value ?? this.value,

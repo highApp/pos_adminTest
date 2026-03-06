@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
 import 'providers/cart_provider.dart';
 import 'providers/seller_cart_provider.dart';
@@ -20,6 +21,14 @@ void main() async {
       measurementId: "G-9QJW7JKPV2",
     ),
   );
+  // Larger cache = fewer repeat reads from server (helps with slowness on Blaze)
+  try {
+    FirebaseFirestore.instance.settings = const Settings(
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+    );
+  } catch (_) {
+    // Ignore if already initialized (e.g. hot reload) or unsupported on platform
+  }
   runApp(const MyApp());
 }
 

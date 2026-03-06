@@ -1791,7 +1791,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                         ),
                                         const SizedBox(height: 4),
                                         SelectableText(
-                                          'Profit: ${_currencyFormatter.format(sale.profit)}',
+                                          'Profit: ${_currencyFormatter.format(sale.netProfit)}',
                                           style: TextStyle(
                                             fontSize: 12,
                                             fontWeight: FontWeight.w600,

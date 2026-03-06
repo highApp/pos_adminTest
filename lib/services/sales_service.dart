@@ -25,6 +25,18 @@ class SalesService {
     });
   }
 
+  /// Recent sales with limit (e.g. 5) to reduce reads on dashboard.
+  Stream<List<Sale>> getRecentSalesStream({int limit = 5}) {
+    return _firestore
+        .collection(_collection)
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map((snapshot) {
+      return snapshot.docs.map((doc) => Sale.fromMap(doc.data())).toList();
+    });
+  }
+
   // Get sales by date range
   Stream<List<Sale>> getSalesByDateRange(DateTime startDate, DateTime endDate) {
     return _firestore

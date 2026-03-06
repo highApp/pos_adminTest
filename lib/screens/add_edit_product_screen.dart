@@ -33,6 +33,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   late TextEditingController _percentageController;
   late TextEditingController _wholesalePriceController;
   late TextEditingController _wholesalePercentageController;
+  late TextEditingController _dozenPriceController;
+  late TextEditingController _bundlePriceController;
+  late TextEditingController _bundleSizeController;
   late TextEditingController _stockController;
   late TextEditingController _valueController;
   late TextEditingController _unitController;
@@ -71,6 +74,12 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _wholesalePriceController =
         TextEditingController(text: widget.product?.wholesalePrice?.toString() ?? '');
     _wholesalePercentageController = TextEditingController();
+    _dozenPriceController =
+        TextEditingController(text: widget.product?.dozenPrice?.toString() ?? '');
+    _bundlePriceController =
+        TextEditingController(text: widget.product?.bundlePrice?.toString() ?? '');
+    _bundleSizeController =
+        TextEditingController(text: widget.product?.bundleSize?.toString() ?? '');
     _stockController =
         TextEditingController(text: widget.product?.stock.toString() ?? '');
     _valueController =
@@ -105,6 +114,14 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _wholesalePercentageController.addListener(_updateWholesalePriceFromPercentage);
     // Add listener to update percentage when wholesale price is edited
     _wholesalePriceController.addListener(_updatePercentageFromWholesalePrice);
+
+    // Bundle ↔ Wholesale real-time sync: bundle price = wholesale × bundle size
+    _wholesalePriceController.addListener(_updateBundlePriceFromWholesale);
+    _bundleSizeController.addListener(_updateBundlePriceFromWholesale);
+    _bundlePriceController.addListener(_updateWholesalePriceFromBundle);
+    // Dozen ↔ Wholesale real-time sync: dozen price = wholesale × 12
+    _wholesalePriceController.addListener(_updateDozenPriceFromWholesale);
+    _dozenPriceController.addListener(_updateWholesalePriceFromDozen);
   }
 
   void _onUrduFieldFocusChange() {
@@ -127,6 +144,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _percentageController.dispose();
     _wholesalePriceController.dispose();
     _wholesalePercentageController.dispose();
+    _dozenPriceController.dispose();
+    _bundlePriceController.dispose();
+    _bundleSizeController.dispose();
     _stockController.dispose();
     _valueController.dispose();
     _unitController.dispose();
@@ -140,6 +160,10 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   bool _isUpdatingFromSalePrice = false;
   bool _isUpdatingFromWholesalePercentage = false;
   bool _isUpdatingFromWholesalePrice = false;
+  bool _isUpdatingBundleFromWholesale = false;
+  bool _isUpdatingWholesaleFromBundle = false;
+  bool _isUpdatingDozenFromWholesale = false;
+  bool _isUpdatingWholesaleFromDozen = false;
 
   void _updateSalePriceFromPercentage() {
     if (_usePercentage && !_isUpdatingFromSalePrice && _purchasePriceController.text.isNotEmpty) {
@@ -218,6 +242,57 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         _wholesalePercentageController.text = calculatedPercentage.toStringAsFixed(2);
         _isUpdatingFromWholesalePrice = false;
       }
+    }
+  }
+
+  /// When wholesale price changes: dozen price = wholesale × 12.
+  void _updateDozenPriceFromWholesale() {
+    if (_isUpdatingWholesaleFromDozen) return;
+    final wholesale = double.tryParse(_wholesalePriceController.text.trim());
+    if (wholesale != null && wholesale > 0) {
+      _isUpdatingDozenFromWholesale = true;
+      _dozenPriceController.text = (wholesale * 12).toStringAsFixed(2);
+      _isUpdatingDozenFromWholesale = false;
+    }
+  }
+
+  /// When dozen price changes: wholesale price = dozen price / 12.
+  void _updateWholesalePriceFromDozen() {
+    if (_isUpdatingDozenFromWholesale) return;
+    final dozen = double.tryParse(_dozenPriceController.text.trim());
+    if (dozen != null && dozen > 0) {
+      _isUpdatingWholesaleFromDozen = true;
+      _wholesalePriceController.text = (dozen / 12).toStringAsFixed(2);
+      _isUpdatingWholesaleFromDozen = false;
+      _updatePercentageFromWholesalePrice();
+      _updateBundlePriceFromWholesale();
+    }
+  }
+
+  /// When wholesale price or bundle size changes: bundle price = wholesale × bundle size.
+  void _updateBundlePriceFromWholesale() {
+    if (_isUpdatingWholesaleFromBundle) return;
+    final wholesale = double.tryParse(_wholesalePriceController.text.trim());
+    final sizeStr = _bundleSizeController.text.trim();
+    final size = sizeStr.isEmpty ? null : int.tryParse(sizeStr);
+    if (wholesale != null && wholesale > 0 && size != null && size > 0) {
+      _isUpdatingBundleFromWholesale = true;
+      _bundlePriceController.text = (wholesale * size).toStringAsFixed(2);
+      _isUpdatingBundleFromWholesale = false;
+    }
+  }
+
+  /// When bundle price changes: wholesale price = bundle price / bundle size.
+  void _updateWholesalePriceFromBundle() {
+    if (_isUpdatingBundleFromWholesale) return;
+    final bundlePrice = double.tryParse(_bundlePriceController.text.trim());
+    final sizeStr = _bundleSizeController.text.trim();
+    final size = sizeStr.isEmpty ? null : int.tryParse(sizeStr);
+    if (bundlePrice != null && bundlePrice > 0 && size != null && size > 0) {
+      _isUpdatingWholesaleFromBundle = true;
+      _wholesalePriceController.text = (bundlePrice / size).toStringAsFixed(2);
+      _isUpdatingWholesaleFromBundle = false;
+      _updatePercentageFromWholesalePrice();
     }
   }
 
@@ -606,6 +681,15 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         wholesalePrice: _wholesalePriceController.text.trim().isEmpty
             ? null
             : double.tryParse(_wholesalePriceController.text.trim()),
+        dozenPrice: _dozenPriceController.text.trim().isEmpty
+            ? null
+            : double.tryParse(_dozenPriceController.text.trim()),
+        bundlePrice: _bundlePriceController.text.trim().isEmpty
+            ? null
+            : double.tryParse(_bundlePriceController.text.trim()),
+        bundleSize: _bundleSizeController.text.trim().isEmpty
+            ? null
+            : int.tryParse(_bundleSizeController.text.trim()),
         stock: double.parse(_stockController.text),
         unit: _unitController.text.trim().isEmpty 
             ? 'pieces' 
@@ -1443,6 +1527,125 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                 },
               ),
             ],
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _dozenPriceController,
+              decoration: const InputDecoration(
+                labelText: 'Dozen (Dorzan) Price',
+                hintText: 'Optional (price for 12 pieces)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.inventory_2),
+                prefixText: 'Rs. ',
+                helperText: 'Used in POS when Wholesale is selected (12 items = 1 dozen)',
+              ),
+              keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+              ],
+              validator: (value) {
+                if (value != null && value.isNotEmpty) {
+                  final dozenPrice = double.tryParse(value);
+                  if (dozenPrice == null) return 'Invalid price';
+                  if (dozenPrice <= 0) return 'Must be > 0';
+                  final purchasePrice = double.tryParse(_purchasePriceController.text);
+                  // purchasePrice is per single item; dozen price must be >= 12 * purchasePrice.
+                  if (purchasePrice != null &&
+                      purchasePrice > 0 &&
+                      dozenPrice < (purchasePrice * 12)) {
+                    return 'Dozen price cannot be less than 12× purchase price (Rs. ${(purchasePrice * 12).toStringAsFixed(2)})';
+                  }
+                }
+                return null;
+              },
+              onChanged: (value) {
+                if (_formKey.currentState != null) {
+                  Future.microtask(() {
+                    if (_formKey.currentState != null) {
+                      _formKey.currentState!.validate();
+                    }
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 16),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _bundlePriceController,
+                    decoration: const InputDecoration(
+                      labelText: 'Bundle Price',
+                      hintText: 'Optional (price per bundle)',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.layers),
+                      prefixText: 'Rs. ',
+                      helperText: 'Wholesale: price per bundle',
+                    ),
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                    ],
+                    validator: (value) {
+                      if (value != null && value.isNotEmpty) {
+                        final bundlePrice = double.tryParse(value);
+                        if (bundlePrice == null) return 'Invalid price';
+                        if (bundlePrice <= 0) return 'Must be > 0';
+                        final sizeStr = _bundleSizeController.text.trim();
+                        if (sizeStr.isEmpty) return 'Set Bundle Size';
+                        final bundleSize = int.tryParse(sizeStr);
+                        if (bundleSize == null || bundleSize < 1) return 'Enter a number (1 or more)';
+                        final purchasePrice = double.tryParse(_purchasePriceController.text);
+                        if (purchasePrice != null && purchasePrice > 0 &&
+                            bundlePrice < (purchasePrice * bundleSize)) {
+                          return 'Bundle price cannot be less than $bundleSize× purchase price';
+                        }
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      if (_formKey.currentState != null) {
+                        Future.microtask(() {
+                          if (_formKey.currentState != null) _formKey.currentState!.validate();
+                        });
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: _bundleSizeController,
+                    decoration: const InputDecoration(
+                      labelText: 'Bundle Size',
+                      hintText: 'e.g. 10, 24, 36, 48, 50',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.numbers),
+                      helperText: 'Any number (items per bundle)',
+                    ),
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                    validator: (value) {
+                      if (_bundlePriceController.text.trim().isNotEmpty) {
+                        if (value == null || value.isEmpty) return 'Required when Bundle Price is set';
+                        final n = int.tryParse(value);
+                        if (n == null || n < 1) return 'Enter a number (1 or more)';
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      if (_formKey.currentState != null) {
+                        Future.microtask(() {
+                          if (_formKey.currentState != null) _formKey.currentState!.validate();
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 16),
             TextFormField(
               controller: _stockController,
