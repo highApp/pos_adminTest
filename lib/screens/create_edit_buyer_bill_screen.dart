@@ -1163,9 +1163,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     });
   }
 
-  /// When wholesale price changes: dozen price = wholesale × 12.
+  /// When wholesale price changes: dozen price = wholesale × 12. Skip if wholesale was set from bundle (dozen and bundle separate).
   void _updateDozenPriceFromWholesale() {
-    if (_isUpdatingWholesaleFromDozen) return;
+    if (_isUpdatingWholesaleFromDozen || _isUpdatingWholesaleFromBundle) return;
     final wholesale = double.tryParse(_wholesalePriceController.text.trim());
     if (wholesale != null && wholesale > 0) {
       _isUpdatingDozenFromWholesale = true;
@@ -1175,7 +1175,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     }
   }
 
-  /// When dozen price changes: wholesale price = dozen price / 12.
+  /// When dozen price changes: wholesale price = dozen price / 12. Do not change bundle (dozen and bundle are separate).
   void _updateWholesalePriceFromDozen() {
     if (_isUpdatingDozenFromWholesale) return;
     final dozen = double.tryParse(_dozenPriceController.text.trim());
@@ -1183,14 +1183,14 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _isUpdatingWholesaleFromDozen = true;
       _wholesalePriceController.text = (dozen / 12).toStringAsFixed(2);
       _isUpdatingWholesaleFromDozen = false;
-      _updateBundlePriceFromWholesale();
       _calculatedVersion.value++;
+      // Do not update bundle — dozen and bundle are independent
     }
   }
 
-  /// When wholesale price or bundle size changes: bundle price = wholesale × bundle size.
+  /// When wholesale price or bundle size changes: bundle price = wholesale × bundle size. Skip if wholesale was set from dozen (bundle and dozen separate).
   void _updateBundlePriceFromWholesale() {
-    if (_isUpdatingWholesaleFromBundle) return;
+    if (_isUpdatingWholesaleFromBundle || _isUpdatingWholesaleFromDozen) return;
     final wholesale = double.tryParse(_wholesalePriceController.text.trim());
     final sizeStr = _bundleSizeController.text.trim();
     final size = sizeStr.isEmpty ? null : int.tryParse(sizeStr);
@@ -1202,7 +1202,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     }
   }
 
-  /// When bundle price changes: wholesale price = bundle price / bundle size.
+  /// When bundle price changes: wholesale price = bundle price / bundle size. Do not change dozen (bundle and dozen are separate).
   void _updateWholesalePriceFromBundle() {
     if (_isUpdatingBundleFromWholesale) return;
     final bundlePrice = double.tryParse(_bundlePriceController.text.trim());
@@ -1213,6 +1213,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _wholesalePriceController.text = (bundlePrice / size).toStringAsFixed(2);
       _isUpdatingWholesaleFromBundle = false;
       _calculatedVersion.value++;
+      // Do not update dozen — bundle and dozen are independent
     }
   }
 

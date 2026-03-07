@@ -40,6 +40,7 @@ class PrinterService {
   // ESC/POS Command Constants for SpeedX SP-90A
   static const int esc = 0x1B;
   static const int gs = 0x1D;
+  static const int fs = 0x1C;
   static const int lf = 0x0A;
   
   // Native Bluetooth printer instance (for mobile)
@@ -1192,9 +1193,9 @@ class PrinterService {
     // Initialize printer (ESC @)
     commands.addAll([esc, 0x40]);
 
-    // Set character code table (UTF-8 compatible)
-    // SpeedX SP-90A supports multiple code pages, using Page0 (OEM437) as default
-    commands.addAll([esc, 0x74, 0x00]); // ESC t 0 - Select character code table 0
+    // Enable UTF-8 for receipt so Urdu/Arabic and English print correctly.
+    // FS ( C pL pH fn m: 1C 28 43 02 00 30 32 — fn=48 ('0'), m=50 = UTF-8 (some printers use m=2)
+    commands.addAll([fs, 0x28, 0x43, 0x02, 0x00, 0x30, 0x32]);
 
     // Note: Print density is typically set via printer hardware settings
     // SpeedX SP-90A default is Level-2 as shown in self-test
@@ -1215,17 +1216,17 @@ class PrinterService {
     // Set alignment to left
     commands.addAll([esc, 0x61, 0x00]); // ESC a 0 - Left align
 
-    // Print date and time
+    // Print date and time (labels localized)
     final dateTime = sale.createdAt;
     final dateStr = '${dateTime.day.toString().padLeft(2, '0')}/${dateTime.month.toString().padLeft(2, '0')}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
-    _addText(commands, 'Date: $dateStr\n');
-    _addText(commands, 'Bill No: ${sale.id.substring(0, 8)}\n');
+    _addText(commands, '${_receiptLabel('date', languageCode)}: $dateStr\n');
+    _addText(commands, '${_receiptLabel('billNo', languageCode)}: ${sale.id.substring(0, 8)}\n');
     
     // Print seller info if available
     if (seller != null) {
-      _addText(commands, 'Customer: ${seller.name}\n');
+      _addText(commands, '${_receiptLabel('customer', languageCode)}: ${seller.name}\n');
       if (seller.phone != null && seller.phone!.isNotEmpty) {
-        _addText(commands, 'Phone: ${seller.phone}\n');
+        _addText(commands, '${_receiptLabel('phone', languageCode)}: ${seller.phone}\n');
       }
     }
     
@@ -1249,48 +1250,46 @@ class PrinterService {
     }
 
     _addText(commands, '${_repeatChar('-', 32)}\n');
-    // Total items count
-    _addText(commands, _formatLine('Total Items:', sale.items.length.toString()));
+    // Total items count (localized)
+    _addText(commands, _formatLine('${_receiptLabel('totalItems', languageCode)}:', sale.items.length.toString()));
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
-    // Totals: match preview (Sale Amount, Existing Due, Amount Paid, Change, Due Balance)
+    // Totals: match preview (labels localized)
     final saleAmount = sale.total - sale.creditUsed;
-    _addText(commands, _formatLine('Sale Amount:', saleAmount.toStringAsFixed(2)));
+    _addText(commands, _formatLine(_receiptLabel('saleAmount', languageCode), saleAmount.toStringAsFixed(2)));
     if (sale.creditUsed > 0) {
-      _addText(commands, _formatLine('Credit Used:', sale.creditUsed.toStringAsFixed(2)));
-      // Print remaining credit balance (after applying credit) for the selected seller.
+      _addText(commands, _formatLine(_receiptLabel('creditUsed', languageCode), sale.creditUsed.toStringAsFixed(2)));
       if (seller != null) {
         try {
           final remainingCredit = await sellerService.getCreditBalance(seller.id);
-          _addText(commands, _formatLine('Remaining Credit:', remainingCredit.toStringAsFixed(2)));
+          _addText(commands, _formatLine(_receiptLabel('remainingCredit', languageCode), remainingCredit.toStringAsFixed(2)));
         } catch (e) {
           debugPrint('Error fetching remaining credit for receipt: $e');
         }
       }
     }
     if (existingDueTotal > 0.01) {
-      _addText(commands, _formatLine('Existing Due:', existingDueTotal.toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('existingDue', languageCode), existingDueTotal.toStringAsFixed(2)));
     }
     if (sale.recoveryBalance > 0) {
-      _addText(commands, _formatLine('Applied to Dues:', sale.recoveryBalance.toStringAsFixed(2)));
-      _addText(commands, _formatLine('Remaining Due:', (existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity).toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('appliedToDues', languageCode), sale.recoveryBalance.toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('remainingDue', languageCode), (existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity).toStringAsFixed(2)));
     }
-    _addText(commands, _formatLine('Amount Paid:', sale.amountPaid.toStringAsFixed(2)));
-    _addText(commands, _formatLine('Change:', sale.change.toStringAsFixed(2)));
-    // Due Balance = (Existing Due + Sale Amount) - Amount Paid (same as preview)
+    _addText(commands, _formatLine(_receiptLabel('amountPaid', languageCode), sale.amountPaid.toStringAsFixed(2)));
+    _addText(commands, _formatLine(_receiptLabel('change', languageCode), sale.change.toStringAsFixed(2)));
     final totalOwedBeforePayment = existingDueTotal + saleAmount;
     final dueBalance = (totalOwedBeforePayment - sale.amountPaid).clamp(0.0, double.infinity);
     if (dueBalance > 0.01) {
       _addText(commands, '${_repeatChar('-', 32)}\n');
-      _addText(commands, _formatLine('Due Balance:', dueBalance.toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('dueBalance', languageCode), dueBalance.toStringAsFixed(2)));
     }
 
     _addText(commands, '${_repeatChar('-', 32)}\n');
     
-    // Center align for footer
+    // Center align for footer (localized)
     commands.addAll([esc, 0x61, 0x01]); // Center align
-    _addText(commands, 'Thank You!\n');
-    _addText(commands, 'Visit Again\n');
+    _addText(commands, '${_receiptLabel('thankYou', languageCode)}\n');
+    _addText(commands, '${_receiptLabel('visitAgain', languageCode)}\n');
     // Developer info (condensed mode already enabled)
     _addText(commands, 'Software developed by HighApp Solution\n');
     _addText(commands, '+923015384952, +923234471436\n');
@@ -1323,9 +1322,75 @@ class PrinterService {
     return char * count;
   }
 
-  // Helper method to add text to commands list
+  // Helper method to add text to commands list (UTF-8 so Urdu/Arabic print correctly)
   void _addText(List<int> commands, String text) {
-    commands.addAll(text.codeUnits);
+    commands.addAll(utf8.encode(text));
+  }
+
+  /// Receipt labels in English, Urdu, Arabic for localization.
+  static String _receiptLabel(String key, String languageCode) {
+    switch (languageCode) {
+      case 'ur':
+        switch (key) {
+          case 'date': return 'تاریخ';
+          case 'billNo': return 'بل نمبر';
+          case 'customer': return 'گاہک';
+          case 'phone': return 'فون';
+          case 'totalItems': return 'کل اشیا';
+          case 'saleAmount': return 'فروخت کی رقم';
+          case 'creditUsed': return 'کریڈٹ استعمال';
+          case 'remainingCredit': return 'باقی کریڈٹ';
+          case 'existingDue': return 'پہلے سے واجب';
+          case 'appliedToDues': return 'واجبات پر لگایا';
+          case 'remainingDue': return 'باقی واجب';
+          case 'amountPaid': return 'ادائیگی';
+          case 'change': return 'باقی';
+          case 'dueBalance': return 'واجب بقایا';
+          case 'thankYou': return 'شکریہ!';
+          case 'visitAgain': return 'دوبارہ تشریف لائیں';
+          default: return key;
+        }
+      case 'ar':
+        switch (key) {
+          case 'date': return 'التاريخ';
+          case 'billNo': return 'رقم الفاتورة';
+          case 'customer': return 'العميل';
+          case 'phone': return 'الهاتف';
+          case 'totalItems': return 'إجمالي القطع';
+          case 'saleAmount': return 'مبلغ البيع';
+          case 'creditUsed': return 'الائتمان المستخدم';
+          case 'remainingCredit': return 'الرصيد المتبقي';
+          case 'existingDue': return 'المبلغ المستحق السابق';
+          case 'appliedToDues': return 'المُطبَّق على المستحقات';
+          case 'remainingDue': return 'المتبقي المستحق';
+          case 'amountPaid': return 'المدفوع';
+          case 'change': return 'الباقي';
+          case 'dueBalance': return 'المبلغ المستحق';
+          case 'thankYou': return 'شكراً!';
+          case 'visitAgain': return 'مرحباً بعودتك';
+          default: return key;
+        }
+      default:
+        switch (key) {
+          case 'date': return 'Date';
+          case 'billNo': return 'Bill No';
+          case 'customer': return 'Customer';
+          case 'phone': return 'Phone';
+          case 'totalItems': return 'Total Items';
+          case 'saleAmount': return 'Sale Amount';
+          case 'creditUsed': return 'Credit Used';
+          case 'remainingCredit': return 'Remaining Credit';
+          case 'existingDue': return 'Existing Due';
+          case 'appliedToDues': return 'Applied to Dues';
+          case 'remainingDue': return 'Remaining Due';
+          case 'amountPaid': return 'Amount Paid';
+          case 'change': return 'Change';
+          case 'dueBalance': return 'Due Balance';
+          case 'thankYou': return 'Thank You!';
+          case 'visitAgain': return 'Visit Again';
+          default: return key;
+        }
+    }
   }
 }
 

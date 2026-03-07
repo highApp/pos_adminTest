@@ -582,9 +582,10 @@ class _POSScreenState extends State<POSScreen> {
         
         if (doc.exists) {
           final product = Product.fromMap(doc.data()!);
-          if (product.stock >= cartItem.quantity) {
+          final qtyToDeduct = cartItem.effectiveQuantityForStock;
+          if (product.stock >= qtyToDeduct) {
             final updatedProduct = product.copyWith(
-              stock: product.stock - cartItem.quantity,
+              stock: product.stock - qtyToDeduct,
               updatedAt: DateTime.now(),
             );
             batch.update(docRef, updatedProduct.toMap());
@@ -594,11 +595,11 @@ class _POSScreenState extends State<POSScreen> {
       // Commit all stock updates at once
       await batch.commit();
 
-      // Calculate total profit based on actual selling price (could be regular or wholesale)
+      // Calculate total profit: revenue (subtotal) minus cost (effective qty × purchase price)
       double totalProfit = 0;
       for (var cartItem in cart.items.values) {
-        final profitPerItem = cartItem.unitPrice - cartItem.product.purchasePrice;
-        totalProfit += profitPerItem * cartItem.quantity;
+        final cost = cartItem.product.purchasePrice * cartItem.effectiveQuantityForStock;
+        totalProfit += cartItem.subtotal - cost;
       }
 
       // Initialize variables for seller processing
@@ -626,7 +627,7 @@ class _POSScreenState extends State<POSScreen> {
                   productId: cartItem.product.id,
                   productName: cartItem.product.name,
                   price: cartItem.unitPrice,
-                  quantity: cartItem.quantity,
+                  quantity: cartItem.effectiveQuantityForStock,
                   subtotal: cartItem.subtotal,
                 ))
             .toList(),
@@ -3083,7 +3084,11 @@ class _CartItemTileState extends State<_CartItemTile> {
   @override
   void didUpdateWidget(covariant _CartItemTile oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.cartItem != widget.cartItem) {
+    // Sync controllers when quantity, price or subtotal change (same ref can have updated values after provider notify)
+    final qtyChanged = oldWidget.cartItem.quantity != widget.cartItem.quantity;
+    final priceChanged = oldWidget.cartItem.displayUnitPrice != widget.cartItem.displayUnitPrice;
+    final subtotalChanged = oldWidget.cartItem.subtotal != widget.cartItem.subtotal;
+    if (oldWidget.cartItem != widget.cartItem || qtyChanged || priceChanged || subtotalChanged) {
       _quantityController.text = widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0);
       _priceController.text = widget.cartItem.displayUnitPrice.toStringAsFixed(2);
       _subtotalController.text = widget.cartItem.subtotal.toStringAsFixed(2);
@@ -3477,11 +3482,12 @@ class _CartItemTileState extends State<_CartItemTile> {
       return;
     }
 
-    if (quantity > widget.cartItem.product.stock) {
+    final effectiveQty = widget.cartItem.effectiveQuantityFor(quantity);
+    if (effectiveQty > widget.cartItem.product.stock) {
       _quantityController.text = widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Maximum stock available: ${widget.cartItem.product.stock}${widget.cartItem.product.unit}'),
+          content: Text('Maximum stock available: ${widget.cartItem.product.stock} ${widget.cartItem.product.unit}'),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
         ),
@@ -3493,8 +3499,14 @@ class _CartItemTileState extends State<_CartItemTile> {
       context.read<CartProvider>().removeItem(widget.cartItem.product.id);
       return;
     } else {
-      context.read<CartProvider>().updateQuantity(widget.cartItem.product.id, quantity);
-      _subtotalController.text = (widget.cartItem.unitPrice * quantity).toStringAsFixed(2);
+      final provider = context.read<CartProvider>();
+      provider.updateQuantity(widget.cartItem.product.id, quantity);
+      // Sync controllers from updated state (unit price × quantity for any unit: pcs, kg, g, ml)
+      final updatedItem = provider.items[widget.cartItem.product.id];
+      if (updatedItem != null) {
+        _quantityController.text = updatedItem.quantity.toStringAsFixed(updatedItem.supportsFractionalQuantity ? 3 : 0);
+        _subtotalController.text = updatedItem.subtotal.toStringAsFixed(2);
+      }
     }
   }
 

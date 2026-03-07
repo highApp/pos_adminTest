@@ -20,19 +20,23 @@ class CartItem {
     return unit == 'piece' || unit == 'pieces' || unit == 'pc' || unit == 'pcs';
   }
 
+  /// Dozen pricing in wholesale. Quantity = pieces (12 = 1 dozen). Same for piece and G/KG/ML.
   bool get usesDozenPricing =>
-      saleType == SaleType.wholesale && _isPieceUnit && product.dozenPrice != null;
+      saleType == SaleType.wholesale && product.dozenPrice != null;
 
+  /// Bundle pricing in wholesale. Quantity = pieces (bundleSize = 1 bundle). Same for piece and G/KG/ML.
   bool get usesBundlePricing =>
       saleType == SaleType.wholesale &&
-      _isPieceUnit &&
       product.bundlePrice != null &&
       product.bundleSize != null &&
       product.bundleSize! > 0;
 
+  /// When using dozen/bundle, quantity is always in pieces (12, 24, etc.), so no conversion for stock.
+  bool get _quantityIsPiecesForDozenOrBundle =>
+      usesDozenPricing || usesBundlePricing;
+
   double get unitPrice {
-    // Per-piece price for subtotal = unitPrice * quantity.
-    // Dozen: price per 12. Bundle: price per bundleSize. Else wholesale per piece.
+    // Per-piece price: dozen = dozenPrice/12, bundle = bundlePrice/bundleSize. Same for all units.
     if (saleType == SaleType.wholesale) {
       if (usesDozenPricing) return product.dozenPrice! / 12.0;
       if (usesBundlePricing) return product.bundlePrice! / product.bundleSize!;
@@ -51,24 +55,34 @@ class CartItem {
   /// Bundle size for display (e.g. "bundle (10)").
   int? get displayBundleSize => product.bundleSize;
 
+  /// Quantity to store in sale and deduct from stock. For dozen/bundle, quantity is already in pieces.
+  double get effectiveQuantityForStock => quantity;
+
+  /// For stock checks (e.g. increaseQuantity). Quantity is always in same units as stock.
+  double effectiveQuantityFor(double q) => q;
+
   double get subtotal => unitPrice * quantity;
 
-  /// Quantity step for +/- buttons. For g, ml, kg, L: step 1 (1 gram, 1 ml, 1 kg, 1 L). Pieces: 1.
+  /// Quantity step: +/− add/subtract one dozen (12) or one bundle (bundleSize). Same for KG, G, ML, pieces.
   double get quantityStep {
+    if (usesDozenPricing) return 12.0;
+    if (usesBundlePricing && product.bundleSize != null) return product.bundleSize!.toDouble();
     if (!supportsFractionalQuantity) return 1.0;
     final unit = product.unit.trim().toLowerCase();
     final normalizedUnit = unit == 'gm' ? 'g' : unit;
-    // For g, ml, kg, L: plus/minus add 1 unit (1g, 1ml, 1kg, 1L)
     const oneUnitStep = ['g', 'ml', 'kg', 'l'];
     return oneUnitStep.contains(normalizedUnit) ? 1.0 : CartItem.fractionalIncrement;
   }
 
+  /// Min quantity: 1 so you can manually type 10, 30, 48, etc. +/- still use step (12 or bundleSize).
   double get minQuantity {
+    if (usesDozenPricing || usesBundlePricing) return 1.0;
     return supportsFractionalQuantity ? CartItem.fractionalMinQuantity : 1.0;
   }
 
-  // Helper method to check if this product supports fractional quantities (decimals like 0.5, 1.111)
+  /// Fractional qty only when selling by weight/volume and not using dozen/bundle.
   bool get supportsFractionalQuantity {
+    if (_quantityIsPiecesForDozenOrBundle) return false;
     final unit = product.unit.trim().toLowerCase();
     final normalizedUnit = unit == 'gm' ? 'g' : unit;
     const weightVolumeUnits = ['kg', 'g', 'l', 'ml', 'lb', 'oz', 'ton'];
@@ -142,20 +156,15 @@ class CartProvider with ChangeNotifier {
         notifyListeners();
       }
     } else {
-      // Default quantity: 1 dozen (12), 1 bundle (bundleSize), or 1 unit.
-      final isPieceUnit = () {
-        final unit = product.unit.trim().toLowerCase();
-        if (unit.isEmpty) return true;
-        return unit == 'piece' || unit == 'pieces' || unit == 'pc' || unit == 'pcs';
-      }();
+      // Default quantity: 12 (dozen size) or bundle size (e.g. 24) so cart shows 12 / 24, not 1.
       double initialQuantity = 1.0;
-      if (_saleType == SaleType.wholesale && isPieceUnit) {
+      if (_saleType == SaleType.wholesale) {
         if (product.dozenPrice != null) {
-          initialQuantity = 12.0;
+          initialQuantity = 12.0; // 1 dozen = 12 pieces
         } else if (product.bundlePrice != null &&
             product.bundleSize != null &&
             product.bundleSize! > 0) {
-          initialQuantity = product.bundleSize!.toDouble();
+          initialQuantity = product.bundleSize!.toDouble(); // 1 bundle = bundleSize pieces
         }
       }
       _items[product.id] =
@@ -208,8 +217,10 @@ class CartProvider with ChangeNotifier {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
       final increment = cartItem.quantityStep;
+      final newQty = cartItem.quantity + increment;
+      final effectiveNeeded = cartItem.effectiveQuantityFor(newQty);
 
-      if (cartItem.quantity + increment <= cartItem.product.stock) {
+      if (effectiveNeeded <= cartItem.product.stock) {
         cartItem.quantity += increment;
         notifyListeners();
       }
@@ -220,14 +231,25 @@ class CartProvider with ChangeNotifier {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
       final decrement = cartItem.quantityStep;
-      final minQuantity = cartItem.minQuantity;
-      
-      if (cartItem.quantity > minQuantity) {
-        cartItem.quantity -= decrement;
-        notifyListeners();
-      } else {
+      final minQty = cartItem.minQuantity;
+
+      if (cartItem.quantity <= minQty) {
         removeItem(productId);
+        return;
       }
+      // For dozen/bundle at exactly one step (12 or bundleSize): minus does nothing
+      if ((cartItem.usesDozenPricing || cartItem.usesBundlePricing) && cartItem.quantity == decrement) {
+        return;
+      }
+      double newQty = cartItem.quantity - decrement;
+      if (cartItem.usesDozenPricing || cartItem.usesBundlePricing) {
+        if (newQty < minQty) newQty = minQty;
+        else if (newQty < decrement) newQty = decrement;
+      } else if (newQty < minQty) {
+        newQty = minQty;
+      }
+      cartItem.quantity = newQty;
+      notifyListeners();
     }
   }
 
@@ -271,7 +293,8 @@ class CartProvider with ChangeNotifier {
     if (_items.containsKey(productId)) {
       final cartItem = _items[productId]!;
       final increment = cartItem.quantityStep;
-      return cartItem.quantity + increment <= cartItem.product.stock;
+      final effectiveNeeded = cartItem.effectiveQuantityFor(cartItem.quantity + increment);
+      return effectiveNeeded <= cartItem.product.stock;
     }
     return true;
   }
