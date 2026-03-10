@@ -101,6 +101,68 @@ class SellerOrderService {
     }
   }
 
+  /// Seller can update their own order only when it is pending (add/remove items, change qty). Real-time on admin.
+  Future<Map<String, dynamic>> updateOrderBySeller(
+    String orderId,
+    String sellerId,
+    List<OrderItem> items,
+  ) async {
+    try {
+      final doc = await _firestore.collection(_collection).doc(orderId).get();
+      if (!doc.exists) {
+        return {'success': false, 'message': 'Order not found'};
+      }
+      final order = SellerOrder.fromMap(doc.data()!);
+      if (order.sellerId != sellerId) {
+        return {'success': false, 'message': 'You can only update your own order'};
+      }
+      if (order.status != OrderStatus.pending) {
+        return {'success': false, 'message': 'Only pending orders can be updated. This order is already ${order.status.name}.'};
+      }
+      if (items.isEmpty) {
+        return {'success': false, 'message': 'Order must have at least one item'};
+      }
+      final total = items.fold<double>(0, (s, e) => s + e.subtotal);
+      final profit = items.fold<double>(0, (s, e) => s + (e.wholesalePrice - e.purchasePrice) * e.quantity);
+      await _firestore.collection(_collection).doc(orderId).update({
+        'items': items.map((e) => e.toMap()).toList(),
+        'total': total,
+        'profit': profit,
+      });
+      return {'success': true, 'message': 'Order updated successfully'};
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Failed to update order: $e',
+      };
+    }
+  }
+
+  /// Updates order line items, total and profit. Use before confirm/complete so seller app sees changes in real time.
+  Future<Map<String, dynamic>> updateOrderDetails(
+    String orderId,
+    List<OrderItem> items,
+  ) async {
+    try {
+      if (items.isEmpty) {
+        return {'success': false, 'message': 'Order must have at least one item'};
+      }
+      final total = items.fold<double>(0, (s, e) => s + e.subtotal);
+      final profit = items.fold<double>(0, (s, e) => s + (e.wholesalePrice - e.purchasePrice) * e.quantity);
+      await _firestore.collection(_collection).doc(orderId).update({
+        'items': items.map((e) => e.toMap()).toList(),
+        'total': total,
+        'profit': profit,
+      });
+      return {'success': true, 'message': 'Order details updated'};
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Failed to update order details: $e',
+      };
+    }
+  }
+
   // Confirm order (admin only)
   Future<Map<String, dynamic>> confirmOrder(String orderId) async {
     try {

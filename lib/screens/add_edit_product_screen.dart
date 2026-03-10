@@ -29,6 +29,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   late TextEditingController _nameArController;
   late FocusNode _nameUrFocusNode;
   late TextEditingController _purchasePriceController;
+  late TextEditingController _minimumSalePriceController;
   late TextEditingController _salePriceController;
   late TextEditingController _percentageController;
   late TextEditingController _wholesalePriceController;
@@ -68,6 +69,8 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     );
     _purchasePriceController =
         TextEditingController(text: widget.product?.purchasePrice.toString() ?? '');
+    _minimumSalePriceController = TextEditingController(
+        text: widget.product?.minimumSalePrice?.toString() ?? '');
     _salePriceController =
         TextEditingController(text: widget.product?.salePrice.toString() ?? '');
     _percentageController = TextEditingController();
@@ -140,6 +143,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _nameUrController.dispose();
     _nameArController.dispose();
     _purchasePriceController.dispose();
+    _minimumSalePriceController.dispose();
     _salePriceController.dispose();
     _percentageController.dispose();
     _wholesalePriceController.dispose();
@@ -164,6 +168,14 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   bool _isUpdatingWholesaleFromBundle = false;
   bool _isUpdatingDozenFromWholesale = false;
   bool _isUpdatingWholesaleFromDozen = false;
+
+  /// Effective floor for sale price: Minimum Sale Price if set and > 0, else Purchase Price.
+  double? _getEffectiveMinSalePrice() {
+    final purchasePrice = double.tryParse(_purchasePriceController.text);
+    final minSale = double.tryParse(_minimumSalePriceController.text.trim());
+    if (minSale != null && minSale > 0) return minSale;
+    return purchasePrice;
+  }
 
   void _updateSalePriceFromPercentage() {
     if (_usePercentage && !_isUpdatingFromSalePrice && _purchasePriceController.text.isNotEmpty) {
@@ -678,6 +690,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         name: namesMap.isNotEmpty ? null : _nameEnController.text.trim(), // Fallback for backward compatibility
         description: widget.product?.description,
         purchasePrice: double.parse(_purchasePriceController.text),
+        minimumSalePrice: _minimumSalePriceController.text.trim().isEmpty
+            ? null
+            : double.tryParse(_minimumSalePriceController.text.trim()),
         salePrice: double.parse(_salePriceController.text),
         wholesalePrice: _wholesalePriceController.text.trim().isEmpty
             ? null
@@ -1203,6 +1218,38 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               },
             ),
             const SizedBox(height: 16),
+            TextFormField(
+              controller: _minimumSalePriceController,
+              decoration: const InputDecoration(
+                labelText: 'Minimum Sale Price',
+                hintText: 'Optional. Cannot sell below this price in POS.',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.sell),
+                prefixText: 'Rs. ',
+                helperText: 'If set, POS will not allow selling below this price. If empty, purchase price is used as floor.',
+              ),
+              keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+              ],
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) return null;
+                final v = double.tryParse(value.trim());
+                if (v == null) return 'Enter valid price';
+                if (v < 0) return 'Cannot be negative';
+                return null;
+              },
+              onChanged: (value) {
+                if (_formKey.currentState != null) {
+                  Future.microtask(() {
+                    if (_formKey.currentState != null) {
+                      _formKey.currentState!.validate();
+                    }
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 16),
             // Toggle between manual and percentage mode
             Row(
               children: [
@@ -1308,10 +1355,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                         if (salePrice <= 0) {
                           return 'Must be > 0';
                         }
-                        // Check if sale price is less than purchase price
-                        final purchasePrice = double.tryParse(_purchasePriceController.text);
-                        if (purchasePrice != null && purchasePrice > 0 && salePrice < purchasePrice) {
-                          return 'Sale price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)})';
+                        final effectiveMin = _getEffectiveMinSalePrice();
+                        if (effectiveMin != null && effectiveMin > 0 && salePrice < effectiveMin) {
+                          return 'Sale price cannot be less than ${_minimumSalePriceController.text.trim().isNotEmpty ? "minimum sale price" : "purchase price"} (Rs. ${effectiveMin.toStringAsFixed(2)})';
                         }
                         return null;
                       },
@@ -1353,10 +1399,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                   if (salePrice <= 0) {
                     return 'Must be > 0';
                   }
-                  // Check if sale price is less than purchase price
-                  final purchasePrice = double.tryParse(_purchasePriceController.text);
-                  if (purchasePrice != null && purchasePrice > 0 && salePrice < purchasePrice) {
-                    return 'Sale price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)})';
+                  final effectiveMin = _getEffectiveMinSalePrice();
+                  if (effectiveMin != null && effectiveMin > 0 && salePrice < effectiveMin) {
+                    return 'Sale price cannot be less than ${_minimumSalePriceController.text.trim().isNotEmpty ? "minimum sale price" : "purchase price"} (Rs. ${effectiveMin.toStringAsFixed(2)})';
                   }
                   return null;
                 },

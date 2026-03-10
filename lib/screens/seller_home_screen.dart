@@ -5,9 +5,11 @@ import '../models/seller.dart';
 import '../models/product.dart';
 import '../services/product_service.dart';
 import '../services/category_service.dart';
+import '../services/seller_auth_service.dart';
 import '../providers/seller_cart_provider.dart';
 import 'seller_cart_screen.dart';
 import 'seller_orders_screen.dart';
+import 'seller_login_screen.dart';
 
 class SellerHomeScreen extends StatefulWidget {
   final Seller seller;
@@ -112,6 +114,41 @@ class _SellerHomeScreenState extends State<SellerHomeScreen> {
                   builder: (context) => SellerOrdersScreen(seller: widget.seller),
                 ),
               );
+            },
+          ),
+          // Log out
+          IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Log out',
+            onPressed: () async {
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('Log out'),
+                  content: const Text('Are you sure you want to log out?'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Cancel'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Log out'),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true && context.mounted) {
+                await SellerAuthService().logout();
+                if (context.mounted) {
+                  Navigator.of(context).pushAndRemoveUntil(
+                    MaterialPageRoute(
+                      builder: (context) => const SellerLoginScreen(),
+                    ),
+                    (route) => false,
+                  );
+                }
+              }
             },
           ),
         ],
@@ -312,14 +349,6 @@ class _ProductCard extends StatelessWidget {
                   ),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Stock: ${product.stock.toInt()}',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: product.stock <= 10 ? Colors.red : Colors.grey[600],
-                  ),
                 ),
                 const SizedBox(height: 6),
                 Row(

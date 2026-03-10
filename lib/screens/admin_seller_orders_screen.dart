@@ -168,10 +168,70 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-class _OrderCard extends StatelessWidget {
+class _OrderCard extends StatefulWidget {
   final SellerOrder order;
 
   const _OrderCard({required this.order});
+
+  @override
+  State<_OrderCard> createState() => _OrderCardState();
+}
+
+class _OrderCardState extends State<_OrderCard> {
+  late List<TextEditingController> _qtyControllers;
+  late List<TextEditingController> _priceControllers;
+  final _orderService = SellerOrderService();
+
+  SellerOrder get order => widget.order;
+
+  @override
+  void initState() {
+    super.initState();
+    _initControllers();
+  }
+
+  void _initControllers() {
+    _qtyControllers = order.items
+        .map((e) => TextEditingController(text: e.quantity.toStringAsFixed(0)))
+        .toList();
+    _priceControllers = order.items
+        .map((e) => TextEditingController(text: e.wholesalePrice.toStringAsFixed(2)))
+        .toList();
+  }
+
+  @override
+  void dispose() {
+    for (final c in _qtyControllers) c.dispose();
+    for (final c in _priceControllers) c.dispose();
+    super.dispose();
+  }
+
+  List<OrderItem> _getCurrentItems() {
+    final list = <OrderItem>[];
+    for (int i = 0; i < order.items.length; i++) {
+      final orig = order.items[i];
+      final qty = double.tryParse(_qtyControllers[i].text) ?? orig.quantity;
+      final price = double.tryParse(_priceControllers[i].text) ?? orig.wholesalePrice;
+      list.add(OrderItem(
+        productId: orig.productId,
+        productName: orig.productName,
+        wholesalePrice: price,
+        quantity: qty,
+        subtotal: qty * price,
+        purchasePrice: orig.purchasePrice,
+      ));
+    }
+    return list;
+  }
+
+  double _getCurrentTotal() =>
+      _getCurrentItems().fold(0, (s, e) => s + e.subtotal);
+
+  double _getCurrentProfit() =>
+      _getCurrentItems().fold(0, (s, e) => s + (e.wholesalePrice - e.purchasePrice) * e.quantity);
+
+  bool get _isEditable =>
+      order.status == OrderStatus.pending || order.status == OrderStatus.confirmed;
 
   Color _getStatusColor() {
     switch (order.status) {
@@ -216,6 +276,8 @@ class _OrderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final formatter = NumberFormat.currency(symbol: 'Rs. ');
     final dateFormatter = DateFormat('MMM dd, yyyy hh:mm a');
+    final displayTotal = _isEditable ? _getCurrentTotal() : order.total;
+    final displayProfit = _isEditable ? _getCurrentProfit() : order.profit;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -251,7 +313,7 @@ class _OrderCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  formatter.format(order.total),
+                  formatter.format(displayTotal),
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 18,
@@ -308,14 +370,75 @@ class _OrderCard extends StatelessWidget {
         ),
         children: [
           const Divider(height: 1),
-          
-          // Order Items
+          // Order Items (editable when pending/confirmed)
           ListView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: order.items.length,
             itemBuilder: (context, index) {
               final item = order.items[index];
+              if (_isEditable) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.shopping_bag, color: Colors.green, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 2,
+                        child: Text(item.productName,
+                            style: const TextStyle(fontWeight: FontWeight.w500)),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 56,
+                        child: TextField(
+                          controller: _qtyControllers[index],
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Qty',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (_) => setState(() {}),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 80,
+                        child: TextField(
+                          controller: _priceControllers[index],
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Price',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (_) => setState(() {}),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            formatter.format(
+                                (double.tryParse(_qtyControllers[index].text) ?? item.quantity) *
+                                    (double.tryParse(_priceControllers[index].text) ?? item.wholesalePrice)),
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          Text(
+                            'Profit: ${formatter.format(((double.tryParse(_priceControllers[index].text) ?? item.wholesalePrice) - item.purchasePrice) * (double.tryParse(_qtyControllers[index].text) ?? item.quantity))}',
+                            style: TextStyle(fontSize: 11, color: Colors.green[700]),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }
               return ListTile(
                 leading: const Icon(Icons.shopping_bag, color: Colors.green),
                 title: Text(item.productName),
@@ -345,9 +468,7 @@ class _OrderCard extends StatelessWidget {
               );
             },
           ),
-          
           const Divider(height: 1),
-          
           // Summary and Actions
           Padding(
             padding: const EdgeInsets.all(16),
@@ -375,7 +496,7 @@ class _OrderCard extends StatelessWidget {
                       style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                     ),
                     Text(
-                      formatter.format(order.total),
+                      formatter.format(displayTotal),
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -393,7 +514,7 @@ class _OrderCard extends StatelessWidget {
                       style: TextStyle(fontSize: 14, color: Colors.blue),
                     ),
                     Text(
-                      formatter.format(order.profit),
+                      formatter.format(displayProfit),
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -402,9 +523,15 @@ class _OrderCard extends StatelessWidget {
                     ),
                   ],
                 ),
+                if (_isEditable)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      'Edit qty/price above; changes save when you Confirm or Complete.',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                    ),
+                  ),
                 const SizedBox(height: 16),
-                
-                // Action Buttons
                 _buildActionButtons(context),
               ],
             ),
@@ -457,7 +584,7 @@ class _OrderCard extends StatelessWidget {
         ),
       );
     } else {
-      return Container();
+      return const SizedBox.shrink();
     }
   }
 
@@ -466,7 +593,9 @@ class _OrderCard extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Confirm Order'),
-        content: const Text('Are you sure you want to confirm this order?'),
+        content: const Text(
+          'Save any edits and confirm this order? The seller app will update in real time.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -480,16 +609,25 @@ class _OrderCard extends StatelessWidget {
       ),
     );
 
-    if (confirm == true && context.mounted) {
-      final result = await SellerOrderService().confirmOrder(order.id);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result['message']),
-            backgroundColor: result['success'] ? Colors.green : Colors.red,
-          ),
-        );
-      }
+    if (confirm != true || !context.mounted) return;
+
+    final res = await _orderService.updateOrderDetails(order.id, _getCurrentItems());
+    if (!context.mounted) return;
+    if (!res['success']) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(res['message']), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    final result = await _orderService.confirmOrder(order.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['message']),
+          backgroundColor: result['success'] ? Colors.green : Colors.red,
+        ),
+      );
     }
   }
 
@@ -499,7 +637,7 @@ class _OrderCard extends StatelessWidget {
       builder: (context) => AlertDialog(
         title: const Text('Complete Order'),
         content: const Text(
-          'This will:\n• Update product stock\n• Add profit to dashboard\n\nComplete this order?',
+          'Save any edits, then this will:\n• Update product stock\n• Add profit to dashboard\n\nThe seller app will see the final amounts in real time.\n\nComplete this order?',
         ),
         actions: [
           TextButton(
@@ -515,16 +653,25 @@ class _OrderCard extends StatelessWidget {
       ),
     );
 
-    if (confirm == true && context.mounted) {
-      final result = await SellerOrderService().completeOrder(order.id);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result['message']),
-            backgroundColor: result['success'] ? Colors.green : Colors.red,
-          ),
-        );
-      }
+    if (confirm != true || !context.mounted) return;
+
+    final res = await _orderService.updateOrderDetails(order.id, _getCurrentItems());
+    if (!context.mounted) return;
+    if (!res['success']) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(res['message']), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    final result = await _orderService.completeOrder(order.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['message']),
+          backgroundColor: result['success'] ? Colors.green : Colors.red,
+        ),
+      );
     }
   }
 
@@ -569,7 +716,7 @@ class _OrderCard extends StatelessWidget {
           ? 'Cancelled by admin'
           : reasonController.text.trim();
 
-      final result = await SellerOrderService().adminCancelOrder(order.id, reason);
+      final result = await _orderService.adminCancelOrder(order.id, reason);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

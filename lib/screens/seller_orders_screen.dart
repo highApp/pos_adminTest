@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../models/seller.dart';
 import '../models/seller_order.dart';
+import '../models/product.dart';
+import '../providers/seller_cart_provider.dart';
 import '../services/seller_order_service.dart';
+import '../services/product_service.dart';
+import 'seller_cart_screen.dart';
 
 class SellerOrdersScreen extends StatelessWidget {
   final Seller seller;
@@ -54,7 +59,10 @@ class SellerOrdersScreen extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             itemCount: orders.length,
             itemBuilder: (context, index) {
-              return _OrderCard(order: orders[index]);
+              return _OrderCard(
+                order: orders[index],
+                seller: seller,
+              );
             },
           );
         },
@@ -65,8 +73,9 @@ class SellerOrdersScreen extends StatelessWidget {
 
 class _OrderCard extends StatelessWidget {
   final SellerOrder order;
+  final Seller seller;
 
-  const _OrderCard({required this.order});
+  const _OrderCard({required this.order, required this.seller});
 
   Color _getStatusColor() {
     switch (order.status) {
@@ -212,23 +221,64 @@ class _OrderCard extends StatelessWidget {
                 ),
                 if (order.status == OrderStatus.pending) ...[
                   const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _showCancelDialog(context),
-                      icon: const Icon(Icons.cancel),
-                      label: const Text('Cancel Order'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.red,
-                        side: const BorderSide(color: Colors.red),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _editOrder(context),
+                          icon: const Icon(Icons.edit),
+                          label: const Text('Edit Order'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _showCancelDialog(context),
+                          icon: const Icon(Icons.cancel),
+                          label: const Text('Cancel Order'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red,
+                            side: const BorderSide(color: Colors.red),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _editOrder(BuildContext context) async {
+    final productService = ProductService();
+    final products = <Product>[];
+    for (final item in order.items) {
+      final p = await productService.getProductById(item.productId);
+      if (p != null) products.add(p);
+    }
+    if (!context.mounted) return;
+    if (products.length < order.items.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Some products are no longer available and were skipped.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+    context.read<SellerCartProvider>().loadOrderForEdit(order, products);
+    if (!context.mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SellerCartScreen(seller: seller),
       ),
     );
   }

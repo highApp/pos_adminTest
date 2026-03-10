@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:flutter/material.dart' show BuildContext;
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
@@ -6,6 +7,8 @@ import 'package:pdf/widgets.dart' as pw;
 import '../models/product.dart';
 import '../models/sale.dart';
 import '../models/seller.dart';
+import '../utils/receipt_text_to_image.dart';
+import '../utils/receipt_urdu_widget_render.dart';
 import 'product_service.dart';
 
 /// Generates a sale receipt PDF for viewing or downloading.
@@ -14,11 +17,14 @@ class ReceiptPdfService {
 
   /// Generates PDF bytes for the given sale. Optional [seller] is shown as customer when present.
   /// [existingDueTotal] is the seller's due balance before this sale (shown as "Existing Due" on receipt).
+  /// [contextForUrduRendering] When set (e.g. on Android), Urdu product names are rendered
+  /// via the widget tree so the font displays correctly; otherwise uses ParagraphBuilder.
   static Future<Uint8List> generateSaleReceiptPdf(
     Sale sale, {
     Seller? seller,
     String languageCode = 'en',
     double existingDueTotal = 0,
+    BuildContext? contextForUrduRendering,
   }) async {
     try {
       final pdf = pw.Document();
@@ -26,6 +32,36 @@ class ReceiptPdfService {
       final dateFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
 
       final productNamesMap = await _getProductNames(sale, languageCode);
+      // English names for fallback when Urdu image fails or for non-Urdu display.
+      final Map<String, String>? productNamesMapEn =
+          languageCode != 'en' ? await _getProductNames(sale, 'en') : null;
+      // For Urdu/Arabic product names, render as image so PDF shows them (Courier has no Urdu glyphs).
+      // On Android, use widget-based render so the app font is used; otherwise ParagraphBuilder.
+      final Map<String, Uint8List?> productNameImageBytes = {};
+      for (var item in sale.items) {
+        final name = (productNamesMap[item.productId] ?? item.productName ?? '').trim();
+        if (name.isNotEmpty && containsNonAscii(name)) {
+          final Uint8List? pngBytes;
+          if (contextForUrduRendering != null && contextForUrduRendering.mounted) {
+            pngBytes = await renderUrduTextToImageWithContext(
+              contextForUrduRendering,
+              text: name,
+              fontSize: 18,
+              maxWidth: 480,
+            );
+          } else {
+            pngBytes = await textToPngBytes(
+              name,
+              maxWidthPixels: 480,
+              fontSize: 18,
+            );
+          }
+          if (pngBytes != null && pngBytes.isNotEmpty) {
+            productNameImageBytes[item.productId] = pngBytes;
+          }
+        }
+      }
+
       final font = pw.Font.courier();
 
       pw.TextStyle textStyle({
@@ -181,12 +217,12 @@ class ReceiptPdfService {
                           ),
                           pw.Expanded(
                             flex: 4,
-                            child: pw.Text(
-                              productNamesMap[item.productId] ??
-                                  item.productName,
-                              style: textStyle(fontSize: 6),
-                              maxLines: 2,
-                              textAlign: pw.TextAlign.left,
+                            child: _productNameWidget(
+                              productNamesMap: productNamesMap,
+                              productNamesMapEn: productNamesMapEn,
+                              item: item,
+                              productNameImageBytes: productNameImageBytes,
+                              textStyle: textStyle(fontSize: 6),
                             ),
                           ),
                           pw.Expanded(
@@ -482,6 +518,39 @@ class ReceiptPdfService {
       debugPrint('Stack trace: $stackTrace');
       rethrow;
     }
+  }
+
+  /// Item name cell: use image for Urdu/non-ASCII so it displays; otherwise text.
+  /// When image is missing and name is non-ASCII, show English fallback so PDF never shows squares.
+  static pw.Widget _productNameWidget({
+    required Map<String, String> productNamesMap,
+    Map<String, String>? productNamesMapEn,
+    required dynamic item,
+    required Map<String, Uint8List?> productNameImageBytes,
+    required pw.TextStyle textStyle,
+  }) {
+    final name = (productNamesMap[item.productId] ?? item.productName ?? '').trim();
+    final imageBytes = productNameImageBytes[item.productId];
+    if (imageBytes != null && imageBytes.isNotEmpty) {
+      // FittedBox ensures the image fits within the Expanded(flex: 4) cell;
+      // fixed width/height caused "childSize <= maxChildExtent" assertion.
+      return pw.FittedBox(
+        fit: pw.BoxFit.contain,
+        child: pw.Image(pw.MemoryImage(imageBytes)),
+      );
+    }
+    // Show English name when we have no image and name is Urdu/non-ASCII (avoids squares in PDF).
+    final String displayName = name.isEmpty
+        ? 'Item'
+        : (containsNonAscii(name)
+            ? (productNamesMapEn?[item.productId] ?? item.productName ?? 'Item').trim()
+            : name);
+    return pw.Text(
+      displayName.isEmpty ? 'Item' : displayName,
+      style: textStyle,
+      maxLines: 2,
+      textAlign: pw.TextAlign.left,
+    );
   }
 
   static Future<Map<String, String>> _getProductNames(

@@ -4,6 +4,8 @@ class Product {
   final Map<String, String>? names; // Language -> Name mapping (e.g., {'en': 'Product', 'ur': 'پروڈکٹ', 'ar': 'منتج'})
   final String? description;
   final double purchasePrice; // Buying/cost price
+  /// Optional floor: sale/unit price cannot go below this. If null or 0, purchase price is used as floor.
+  final double? minimumSalePrice;
   final double salePrice; // Selling price
   final double? wholesalePrice; // Wholesale price (optional)
   /// Price for a full dozen (12 pieces). Optional.
@@ -29,6 +31,7 @@ class Product {
     this.names,
     this.description,
     required this.purchasePrice,
+    this.minimumSalePrice,
     required this.salePrice,
     this.wholesalePrice,
     this.dozenPrice,
@@ -74,6 +77,7 @@ class Product {
       'id': id,
       'description': description,
       'purchasePrice': purchasePrice,
+      'minimumSalePrice': minimumSalePrice,
       'salePrice': salePrice,
       'wholesalePrice': wholesalePrice,
       'dozenPrice': dozenPrice,
@@ -141,6 +145,9 @@ class Product {
       names: namesMap,
       description: map['description']?.toString(),
       purchasePrice: purchasePriceValue,
+      minimumSalePrice: map['minimumSalePrice'] != null
+          ? (map['minimumSalePrice'] as num).toDouble()
+          : null,
       salePrice: salePriceValue,
       wholesalePrice: map['wholesalePrice'] != null 
           ? (map['wholesalePrice'] as num).toDouble() 
@@ -177,6 +184,7 @@ class Product {
     Map<String, String>? names,
     String? description,
     double? purchasePrice,
+    double? minimumSalePrice,
     double? salePrice,
     double? wholesalePrice,
     double? dozenPrice,
@@ -198,6 +206,7 @@ class Product {
       names: names ?? this.names,
       description: description ?? this.description,
       purchasePrice: purchasePrice ?? this.purchasePrice,
+      minimumSalePrice: minimumSalePrice ?? this.minimumSalePrice,
       salePrice: salePrice ?? this.salePrice,
       wholesalePrice: wholesalePrice ?? this.wholesalePrice,
       dozenPrice: dozenPrice ?? this.dozenPrice,
@@ -220,6 +229,10 @@ class Product {
 
   /// Sale value: stock × sale price (total value if sold at current sale price)
   double get saleStockValue => stock * salePrice;
+
+  /// Effective floor for unit sale price: minimumSalePrice if set and > 0, else purchasePrice.
+  double get effectiveMinimumSalePrice =>
+      (minimumSalePrice != null && minimumSalePrice! > 0) ? minimumSalePrice! : purchasePrice;
 
   // Helper method to calculate profit per item
   double get profitPerItem => salePrice - purchasePrice;

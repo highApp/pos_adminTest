@@ -600,6 +600,7 @@ class _SaleCard extends StatelessWidget {
         sale,
         seller: seller,
         existingDueTotal: sale.existingDueTotalAtSale,
+        contextForUrduRendering: context,
       );
       if (!context.mounted) return;
       Navigator.of(context).pop();
@@ -656,6 +657,7 @@ class _SaleCard extends StatelessWidget {
         sale,
         seller: seller,
         existingDueTotal: sale.existingDueTotalAtSale,
+        contextForUrduRendering: context,
       );
       if (!context.mounted) return;
       Navigator.of(context).pop();

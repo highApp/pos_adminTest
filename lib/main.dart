@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
@@ -10,6 +12,17 @@ import 'services/auth_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Preload Urdu font so it's available on Android for receipt PDF/print (ParagraphBuilder).
+  try {
+    final loader = FontLoader('Noto Nastaliq Urdu');
+    loader.addFont(rootBundle.load('fonts/NotoNastaliqUrdu-Regular.ttf'));
+    await loader.load();
+    debugPrint('Urdu font (Noto Nastaliq Urdu) loaded');
+  } catch (e) {
+    debugPrint('Urdu font preload failed (receipts may show English fallback): $e');
+  }
+
   await Firebase.initializeApp(
     options: const FirebaseOptions(
       apiKey: "AIzaSyC1ajnBdt9UNcVH3yYAQBnCGBdH17fd6L0",

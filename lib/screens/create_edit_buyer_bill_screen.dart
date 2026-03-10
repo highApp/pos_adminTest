@@ -2041,24 +2041,24 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                   final enteredPrice = double.tryParse(_priceController.text) ?? 0.0;
                                   final enteredExpense = double.tryParse(_expenseController.text) ?? 0.0;
                                   final packSize = double.tryParse(_packSizeController.text) ?? 1.0;
+                                  final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
                                   final hasPacking = (_selectedPackingType != null && _selectedPackingType!.trim().isNotEmpty);
-                                  
-                                  // Calculate total units being added (cartons × pack size if packing selected, else just qty)
-                                  final totalUnitsBeingAdded = (hasPacking && packSize > 0) 
-                                      ? (enteredQty * packSize) 
+                                  // Use same formula as _addItemStock so preview matches saved average
+                                  final baseUnits = (hasPacking && packSize > 0)
+                                      ? (enteredQty * packSize)
                                       : enteredQty;
-                                  
+                                  final totalUnitsBeingAdded = baseUnits + bonusQty;
                                   final totalStock = _currentProductStock! + totalUnitsBeingAdded;
-                                  
-                                  // Calculate weighted average purchase price (including expense)
                                   final oldStock = _currentProductStock!;
                                   final oldPrice = _selectedProduct!.purchasePrice;
                                   final oldTotalValue = oldStock * oldPrice;
-                                  // Include expense in the new total value calculation
-                                  final newTotalValue = (enteredQty * enteredPrice) + enteredExpense;
-                                  final totalValue = oldTotalValue + newTotalValue;
-                                  final averagePrice = totalStock > 0 ? totalValue / totalStock : enteredPrice;
-                                  
+                                  final totalValue = (enteredQty * enteredPrice) + enteredExpense;
+                                  final unitCost = baseUnits > 0
+                                      ? totalValue / baseUnits
+                                      : (hasPacking && packSize > 0 ? enteredPrice / packSize : enteredPrice);
+                                  final valueAdded = totalUnitsBeingAdded * unitCost;
+                                  final totalValueAfter = oldTotalValue + valueAdded;
+                                  final averagePrice = totalStock > 0 ? totalValueAfter / totalStock : unitCost;
                                   return Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
@@ -2071,9 +2071,9 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                           fontWeight: FontWeight.w600,
                                         ),
                                       ),
-                                      if (enteredPrice > 0 && enteredQty > 0)
+                                      if (enteredPrice > 0 && enteredQty > 0) ...[
                                         Text(
-                                          'Average purchase price: Rs. ${averagePrice.toStringAsFixed(2)}',
+                                          'Average purchase price: Rs. ${averagePrice.toStringAsFixed(2)} (saved when bill is saved)',
                                           style: TextStyle(
                                             fontSize: 11,
                                             color: Colors.blue.shade700,
@@ -2081,6 +2081,15 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                             fontStyle: FontStyle.italic,
                                           ),
                                         ),
+                                        Text(
+                                          'If this product is in other lines, final average uses all lines in order.',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.grey.shade600,
+                                            fontStyle: FontStyle.italic,
+                                          ),
+                                        ),
+                                      ],
                                     ],
                                   );
                                 },

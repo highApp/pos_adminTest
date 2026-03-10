@@ -1,11 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/seller.dart';
 
 class SellerAuthService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String _collection = 'sellers';
+  static const String _keySellerId = 'seller_app_seller_id';
 
   // Hash password
   String _hashPassword(String password) {
@@ -105,11 +107,13 @@ class SellerAuthService {
         };
       }
 
-      // Login successful
+      // Login successful — persist seller ID for next app launch
+      final seller = Seller.fromMap(sellerData);
+      await _saveSellerId(seller.id);
       return {
         'success': true,
         'message': 'Login successful',
-        'seller': Seller.fromMap(sellerData),
+        'seller': seller,
       };
     } catch (e) {
       return {
@@ -117,6 +121,25 @@ class SellerAuthService {
         'message': 'Login failed: $e',
       };
     }
+  }
+
+  Future<void> _saveSellerId(String sellerId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keySellerId, sellerId);
+  }
+
+  /// Clears stored seller (call on logout).
+  Future<void> logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_keySellerId);
+  }
+
+  /// Returns the stored seller if still valid (e.g. still active). Use for app startup.
+  Future<Seller?> getStoredSeller() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sellerId = prefs.getString(_keySellerId);
+    if (sellerId == null || sellerId.isEmpty) return null;
+    return getSellerById(sellerId);
   }
 
   // Get seller by ID

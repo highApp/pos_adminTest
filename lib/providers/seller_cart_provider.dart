@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import '../models/product.dart';
+import '../models/seller_order.dart';
 
 class SellerCartItem {
   final Product product;
@@ -17,8 +18,12 @@ class SellerCartItem {
 
 class SellerCartProvider with ChangeNotifier {
   final Map<String, SellerCartItem> _items = {};
+  String? _editingOrderId;
 
   Map<String, SellerCartItem> get items => {..._items};
+
+  /// Non-null when cart is loaded for editing a pending order.
+  String? get editingOrderId => _editingOrderId;
 
   int get itemCount => _items.length;
 
@@ -93,8 +98,23 @@ class SellerCartProvider with ChangeNotifier {
     }
   }
 
+  /// Load an existing (pending) order into the cart for editing. Replaces current cart.
+  void loadOrderForEdit(SellerOrder order, List<Product> products) {
+    _editingOrderId = order.id;
+    _items.clear();
+    final byId = {for (var p in products) p.id: p};
+    for (final item in order.items) {
+      final p = byId[item.productId];
+      if (p != null) {
+        _items[p.id] = SellerCartItem(product: p, quantity: item.quantity);
+      }
+    }
+    notifyListeners();
+  }
+
   void clear() {
     _items.clear();
+    _editingOrderId = null;
     notifyListeners();
   }
 

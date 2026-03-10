@@ -1405,6 +1405,7 @@ class _POSScreenState extends State<POSScreen> {
                             seller: seller,
                             languageCode: lang,
                             existingDueTotal: existingDueTotal,
+                            contextForUrduRendering: dialogContext,
                           );
                         } catch (e) {
                           debugPrint('PDF Generation Error: $e');
@@ -1430,12 +1431,35 @@ class _POSScreenState extends State<POSScreen> {
                       ElevatedButton.icon(
                         onPressed: () async {
                           try {
-                            final lang = languageCode ?? await PrinterService().getReceiptLanguage();
+                            final printerService = PrinterService();
+                            final lang = languageCode ?? await printerService.getReceiptLanguage();
+                            // 1) Send to thermal printer (Bluetooth / USB / WiFi) if configured
+                            final connectionType = await printerService.getConnectionType();
+                            final thermalSent = await printerService.printReceipt(
+                              sale,
+                              existingDueTotal,
+                              seller,
+                              languageCode: lang,
+                            );
+                            if (dialogContext.mounted && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    thermalSent
+                                        ? 'Receipt sent to thermal printer (${connectionType.name})'
+                                        : 'Thermal printer not used (not configured or connection failed). Use system print below if needed.',
+                                  ),
+                                  backgroundColor: thermalSent ? Colors.green : Colors.orange,
+                                ),
+                              );
+                            }
+                            // 2) Open system print dialog (PDF to any printer)
                             final pdf = await ReceiptPdfService.generateSaleReceiptPdf(
                               sale,
                               seller: seller,
                               languageCode: lang,
                               existingDueTotal: existingDueTotal,
+                              contextForUrduRendering: dialogContext,
                             );
                             await Printing.layoutPdf(
                               onLayout: (format) async => pdf,
@@ -1505,12 +1529,13 @@ class _POSScreenState extends State<POSScreen> {
       final printerService = PrinterService();
       final currentLanguage = await printerService.getReceiptLanguage();
       
-      // Generate PDF
+      // Generate PDF (pass context so Urdu renders on Android)
       final pdfBytes = await ReceiptPdfService.generateSaleReceiptPdf(
         sale,
         seller: seller,
         languageCode: currentLanguage,
         existingDueTotal: existingDueTotal,
+        contextForUrduRendering: context,
       );
 
       // Get seller phone number
@@ -3428,12 +3453,16 @@ class _CartItemTileState extends State<_CartItemTile> {
     } else {
       newDisplayUnitPrice = total / quantity;
     }
-    final purchasePrice = widget.cartItem.product.purchasePrice;
+    final product = widget.cartItem.product;
+    final minPerUnit = product.effectiveMinimumSalePrice;
     final minAllowed = widget.cartItem.usesDozenPricing
-        ? (purchasePrice * 12.0)
+        ? (minPerUnit * 12.0)
         : widget.cartItem.usesBundlePricing
-            ? (purchasePrice * bundleSize)
-            : purchasePrice;
+            ? (minPerUnit * bundleSize)
+            : minPerUnit;
+    final floorLabel = product.minimumSalePrice != null && product.minimumSalePrice! > 0
+        ? 'minimum sale price'
+        : 'purchase price';
     if (newDisplayUnitPrice < minAllowed) {
       newDisplayUnitPrice = minAllowed;
       final newSubtotal = widget.cartItem.usesDozenPricing
@@ -3446,10 +3475,10 @@ class _CartItemTileState extends State<_CartItemTile> {
         SnackBar(
           content: Text(
             widget.cartItem.usesDozenPricing
-                ? 'Dozen price cannot be less than 12× purchase price (Rs. ${(purchasePrice * 12).toStringAsFixed(2)}). Set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.'
+                ? 'Dozen price cannot be less than 12× $floorLabel (Rs. ${(minPerUnit * 12).toStringAsFixed(2)}). Set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.'
                 : widget.cartItem.usesBundlePricing
-                    ? 'Bundle price cannot be less than ${bundleSize}× purchase price (Rs. ${(purchasePrice * bundleSize).toStringAsFixed(2)}). Set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.'
-                    : 'Price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)}). Unit price set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.',
+                    ? 'Bundle price cannot be less than ${bundleSize}× $floorLabel (Rs. ${(minPerUnit * bundleSize).toStringAsFixed(2)}). Set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.'
+                    : 'Price cannot be less than $floorLabel (Rs. ${minPerUnit.toStringAsFixed(2)}). Unit price set to Rs. ${newDisplayUnitPrice.toStringAsFixed(2)}.',
           ),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
@@ -3528,15 +3557,19 @@ class _CartItemTileState extends State<_CartItemTile> {
       return;
     }
 
-    // Min price: 12× or bundleSize× purchase for dozen/bundle, else purchase price
-    final purchasePrice = widget.cartItem.product.purchasePrice;
+    // Min price: 12× or bundleSize× effective floor (minimum sale price if set, else purchase price)
+    final product = widget.cartItem.product;
+    final minPerUnit = product.effectiveMinimumSalePrice;
     final bundleSize = widget.cartItem.displayBundleSize ?? 1;
     final minAllowed = widget.cartItem.usesDozenPricing
-        ? (purchasePrice * 12.0)
+        ? (minPerUnit * 12.0)
         : widget.cartItem.usesBundlePricing
-            ? (purchasePrice * bundleSize)
-            : purchasePrice;
+            ? (minPerUnit * bundleSize)
+            : minPerUnit;
     final finalPrice = price < minAllowed ? minAllowed : price;
+    final floorLabel = product.minimumSalePrice != null && product.minimumSalePrice! > 0
+        ? 'minimum sale price'
+        : 'purchase price';
 
     // If price was adjusted, update the controller and show message
     if (price < minAllowed) {
@@ -3545,10 +3578,10 @@ class _CartItemTileState extends State<_CartItemTile> {
         SnackBar(
           content: Text(
             widget.cartItem.usesDozenPricing
-                ? 'Dozen price cannot be less than 12× purchase price (Rs. ${(purchasePrice * 12).toStringAsFixed(2)}). Set to minimum.'
+                ? 'Dozen price cannot be less than 12× $floorLabel (Rs. ${(minPerUnit * 12).toStringAsFixed(2)}). Set to minimum.'
                 : widget.cartItem.usesBundlePricing
-                    ? 'Bundle price cannot be less than ${bundleSize}× purchase price (Rs. ${(purchasePrice * bundleSize).toStringAsFixed(2)}). Set to minimum.'
-                    : 'Price cannot be less than purchase price (Rs. ${purchasePrice.toStringAsFixed(2)}). Set to purchase price.',
+                    ? 'Bundle price cannot be less than ${bundleSize}× $floorLabel (Rs. ${(minPerUnit * bundleSize).toStringAsFixed(2)}). Set to minimum.'
+                    : 'Price cannot be less than $floorLabel (Rs. ${minPerUnit.toStringAsFixed(2)}). Set to minimum.',
           ),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,

@@ -6,6 +6,7 @@ import '../models/seller.dart';
 import '../models/seller_order.dart';
 import '../providers/seller_cart_provider.dart';
 import '../services/seller_order_service.dart';
+import 'seller_home_screen.dart';
 
 class SellerCartScreen extends StatelessWidget {
   final Seller seller;
@@ -16,7 +17,11 @@ class SellerCartScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My Cart'),
+        title: Consumer<SellerCartProvider>(
+          builder: (context, cart, _) => Text(
+            cart.editingOrderId != null ? 'Edit Order' : 'My Cart',
+          ),
+        ),
       ),
       body: Consumer<SellerCartProvider>(
         builder: (context, cart, child) {
@@ -44,6 +49,25 @@ class SellerCartScreen extends StatelessWidget {
 
           return Column(
             children: [
+              if (cart.editingOrderId != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => SellerHomeScreen(seller: seller),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.add_shopping_cart),
+                      label: const Text('Add more items'),
+                    ),
+                  ),
+                ),
               Expanded(
                 child: ListView.builder(
                   padding: const EdgeInsets.all(16),
@@ -196,19 +220,52 @@ class _CartSummaryState extends State<_CartSummary> {
 
     setState(() => _isPlacingOrder = true);
 
-    try {
-      final orderId = const Uuid().v4();
-      final items = cart.items.values.map((cartItem) {
-        return OrderItem(
-          productId: cartItem.product.id,
-          productName: cartItem.product.name,
-          wholesalePrice: cartItem.wholesalePrice,
-          quantity: cartItem.quantity,
-          subtotal: cartItem.subtotal,
-          purchasePrice: cartItem.product.purchasePrice,
-        );
-      }).toList();
+    final items = cart.items.values.map((cartItem) {
+      return OrderItem(
+        productId: cartItem.product.id,
+        productName: cartItem.product.name,
+        wholesalePrice: cartItem.wholesalePrice,
+        quantity: cartItem.quantity,
+        subtotal: cartItem.subtotal,
+        purchasePrice: cartItem.product.purchasePrice,
+      );
+    }).toList();
 
+    try {
+      final isEditing = cart.editingOrderId != null;
+
+      if (isEditing) {
+        final result = await _orderService.updateOrderBySeller(
+          cart.editingOrderId!,
+          widget.seller.id,
+          items,
+        );
+
+        if (mounted) {
+          setState(() => _isPlacingOrder = false);
+
+          if (result['success']) {
+            cart.clear();
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Order updated successfully'),
+                backgroundColor: Colors.green,
+              ),
+            );
+            Navigator.pop(context); // Back to My Orders
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(result['message']),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+        return;
+      }
+
+      final orderId = const Uuid().v4();
       final order = SellerOrder(
         id: orderId,
         sellerId: widget.seller.id,
@@ -229,7 +286,7 @@ class _CartSummaryState extends State<_CartSummary> {
 
         if (result['success']) {
           cart.clear();
-          
+
           showDialog(
             context: context,
             builder: (context) => AlertDialog(
@@ -267,7 +324,7 @@ class _CartSummaryState extends State<_CartSummary> {
       if (mounted) {
         setState(() => _isPlacingOrder = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to place order: $e')),
+          SnackBar(content: Text('Failed: $e')),
         );
       }
     }
@@ -328,35 +385,48 @@ class _CartSummaryState extends State<_CartSummary> {
                 ],
               ),
               const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton.icon(
-                  onPressed: _isPlacingOrder ? null : () => _placeOrder(context),
-                  icon: _isPlacingOrder
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(Icons.check_circle),
-                  label: Text(
-                    _isPlacingOrder ? 'Placing Order...' : 'Place Order',
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
+              Consumer<SellerCartProvider>(
+                builder: (context, cart, _) {
+                  final isEditing = cart.editingOrderId != null;
+                  return SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton.icon(
+                      onPressed: _isPlacingOrder ? null : () => _placeOrder(context),
+                      icon: _isPlacingOrder
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Icon(isEditing ? Icons.save : Icons.check_circle),
+                      label: Text(
+                        _isPlacingOrder
+                            ? (isEditing ? 'Saving...' : 'Placing Order...')
+                            : (isEditing ? 'Save changes' : 'Place Order'),
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: 8),
-              const Text(
-                'No payment required • Admin will confirm',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
+              Consumer<SellerCartProvider>(
+                builder: (context, cart, _) {
+                  return Text(
+                    cart.editingOrderId != null
+                        ? 'Update items or qty, then save. Admin will confirm.'
+                        : 'No payment required • Admin will confirm',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  );
+                },
               ),
             ],
           ),

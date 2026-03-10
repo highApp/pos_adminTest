@@ -9,6 +9,7 @@ import '../models/seller.dart';
 import '../models/product.dart';
 import 'product_service.dart';
 import 'seller_service.dart';
+import '../utils/receipt_text_to_image.dart';
 
 // Web-specific imports for JavaScript interop
 // Note: Conditional imports don't work well for dart:js on mobile
@@ -1126,6 +1127,19 @@ class PrinterService {
             }
           }
           return success;
+        } else if (connectionType == PrinterConnectionType.usb) {
+          // USB on mobile/desktop: use same connect/send as web if available (e.g. via FFI or platform channel).
+          // On Android, USB host typically requires a plugin; here we try connect/send which may be stubs.
+          final connected = await connectUsbDevice();
+          if (!connected) {
+            debugPrint('Failed to connect to USB device');
+            return false;
+          }
+          final success = await sendUsbData(receiptData);
+          if (success) {
+            debugPrint('Receipt printed successfully via USB');
+          }
+          return success;
         } else {
           // WiFi connection
           final printerIp = await getPrinterIp();
@@ -1133,19 +1147,19 @@ class PrinterService {
 
           if (printerIp == null || printerIp.isEmpty) {
             debugPrint('Printer IP not configured');
-        return false;
-      }
+            return false;
+          }
 
           // Connect to printer with timeout
           final socket = await Socket.connect(printerIp, int.parse(printerPort))
               .timeout(_connectionTimeout);
-          
-      socket.add(receiptData);
-      await socket.flush();
-      await socket.close();
 
-      debugPrint('Receipt printed successfully to $printerIp:$printerPort');
-      return true;
+          socket.add(receiptData);
+          await socket.flush();
+          await socket.close();
+
+          debugPrint('Receipt printed successfully to $printerIp:$printerPort');
+          return true;
         }
       }
     } on SocketException catch (e) {
@@ -1161,135 +1175,128 @@ class PrinterService {
   }
 
   // Generate ESC/POS receipt data optimized for SpeedX SP-90A
+  // When languageCode is 'ur': only product names use Urdu (with English fallback); all labels stay in English for clean print.
   Future<Uint8List> _generateReceiptData(Sale sale, double existingDueTotal, Seller? seller, {String languageCode = 'en'}) async {
     final List<int> commands = [];
     
-    // Fetch products to get language-specific names
+    // For Urdu receipt: labels in English only; product names in Urdu if available else English
+    final labelsLanguage = (languageCode == 'ur' || languageCode == 'ar') ? 'en' : languageCode;
+    final productNamesLanguage = languageCode;
+
     final productService = ProductService();
     final sellerService = SellerService();
     final Map<String, String> productNamesMap = {};
     
-    // Fetch all products for this sale
     for (var item in sale.items) {
       try {
         final product = await productService.getProductById(item.productId);
         if (product != null) {
-          // Get name in selected language, fallback to English or displayName
-          final name = product.getName(languageCode) ?? 
-                      (languageCode == 'en' ? product.name : product.getName('en')) ?? 
-                      product.name;
-          productNamesMap[item.productId] = name;
+          String name = product.getName(productNamesLanguage)?.trim() ??
+                      product.getName('en')?.trim() ??
+                      product.name.trim();
+          if (name.isEmpty) name = item.productName ?? product.name;
+          productNamesMap[item.productId] = name.isEmpty ? 'Item' : name;
         } else {
-          // Fallback to stored productName if product not found
-          productNamesMap[item.productId] = item.productName;
+          productNamesMap[item.productId] = item.productName?.isNotEmpty == true ? item.productName! : 'Item';
         }
       } catch (e) {
         debugPrint('Error fetching product ${item.productId}: $e');
-        // Fallback to stored productName
-        productNamesMap[item.productId] = item.productName;
+        productNamesMap[item.productId] = item.productName?.isNotEmpty == true ? item.productName! : 'Item';
       }
     }
 
     // Initialize printer (ESC @)
     commands.addAll([esc, 0x40]);
 
-    // Enable UTF-8 for receipt so Urdu/Arabic and English print correctly.
-    // FS ( C pL pH fn m: 1C 28 43 02 00 30 32 — fn=48 ('0'), m=50 = UTF-8 (some printers use m=2)
+    // Enable UTF-8 so product names in Urdu (if any) print correctly; labels are English (ASCII).
     commands.addAll([fs, 0x28, 0x43, 0x02, 0x00, 0x30, 0x32]);
 
-    // Note: Print density is typically set via printer hardware settings
-    // SpeedX SP-90A default is Level-2 as shown in self-test
+    commands.addAll([esc, 0x61, 0x01]); // Center align
+    commands.addAll([gs, 0x21, 0x00]); // Normal size
+    commands.addAll([esc, 0x21, 0x01]); // Condensed mode
 
-    // Set alignment to center
-    commands.addAll([esc, 0x61, 0x01]); // ESC a 1 - Center align
-
-    // Set text size to normal (smaller than previous double size)
-    commands.addAll([gs, 0x21, 0x00]); // GS ! 00 - Normal size
-    
-    // Enable condensed mode for smaller text
-    commands.addAll([esc, 0x21, 0x01]); // ESC ! 1 - Condensed mode
-
-    // Print header
     _addText(commands, 'AR\'S TRADERS\n');
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
-    // Set alignment to left
-    commands.addAll([esc, 0x61, 0x00]); // ESC a 0 - Left align
+    commands.addAll([esc, 0x61, 0x00]); // Left align
 
-    // Print date and time (labels localized)
     final dateTime = sale.createdAt;
     final dateStr = '${dateTime.day.toString().padLeft(2, '0')}/${dateTime.month.toString().padLeft(2, '0')}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
-    _addText(commands, '${_receiptLabel('date', languageCode)}: $dateStr\n');
-    _addText(commands, '${_receiptLabel('billNo', languageCode)}: ${sale.id.substring(0, 8)}\n');
+    _addText(commands, '${_receiptLabel('date', labelsLanguage)}: $dateStr\n');
+    _addText(commands, '${_receiptLabel('billNo', labelsLanguage)}: ${sale.id.substring(0, 8)}\n');
     
-    // Print seller info if available
     if (seller != null) {
-      _addText(commands, '${_receiptLabel('customer', languageCode)}: ${seller.name}\n');
+      _addText(commands, '${_receiptLabel('customer', labelsLanguage)}: ${seller.name}\n');
       if (seller.phone != null && seller.phone!.isNotEmpty) {
-        _addText(commands, '${_receiptLabel('phone', languageCode)}: ${seller.phone}\n');
+        _addText(commands, '${_receiptLabel('phone', labelsLanguage)}: ${seller.phone}\n');
       }
     }
     
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
-    // Print items with better formatting
     int itemNumber = 1;
     for (var item in sale.items) {
-      // Product name with item number, qty, price, and subtotal on one line
-      // Use language-specific name if available, otherwise fallback to stored name
-      final productName = productNamesMap[item.productId] ?? item.productName;
-      // Format quantity: show decimals if needed (e.g., 0.100), otherwise whole number
+      String productName = (productNamesMap[item.productId] ?? item.productName ?? '').trim();
+      if (productName.isEmpty) productName = 'Item'; // ensure name always prints
       final qty = item.quantity % 1 == 0 
           ? item.quantity.toStringAsFixed(0) 
           : item.quantity.toStringAsFixed(3);
       final price = item.price.toStringAsFixed(2);
       final subtotal = item.subtotal.toStringAsFixed(2);
-      final itemLine = '$itemNumber. $productName $qty*$price = $subtotal';
-      _addText(commands, '$itemLine\n');
+      if (containsNonAscii(productName)) {
+        final raster = await textToEscPosRaster(productName, maxWidthPixels: 256, fontSize: 14);
+        if (raster != null) {
+          _addText(commands, '$itemNumber. ');
+          commands.addAll(raster);
+          _addText(commands, '\n    $qty*$price = $subtotal\n');
+        } else {
+          // Raster failed (e.g. on web) or unsupported – print as text so name still shows
+          _addText(commands, '$itemNumber. $productName $qty*$price = $subtotal\n');
+        }
+      } else {
+        _addText(commands, '$itemNumber. $productName $qty*$price = $subtotal\n');
+      }
       itemNumber++;
     }
 
     _addText(commands, '${_repeatChar('-', 32)}\n');
-    // Total items count (localized)
-    _addText(commands, _formatLine('${_receiptLabel('totalItems', languageCode)}:', sale.items.length.toString()));
+    _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', sale.items.length.toString()));
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
-    // Totals: match preview (labels localized)
     final saleAmount = sale.total - sale.creditUsed;
-    _addText(commands, _formatLine(_receiptLabel('saleAmount', languageCode), saleAmount.toStringAsFixed(2)));
+    _addText(commands, _formatLine(_receiptLabel('saleAmount', labelsLanguage), saleAmount.toStringAsFixed(2)));
     if (sale.creditUsed > 0) {
-      _addText(commands, _formatLine(_receiptLabel('creditUsed', languageCode), sale.creditUsed.toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('creditUsed', labelsLanguage), sale.creditUsed.toStringAsFixed(2)));
       if (seller != null) {
         try {
           final remainingCredit = await sellerService.getCreditBalance(seller.id);
-          _addText(commands, _formatLine(_receiptLabel('remainingCredit', languageCode), remainingCredit.toStringAsFixed(2)));
+          _addText(commands, _formatLine(_receiptLabel('remainingCredit', labelsLanguage), remainingCredit.toStringAsFixed(2)));
         } catch (e) {
           debugPrint('Error fetching remaining credit for receipt: $e');
         }
       }
     }
     if (existingDueTotal > 0.01) {
-      _addText(commands, _formatLine(_receiptLabel('existingDue', languageCode), existingDueTotal.toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('existingDue', labelsLanguage), existingDueTotal.toStringAsFixed(2)));
     }
     if (sale.recoveryBalance > 0) {
-      _addText(commands, _formatLine(_receiptLabel('appliedToDues', languageCode), sale.recoveryBalance.toStringAsFixed(2)));
-      _addText(commands, _formatLine(_receiptLabel('remainingDue', languageCode), (existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity).toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('appliedToDues', labelsLanguage), sale.recoveryBalance.toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('remainingDue', labelsLanguage), (existingDueTotal - sale.recoveryBalance).clamp(0.0, double.infinity).toStringAsFixed(2)));
     }
-    _addText(commands, _formatLine(_receiptLabel('amountPaid', languageCode), sale.amountPaid.toStringAsFixed(2)));
-    _addText(commands, _formatLine(_receiptLabel('change', languageCode), sale.change.toStringAsFixed(2)));
+    _addText(commands, _formatLine(_receiptLabel('amountPaid', labelsLanguage), sale.amountPaid.toStringAsFixed(2)));
+    _addText(commands, _formatLine(_receiptLabel('change', labelsLanguage), sale.change.toStringAsFixed(2)));
     final totalOwedBeforePayment = existingDueTotal + saleAmount;
     final dueBalance = (totalOwedBeforePayment - sale.amountPaid).clamp(0.0, double.infinity);
     if (dueBalance > 0.01) {
       _addText(commands, '${_repeatChar('-', 32)}\n');
-      _addText(commands, _formatLine(_receiptLabel('dueBalance', languageCode), dueBalance.toStringAsFixed(2)));
+      _addText(commands, _formatLine(_receiptLabel('dueBalance', labelsLanguage), dueBalance.toStringAsFixed(2)));
     }
 
     _addText(commands, '${_repeatChar('-', 32)}\n');
     
-    // Center align for footer (localized)
     commands.addAll([esc, 0x61, 0x01]); // Center align
-    _addText(commands, '${_receiptLabel('thankYou', languageCode)}\n');
-    _addText(commands, '${_receiptLabel('visitAgain', languageCode)}\n');
+    _addText(commands, '${_receiptLabel('thankYou', labelsLanguage)}\n');
+    _addText(commands, '${_receiptLabel('visitAgain', labelsLanguage)}\n');
     // Developer info (condensed mode already enabled)
     _addText(commands, 'Software developed by HighApp Solution\n');
     _addText(commands, '+923015384952, +923234471436\n');
