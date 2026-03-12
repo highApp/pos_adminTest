@@ -577,34 +577,39 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               maxChildSize: 0.9,
               expand: false,
               builder: (context, scrollController) {
-                return Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: TextField(
-                        controller: searchController,
-                        decoration: InputDecoration(
-                          hintText: 'Search categories...',
-                          prefixIcon: const Icon(Icons.search),
-                          border: const OutlineInputBorder(),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 12,
+                // Give Column a bounded height so Expanded/ListView don't cause RenderFlex
+                // (unbounded height) on Android.
+                final sheetHeight = MediaQuery.of(context).size.height * 0.6;
+                return SizedBox(
+                  height: sheetHeight,
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: TextField(
+                          controller: searchController,
+                          decoration: InputDecoration(
+                            hintText: 'Search categories...',
+                            prefixIcon: const Icon(Icons.search),
+                            border: const OutlineInputBorder(),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
                           ),
+                          onChanged: (value) {
+                            setSheetState(() {
+                              searchQuery = value;
+                            });
+                          },
+                          autofocus: true,
                         ),
-                        onChanged: (value) {
-                          setSheetState(() {
-                            searchQuery = value;
-                          });
-                        },
-                        autofocus: true,
                       ),
-                    ),
-                    Expanded(
-                      child: ListView.builder(
-                        controller: scrollController,
-                        itemCount: filtered.length,
-                        itemBuilder: (context, index) {
+                      Expanded(
+                        child: ListView.builder(
+                          controller: scrollController,
+                          itemCount: filtered.length,
+                          itemBuilder: (context, index) {
                           final name = filtered[index];
                           final isSelected = name == _selectedCategory;
                           return ListTile(
@@ -614,27 +619,30 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                             ),
                             title: Text(name),
                             onTap: () {
-                              Navigator.of(sheetContext).pop(name);
+                              // Update state BEFORE popping to avoid _dependents.isEmpty
+                              // assertion on Android (setState after pop causes the crash).
+                              if (mounted) {
+                                setState(() {
+                                  _selectedCategory = name;
+                                  _categoryController.text = name;
+                                });
+                              }
+                              Navigator.of(sheetContext).pop();
                             },
                           );
                         },
                       ),
                     ),
                   ],
+                ),
                 );
               },
             );
           },
         );
       },
-    ).then((selectedName) {
+    ).then((_) {
       searchController.dispose();
-      if (selectedName != null && mounted) {
-        setState(() {
-          _selectedCategory = selectedName as String;
-          _categoryController.text = selectedName;
-        });
-      }
     });
   }
 
@@ -1128,7 +1136,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                   );
                 }
 
-                // Build searchable category field - tap to open, shows all then filter
+                // Autocomplete: type to filter categories in real time, no modal, no page jump
                 final allCategoryNames = <String>{...categoryNames};
                 if (!allCategoryNames.contains('General')) {
                   allCategoryNames.add('General');
@@ -1140,33 +1148,87 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
 
                 return Stack(
                   children: [
-                    TextFormField(
-                      controller: _categoryController,
-                      readOnly: true,
-                      onTap: _isCategoryFieldEnabled
-                          ? () => _showCategorySearchSheet(context, allCategoryNamesList, categoryNames)
-                          : () => _showCategoryPasswordDialog(),
-                      decoration: InputDecoration(
-                        labelText: 'Category *',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.category),
-                        suffixIcon: _isCategoryFieldEnabled
-                            ? const Icon(Icons.arrow_drop_down, color: Colors.grey)
-                            : const Icon(Icons.lock, color: Colors.grey),
-                        hintText: _isCategoryFieldEnabled
-                            ? 'Tap to search & select category'
-                            : 'Click anywhere to enable',
-                        helperText: _isCategoryFieldEnabled
-                            ? 'Shows all categories, type to filter'
-                            : null,
+                    if (_isCategoryFieldEnabled)
+                      Autocomplete<String>(
+                        initialValue: TextEditingValue(text: _selectedCategory),
+                        optionsBuilder: (textEditingValue) {
+                          final t = textEditingValue.text.toLowerCase().trim();
+                          if (t.isEmpty) {
+                            return foundation.SynchronousFuture(allCategoryNamesList);
+                          }
+                          return foundation.SynchronousFuture(
+                            allCategoryNamesList
+                                .where((c) => c.toLowerCase().contains(t))
+                                .toList(),
+                          );
+                        },
+                        onSelected: (value) {
+                          setState(() {
+                            _selectedCategory = value;
+                            _categoryController.text = value;
+                          });
+                        },
+                        fieldViewBuilder: (
+                          context,
+                          controller,
+                          focusNode,
+                          onFieldSubmitted,
+                        ) {
+                          return TextFormField(
+                            controller: controller,
+                            focusNode: focusNode,
+                            decoration: const InputDecoration(
+                              labelText: 'Category *',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.category),
+                              hintText: 'Type to search categories',
+                              helperText: 'Filter and select from list',
+                            ),
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Please select a category';
+                              }
+                              return null;
+                            },
+                          );
+                        },
+                        optionsViewBuilder: (context, onSelected, options) {
+                          return Align(
+                            alignment: Alignment.topLeft,
+                            child: Material(
+                              elevation: 4,
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(maxHeight: 220),
+                                child: ListView.builder(
+                                  padding: EdgeInsets.zero,
+                                  shrinkWrap: true,
+                                  itemCount: options.length,
+                                  itemBuilder: (context, index) {
+                                    final option = options.elementAt(index);
+                                    return ListTile(
+                                      dense: true,
+                                      title: Text(option),
+                                      onTap: () => onSelected(option),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      )
+                    else
+                      TextFormField(
+                        controller: _categoryController,
+                        readOnly: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Category *',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.category),
+                          suffixIcon: Icon(Icons.lock, color: Colors.grey),
+                        ),
+                        onTap: () => _showCategoryPasswordDialog(),
                       ),
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'Please select a category';
-                        }
-                        return null;
-                      },
-                    ),
                     if (!_isCategoryFieldEnabled)
                       Positioned.fill(
                         child: Material(
