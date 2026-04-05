@@ -17,7 +17,10 @@ import '../models/sale_item.dart';
 import '../models/credit_history.dart';
 import '../services/seller_service.dart';
 import '../services/sales_service.dart';
+import '../services/printer_service.dart';
+import '../services/receipt_pdf_service.dart';
 import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
+import '../widgets/sync_status_banner.dart';
 
 class SellerHistoryScreen extends StatefulWidget {
   final Seller seller;
@@ -87,20 +90,28 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         ],
       ),
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Summary Cards
-          _buildSummaryCards(),
-          
-          // Date Filter
-          _buildDateFilter(),
-          
-          // History List
+          const SyncStatusBanner(),
           Expanded(
-            child: TabBarView(
-              controller: _tabController,
+            child: Column(
               children: [
-                _buildHistoryList(),
-                _buildCreditHistoryList(),
+                // Summary Cards
+                _buildSummaryCards(),
+
+                // Date Filter
+                _buildDateFilter(),
+
+                // History List
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _buildHistoryList(),
+                      _buildCreditHistoryList(),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -897,6 +908,20 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
       final saleDateStr = record['saleDate'];
       final saleDate = saleDateStr != null ? DateTime.parse(saleDateStr) : null;
       final referenceNumber = record['referenceNumber'] as String?;
+      final saleDescriptionPdf = record['description'] as String?;
+      String pdfRefCell() {
+        final parts = <String>[];
+        if (referenceNumber != null && referenceNumber.trim().isNotEmpty) {
+          parts.add(referenceNumber.trim());
+        }
+        if (saleDescriptionPdf != null && saleDescriptionPdf.trim().isNotEmpty) {
+          parts.add(saleDescriptionPdf.trim());
+        }
+        if (parts.isEmpty) return '-';
+        return parts.join(' · ');
+      }
+
+      final refCellText = pdfRefCell();
       final isPaymentRecord = resolvedTypes[i] ?? false;
 
       if (isPaymentRecord) {
@@ -932,7 +957,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
               ),
               pw.Padding(
                 padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(referenceNumber ?? '-', style: const pw.TextStyle(fontSize: 9)),
+                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 9)),
               ),
             ],
           ),
@@ -970,7 +995,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
               ),
               pw.Padding(
                 padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(referenceNumber ?? '-', style: const pw.TextStyle(fontSize: 9)),
+                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 9)),
               ),
             ],
           ),
@@ -1495,6 +1520,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                 : null;
             final saleId = record['saleId'] ?? '';
             final referenceNumber = record['referenceNumber'] as String?;
+            final saleDescriptionNote = record['description'] as String?;
             final isManual = record['isManual'] == true;
             final isPaymentRecord = record['recordType'] == 'payment';
 
@@ -1529,35 +1555,83 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                             ),
                           ),
                         ),
-                        if (isManual && !isPaymentRecord)
+                        if (isManual && saleId.isNotEmpty)
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit, color: Colors.blue, size: 18),
-                                onPressed: () => _showEditManualSaleDialog(
-                                  context,
-                                  saleId: saleId,
-                                  saleAmount: saleAmount,
-                                  amountPaid: amountPaid,
-                                  saleDate: saleDate,
-                                  referenceNumber: referenceNumber,
+                              if (!isPaymentRecord) ...[
+                                IconButton(
+                                  icon: const Icon(Icons.edit,
+                                      color: Colors.blue, size: 18),
+                                  onPressed: () => _showEditManualSaleDialog(
+                                    context,
+                                    saleId: saleId,
+                                    saleAmount: saleAmount,
+                                    amountPaid: amountPaid,
+                                    saleDate: saleDate,
+                                    referenceNumber: referenceNumber,
+                                  ),
+                                  tooltip: 'Edit Manual Sale',
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
                                 ),
-                                tooltip: 'Edit Manual Sale',
+                                IconButton(
+                                  icon: const Icon(Icons.delete,
+                                      color: Colors.red, size: 18),
+                                  onPressed: () => _showDeleteManualSaleDialog(
+                                    context,
+                                    saleId,
+                                    saleAmount,
+                                    duePayment,
+                                  ),
+                                  tooltip: 'Delete Manual Sale',
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                ),
+                              ],
+                              PopupMenuButton<String>(
+                                icon: const Icon(Icons.more_vert, size: 20),
+                                tooltip: 'Receipt options',
                                 padding: EdgeInsets.zero,
                                 constraints: const BoxConstraints(),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red, size: 18),
-                                onPressed: () => _showDeleteManualSaleDialog(
-                                  context,
-                                  saleId,
-                                  saleAmount,
-                                  duePayment,
-                                ),
-                                tooltip: 'Delete Manual Sale',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
+                                onSelected: (value) async {
+                                  if (value == 'print_receipt') {
+                                    await _handleManualHistoryReceiptPrint(
+                                        context, saleId);
+                                  } else if (value == 'view_pdf') {
+                                    await _handleManualHistoryReceiptViewPdf(
+                                        context, saleId);
+                                  } else if (value == 'download_pdf') {
+                                    await _handleManualHistoryReceiptDownloadPdf(
+                                        context, saleId);
+                                  }
+                                },
+                                itemBuilder: (ctx) => [
+                                  const PopupMenuItem(
+                                    value: 'print_receipt',
+                                    child: ListTile(
+                                      leading: Icon(Icons.print),
+                                      title: Text('Print receipt'),
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'view_pdf',
+                                    child: ListTile(
+                                      leading: Icon(Icons.picture_as_pdf),
+                                      title: Text('View PDF'),
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'download_pdf',
+                                    child: ListTile(
+                                      leading: Icon(Icons.download),
+                                      title: Text('Download PDF'),
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -1614,6 +1688,19 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                   ),
                               ),
                             ),
+                            if (saleDescriptionNote != null &&
+                                saleDescriptionNote.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: SelectableText(
+                                  'Description: $saleDescriptionNote',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.blue.shade800,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                         if (duePayment > 0 && !isPaymentRecord)
@@ -1684,6 +1771,19 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: Colors.blue[700],
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              if (saleDescriptionNote != null &&
+                                  saleDescriptionNote.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Text(
+                                    'Description: $saleDescriptionNote',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.blue.shade800,
                                       fontWeight: FontWeight.w500,
                                     ),
                                   ),
@@ -1798,6 +1898,18 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                             color: Colors.green.shade700,
                                           ),
                                         ),
+                                        if (sale.description != null &&
+                                            sale.description!.trim().isNotEmpty) ...[
+                                          const SizedBox(height: 8),
+                                          SelectableText(
+                                            'Description: ${sale.description}',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w500,
+                                              color: Colors.blue.shade800,
+                                            ),
+                                          ),
+                                        ],
                                       ],
                                     ),
                                   ),
@@ -2450,6 +2562,239 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     );
   }
 
+  /// Thermal print (same path as POS / sales history). [sale] must include correct [Sale.existingDueTotalAtSale].
+  Future<void> _printThermalReceiptForSeller(BuildContext context, Sale sale) async {
+    final printerService = PrinterService();
+    try {
+      final connectionType = await printerService.getConnectionType();
+      var needsConfiguration = false;
+      if (connectionType == PrinterConnectionType.wifi) {
+        final printerIp = await printerService.getPrinterIp();
+        needsConfiguration = printerIp == null || printerIp.isEmpty;
+      } else if (connectionType == PrinterConnectionType.bluetooth) {
+        final btDeviceId = await printerService.getBluetoothDeviceId();
+        needsConfiguration = btDeviceId == null;
+      } else if (connectionType == PrinterConnectionType.usb) {
+        final usbDeviceId = await printerService.getUsbDeviceId();
+        needsConfiguration = usbDeviceId == null;
+      }
+
+      if (needsConfiguration) {
+        if (context.mounted) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Printer not configured'),
+              content: const Text(
+                'Set up your thermal printer from the POS screen, then try again.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+        }
+        return;
+      }
+
+      if (!context.mounted) return;
+      final lang = await printerService.getReceiptLanguage();
+      final success = await printerService.printReceipt(
+        sale,
+        sale.existingDueTotalAtSale,
+        widget.seller,
+        languageCode: lang,
+      );
+
+      if (!context.mounted) return;
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Receipt printed successfully'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      } else {
+        var errorMessage =
+            'Failed to print receipt. Please check printer connection.';
+        if (kIsWeb && connectionType == PrinterConnectionType.bluetooth) {
+          errorMessage =
+              'Bluetooth printing from the browser often fails. Try WiFi printer or print from the mobile app.';
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } catch (e, st) {
+      debugPrint('Seller history print receipt: $e');
+      debugPrint('$st');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Print error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleManualHistoryReceiptPrint(
+      BuildContext context, String saleId) async {
+    final sale = await _salesService.getSaleById(saleId);
+    if (!context.mounted) return;
+    if (sale == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sale not found'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    await _printThermalReceiptForSeller(context, sale);
+  }
+
+  Future<void> _handleManualHistoryReceiptViewPdf(
+      BuildContext context, String saleId) async {
+    final sale = await _salesService.getSaleById(saleId);
+    if (!context.mounted) return;
+    if (sale == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sale not found'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final bytes = await ReceiptPdfService.generateSaleReceiptPdf(
+        sale,
+        seller: widget.seller,
+        existingDueTotal: sale.existingDueTotalAtSale,
+        contextForUrduRendering: context,
+      );
+      if (!context.mounted) return;
+      Navigator.of(context).pop();
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Sale Receipt'),
+          content: SizedBox(
+            width: 600,
+            height: 700,
+            child: PdfPreview(
+              build: (format) async => bytes,
+              allowPrinting: true,
+              allowSharing: true,
+              canChangeOrientation: false,
+              canChangePageFormat: false,
+              canDebug: false,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (context.mounted) Navigator.of(context).pop();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error generating PDF: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleManualHistoryReceiptDownloadPdf(
+      BuildContext context, String saleId) async {
+    final sale = await _salesService.getSaleById(saleId);
+    if (!context.mounted) return;
+    if (sale == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sale not found'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final bytes = await ReceiptPdfService.generateSaleReceiptPdf(
+        sale,
+        seller: widget.seller,
+        existingDueTotal: sale.existingDueTotalAtSale,
+        contextForUrduRendering: context,
+      );
+      if (!context.mounted) return;
+      Navigator.of(context).pop();
+      final filename =
+          'sale-${sale.id.substring(0, 8).toUpperCase()}.pdf';
+      if (kIsWeb) {
+        pdf_download.downloadPdf(bytes, filename);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('PDF downloaded: $filename'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        final xFile = XFile.fromData(
+          bytes,
+          mimeType: 'application/pdf',
+          name: filename,
+        );
+        await Share.shareXFiles([xFile], text: 'Sale receipt');
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Share sheet opened for PDF'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) Navigator.of(context).pop();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error generating PDF: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   void _showAddManualDuePaymentDialog(BuildContext context) {
     final TextEditingController amountController = TextEditingController();
     final TextEditingController referenceController = TextEditingController();
@@ -2554,14 +2899,16 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     final referenceNumber = referenceController.text.trim();
                     final saleId = const Uuid().v4();
                     final paymentDate = selectedDate!;
-                    
-                    // Get total due amount first
+
+                    // Get total due amount first (snapshot for receipt / Firestore)
                     final totalDue = await _sellerService.getTotalDueAmountForSeller(widget.seller.id);
                     
                     // Apply payment to existing due payments first
-                    final remainingPayment = await _sellerService.applyPaymentToDuePayments(
+                    final remainingPayment =
+                        await _sellerService.applyPaymentToDuePayments(
                       widget.seller.id,
                       amount,
+                      prioritizeBillsWithSaleDateSameDayAs: paymentDate,
                     );
                     
                     // Calculate how much was applied to dues
@@ -2596,6 +2943,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       isPartialReturn: false,
                       sellerId: widget.seller.id,
                       recoveryBalance: amountAppliedToDues, // Only amount applied to dues is recovery
+                      existingDueTotalAtSale: totalDue,
                     );
                     
                     // Save the sale to increase recovery balance (only for dues portion)
@@ -2622,17 +2970,51 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
 
                     if (context.mounted) {
                       Navigator.pop(dialogContext);
-                      String message = 'Manual payment of ${_currencyFormatter.format(amount)} added successfully.';
-                      if (amountAppliedToDues > 0) {
-                        message += ' Applied ${_currencyFormatter.format(amountAppliedToDues)} to due payments.';
-                      }
-                      if (creditAmount > 0) {
-                        message += ' Credit balance: ${_currencyFormatter.format(creditAmount)}.';
-                      }
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(message),
-                          backgroundColor: Colors.green,
+                      final remainingDueAfter =
+                          (totalDue - amountAppliedToDues).clamp(0.0, double.infinity);
+                      await showDialog<void>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Manual payment saved'),
+                          content: SingleChildScrollView(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Amount paid: ${_currencyFormatter.format(amount)}',
+                                ),
+                                if (amountAppliedToDues > 0.001)
+                                  Text(
+                                    'Applied to dues: ${_currencyFormatter.format(amountAppliedToDues)}',
+                                  ),
+                                if (creditAmount > 0.001)
+                                  Text(
+                                    'Added to credit: ${_currencyFormatter.format(creditAmount)}',
+                                  ),
+                                if (totalDue > 0.001)
+                                  Text(
+                                    'Due before: ${_currencyFormatter.format(totalDue)}',
+                                  ),
+                                Text(
+                                  'Due after: ${_currencyFormatter.format(remainingDueAfter)}',
+                                ),
+                              ],
+                            ),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              child: const Text('Close'),
+                            ),
+                            FilledButton.icon(
+                              icon: const Icon(Icons.print),
+                              label: const Text('Print receipt'),
+                              onPressed: () async {
+                                await _printThermalReceiptForSeller(ctx, manualSale);
+                              },
+                            ),
+                          ],
                         ),
                       );
                     }
@@ -2795,7 +3177,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     final referenceNumber = referenceController.text.trim();
                     final saleId = const Uuid().v4();
                     final saleDate = selectedDate!;
-                    
+                    final existingDueBeforeSale = await _sellerService
+                        .getTotalDueAmountForSeller(widget.seller.id);
+
                     // Validate that amount paid doesn't exceed sale amount
                     if (amountPaid > saleAmount) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -2825,6 +3209,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       isPartialReturn: false,
                       sellerId: widget.seller.id,
                       recoveryBalance: 0.0, // No recovery balance for new sales
+                      existingDueTotalAtSale: existingDueBeforeSale,
                     );
                     
                     // Save the sale
@@ -2869,12 +3254,53 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
 
                     if (context.mounted) {
                       Navigator.pop(dialogContext);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Manual sale of ${_currencyFormatter.format(saleAmount)} added successfully.',
+                      final dueOnThisSale =
+                          (saleAmount - amountPaid).clamp(0.0, double.infinity);
+                      final totalDueAfter = existingDueBeforeSale +
+                          saleAmount -
+                          amountPaid;
+                      await showDialog<void>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Manual sale saved'),
+                          content: SingleChildScrollView(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'Sale amount: ${_currencyFormatter.format(saleAmount)}',
+                                ),
+                                Text(
+                                  'Amount paid: ${_currencyFormatter.format(amountPaid)}',
+                                ),
+                                if (dueOnThisSale > 0.001)
+                                  Text(
+                                    'Due on this sale: ${_currencyFormatter.format(dueOnThisSale)}',
+                                  ),
+                                if (existingDueBeforeSale > 0.001)
+                                  Text(
+                                    'Previous due: ${_currencyFormatter.format(existingDueBeforeSale)}',
+                                  ),
+                                Text(
+                                  'Total due after: ${_currencyFormatter.format(totalDueAfter)}',
+                                ),
+                              ],
+                            ),
                           ),
-                          backgroundColor: Colors.green,
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              child: const Text('Close'),
+                            ),
+                            FilledButton.icon(
+                              icon: const Icon(Icons.print),
+                              label: const Text('Print receipt'),
+                              onPressed: () async {
+                                await _printThermalReceiptForSeller(ctx, manualSale);
+                              },
+                            ),
+                          ],
                         ),
                       );
                     }

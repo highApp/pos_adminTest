@@ -34,7 +34,7 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
   final TextEditingController _accountTitleController = TextEditingController();
   final TextEditingController _bankNameController = TextEditingController();
   final TextEditingController _accountHolderNameController = TextEditingController();
-  final TextEditingController _referenceNumberController = TextEditingController();
+  final TextEditingController _referenceController = TextEditingController();
   
   bool _isLoading = false;
 
@@ -50,7 +50,7 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
     _accountTitleController.dispose();
     _bankNameController.dispose();
     _accountHolderNameController.dispose();
-    _referenceNumberController.dispose();
+    _referenceController.dispose();
     super.dispose();
   }
 
@@ -119,6 +119,7 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
         // Allocate payment to bills (oldest first)
         // Use same batchId for all payments in this transaction (groups in payment history)
         final batchId = const Uuid().v4();
+        final refText = _referenceController.text.trim();
         double remainingAmount = amount;
         final paymentIds = <String>[];
         for (var billData in billsWithBalance) {
@@ -147,9 +148,9 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
             accountHolderName: _paymentType == 'bank_transfer' && _accountHolderNameController.text.trim().isNotEmpty
                 ? _accountHolderNameController.text.trim()
                 : null,
-            referenceNumber: _paymentType == 'bank_transfer' && _referenceNumberController.text.trim().isNotEmpty
-                ? _referenceNumberController.text.trim()
-                : null,
+            referenceNumber:
+                _paymentType == 'bank_transfer' && refText.isNotEmpty ? refText : null,
+            reference: refText.isNotEmpty ? refText : null,
             createdAt: DateTime.now(),
           );
 
@@ -332,6 +333,28 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
                       ),
                       const SizedBox(height: 16),
 
+                      TextFormField(
+                        controller: _referenceController,
+                        decoration: InputDecoration(
+                          labelText: _paymentType == 'bank_transfer'
+                              ? 'Reference *'
+                              : 'Reference',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.tag),
+                          helperText: _paymentType == 'bank_transfer'
+                              ? 'Transaction / bank reference (required)'
+                              : 'Optional: receipt #, slip id, or note',
+                        ),
+                        validator: (value) {
+                          if (_paymentType == 'bank_transfer' &&
+                              (value == null || value.trim().isEmpty)) {
+                            return 'Enter reference';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 16),
+
                       // Bank Transfer Fields
                       if (_paymentType == 'bank_transfer') ...[
                         TextFormField(
@@ -374,21 +397,6 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
                           validator: (value) {
                             if (_paymentType == 'bank_transfer' && (value == null || value.trim().isEmpty)) {
                               return 'Enter account holder name';
-                            }
-                            return null;
-                          },
-                        ),
-                        const SizedBox(height: 16),
-                        TextFormField(
-                          controller: _referenceNumberController,
-                          decoration: const InputDecoration(
-                            labelText: 'Reference Number *',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.receipt),
-                          ),
-                          validator: (value) {
-                            if (_paymentType == 'bank_transfer' && (value == null || value.trim().isEmpty)) {
-                              return 'Enter reference number';
                             }
                             return null;
                           },

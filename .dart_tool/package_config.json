@@ -2,16 +2,34 @@
   "configVersion": 2,
   "packages": [
     {
+      "name": "_fe_analyzer_shared",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/_fe_analyzer_shared-93.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.9"
+    },
+    {
       "name": "_flutterfire_internals",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/_flutterfire_internals-1.3.59",
       "packageUri": "lib/",
       "languageVersion": "3.2"
     },
     {
+      "name": "analyzer",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/analyzer-10.0.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.9"
+    },
+    {
       "name": "archive",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/archive-4.0.7",
       "packageUri": "lib/",
       "languageVersion": "3.0"
+    },
+    {
+      "name": "args",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/args-2.7.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.3"
     },
     {
       "name": "async",
@@ -44,8 +62,62 @@
       "languageVersion": "3.1"
     },
     {
+      "name": "build",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/build-4.0.5",
+      "packageUri": "lib/",
+      "languageVersion": "3.7"
+    },
+    {
+      "name": "build_config",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/build_config-1.3.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.7"
+    },
+    {
+      "name": "build_daemon",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/build_daemon-4.1.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.7"
+    },
+    {
+      "name": "build_runner",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/build_runner-2.13.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.7"
+    },
+    {
+      "name": "built_collection",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/built_collection-5.1.1",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
+    },
+    {
+      "name": "built_value",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/built_value-8.12.5",
+      "packageUri": "lib/",
+      "languageVersion": "3.0"
+    },
+    {
       "name": "characters",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/characters-1.4.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "charcode",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/charcode-1.4.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.0"
+    },
+    {
+      "name": "checked_yaml",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/checked_yaml-2.0.4",
+      "packageUri": "lib/",
+      "languageVersion": "3.8"
+    },
+    {
+      "name": "cli_util",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/cli_util-0.4.2",
       "packageUri": "lib/",
       "languageVersion": "3.4"
     },
@@ -74,8 +146,32 @@
       "languageVersion": "3.4"
     },
     {
+      "name": "code_builder",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/code_builder-4.11.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.7"
+    },
+    {
       "name": "collection",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/collection-1.19.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "connectivity_plus",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/connectivity_plus-6.1.5",
+      "packageUri": "lib/",
+      "languageVersion": "3.2"
+    },
+    {
+      "name": "connectivity_plus_platform_interface",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/connectivity_plus_platform_interface-2.1.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.18"
+    },
+    {
+      "name": "convert",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/convert-3.1.2",
       "packageUri": "lib/",
       "languageVersion": "3.4"
     },
@@ -102,6 +198,42 @@
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/cupertino_icons-1.0.8",
       "packageUri": "lib/",
       "languageVersion": "3.1"
+    },
+    {
+      "name": "dart_style",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/dart_style-3.1.5",
+      "packageUri": "lib/",
+      "languageVersion": "3.9"
+    },
+    {
+      "name": "dbus",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/dbus-0.7.12",
+      "packageUri": "lib/",
+      "languageVersion": "2.17"
+    },
+    {
+      "name": "drift",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/drift-2.31.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.5"
+    },
+    {
+      "name": "drift_dev",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/drift_dev-2.31.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.5"
+    },
+    {
+      "name": "drift_flutter",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/drift_flutter-0.2.8",
+      "packageUri": "lib/",
+      "languageVersion": "3.5"
+    },
+    {
+      "name": "equatable",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/equatable-2.0.8",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
     },
     {
       "name": "fake_async",
@@ -236,10 +368,28 @@
       "languageVersion": "3.8"
     },
     {
+      "name": "glob",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/glob-2.1.3",
+      "packageUri": "lib/",
+      "languageVersion": "3.3"
+    },
+    {
+      "name": "graphs",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/graphs-2.3.2",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
       "name": "http",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/http-1.6.0",
       "packageUri": "lib/",
       "languageVersion": "3.4"
+    },
+    {
+      "name": "http_multi_server",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/http_multi_server-3.2.2",
+      "packageUri": "lib/",
+      "languageVersion": "3.2"
     },
     {
       "name": "http_parser",
@@ -302,10 +452,28 @@
       "languageVersion": "3.6"
     },
     {
+      "name": "internet_connection_checker",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/internet_connection_checker-3.0.1",
+      "packageUri": "lib/",
+      "languageVersion": "2.15"
+    },
+    {
       "name": "intl",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/intl-0.19.0",
       "packageUri": "lib/",
       "languageVersion": "3.0"
+    },
+    {
+      "name": "io",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/io-1.0.5",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "json_annotation",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/json_annotation-4.11.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.9"
     },
     {
       "name": "leak_tracker",
@@ -330,6 +498,12 @@
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/lints-5.1.1",
       "packageUri": "lib/",
       "languageVersion": "3.6"
+    },
+    {
+      "name": "logging",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/logging-1.3.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
     },
     {
       "name": "matcher",
@@ -360,6 +534,18 @@
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/nested-1.0.0",
       "packageUri": "lib/",
       "languageVersion": "2.12"
+    },
+    {
+      "name": "nm",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/nm-0.5.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
+    },
+    {
+      "name": "package_config",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/package_config-2.2.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
     },
     {
       "name": "path",
@@ -476,6 +662,12 @@
       "languageVersion": "3.0"
     },
     {
+      "name": "pool",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/pool-1.5.2",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
       "name": "posix",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/posix-6.0.3",
       "packageUri": "lib/",
@@ -494,10 +686,28 @@
       "languageVersion": "2.12"
     },
     {
+      "name": "pub_semver",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/pub_semver-2.2.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "pubspec_parse",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/pubspec_parse-1.5.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.6"
+    },
+    {
       "name": "qr",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/qr-3.0.2",
       "packageUri": "lib/",
       "languageVersion": "3.4"
+    },
+    {
+      "name": "recase",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/recase-4.1.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
     },
     {
       "name": "share_plus",
@@ -554,10 +764,28 @@
       "languageVersion": "3.3"
     },
     {
+      "name": "shelf",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/shelf-1.4.2",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "shelf_web_socket",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/shelf_web_socket-3.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.5"
+    },
+    {
       "name": "sky_engine",
       "rootUri": "file:///Users/muhammadusman/Desktop/flutter3.38.7/bin/cache/pkg/sky_engine",
       "packageUri": "lib/",
       "languageVersion": "3.8"
+    },
+    {
+      "name": "source_gen",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/source_gen-4.2.2",
+      "packageUri": "lib/",
+      "languageVersion": "3.9"
     },
     {
       "name": "source_span",
@@ -572,6 +800,24 @@
       "languageVersion": "2.12"
     },
     {
+      "name": "sqlite3",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/sqlite3-2.9.4",
+      "packageUri": "lib/",
+      "languageVersion": "3.5"
+    },
+    {
+      "name": "sqlite3_flutter_libs",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/sqlite3_flutter_libs-0.5.42",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
+    },
+    {
+      "name": "sqlparser",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/sqlparser-0.43.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.5"
+    },
+    {
       "name": "stack_trace",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/stack_trace-1.12.1",
       "packageUri": "lib/",
@@ -582,6 +828,12 @@
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/stream_channel-2.1.4",
       "packageUri": "lib/",
       "languageVersion": "3.3"
+    },
+    {
+      "name": "stream_transform",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/stream_transform-2.1.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.1"
     },
     {
       "name": "string_scanner",
@@ -674,10 +926,28 @@
       "languageVersion": "3.5"
     },
     {
+      "name": "watcher",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/watcher-1.2.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
       "name": "web",
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/web-1.1.1",
       "packageUri": "lib/",
       "languageVersion": "3.4"
+    },
+    {
+      "name": "web_socket",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/web_socket-1.0.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "web_socket_channel",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/web_socket_channel-3.0.3",
+      "packageUri": "lib/",
+      "languageVersion": "3.3"
     },
     {
       "name": "whatsapp_share2",
@@ -702,6 +972,12 @@
       "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/xml-6.6.1",
       "packageUri": "lib/",
       "languageVersion": "3.8"
+    },
+    {
+      "name": "yaml",
+      "rootUri": "file:///Users/muhammadusman/.pub-cache/hosted/pub.dev/yaml-3.1.3",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
     },
     {
       "name": "ar_karayana_store",

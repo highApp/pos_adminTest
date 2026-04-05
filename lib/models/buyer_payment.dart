@@ -17,6 +17,9 @@ class BuyerPayment {
   final String? accountHolderName;
   final String? referenceNumber;
 
+  /// Optional reference for any payment type (receipt #, slip id, note). Bank transfers also set [referenceNumber].
+  final String? reference;
+
   final DateTime createdAt;
 
   BuyerPayment({
@@ -31,8 +34,18 @@ class BuyerPayment {
     this.bankName,
     this.accountHolderName,
     this.referenceNumber,
+    this.reference,
     required this.createdAt,
   });
+
+  /// Receipt / slip / transaction id for display (prefers [reference], then [referenceNumber]).
+  String? get effectiveReference {
+    final r = reference?.trim();
+    if (r != null && r.isNotEmpty) return r;
+    final n = referenceNumber?.trim();
+    if (n != null && n.isNotEmpty) return n;
+    return null;
+  }
 
   Map<String, dynamic> toMap() {
     return {
@@ -47,6 +60,7 @@ class BuyerPayment {
       'bankName': bankName,
       'accountHolderName': accountHolderName,
       'referenceNumber': referenceNumber,
+      'reference': reference,
       'createdAt': createdAt.toIso8601String(),
     };
   }
@@ -66,6 +80,7 @@ class BuyerPayment {
       bankName: map['bankName'],
       accountHolderName: map['accountHolderName'],
       referenceNumber: map['referenceNumber'],
+      reference: map['reference'] as String?,
       createdAt: map['createdAt'] != null
           ? DateTime.parse(map['createdAt'])
           : DateTime.now(),

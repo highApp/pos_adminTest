@@ -18,6 +18,7 @@ import 'zakat_screen.dart';
 import '../services/auth_service.dart';
 import '../models/user.dart';
 import '../widgets/reminder_alert_listener.dart';
+import '../widgets/sync_status_banner.dart';
 import '../widgets/sellers_quick_access_dialog.dart';
 import '../services/sellers_shortcut_web.dart' if (dart.library.io) '../services/sellers_shortcut_io.dart' as sellers_shortcut;
 
@@ -248,7 +249,13 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             drawer: _buildDrawer(),
-            body: const POSScreen(),
+            body: const Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SyncStatusBanner(),
+                Expanded(child: POSScreen()),
+              ],
+            ),
           ),
         ),
       );
@@ -339,9 +346,17 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       drawer: _buildDrawer(),
-      body: _selectedIndex == 0
-          ? ReminderAlertListener(child: _screens[_selectedIndex])
-          : _screens[_selectedIndex],
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SyncStatusBanner(),
+          Expanded(
+            child: _selectedIndex == 0
+                ? ReminderAlertListener(child: _screens[_selectedIndex])
+                : _screens[_selectedIndex],
+          ),
+        ],
+      ),
         ),
       ),
     );

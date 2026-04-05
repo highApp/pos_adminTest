@@ -18,6 +18,10 @@ class BuyerBill {
   final double? discountPercent;
   /// Applied fixed discount amount in Rs. (saved when "Apply discount to bill" used with fixed).
   final double? discountFixedAmount;
+  /// Total manual bill expense (visible), split evenly across lines when editing.
+  final double manualVisibleExpenseTotal;
+  /// Total manual bill expense (hidden), split evenly across lines when editing.
+  final double manualHiddenExpenseTotal;
 
   BuyerBill({
     required this.id,
@@ -35,6 +39,8 @@ class BuyerBill {
     this.billNumber,
     this.discountPercent,
     this.discountFixedAmount,
+    this.manualVisibleExpenseTotal = 0,
+    this.manualHiddenExpenseTotal = 0,
   });
 
   Map<String, dynamic> toMap() {
@@ -54,6 +60,8 @@ class BuyerBill {
       'billNumber': billNumber,
       'discountPercent': discountPercent,
       'discountFixedAmount': discountFixedAmount,
+      'manualVisibleExpenseTotal': manualVisibleExpenseTotal,
+      'manualHiddenExpenseTotal': manualHiddenExpenseTotal,
     };
   }
 
@@ -79,6 +87,10 @@ class BuyerBill {
       billNumber: map['billNumber'],
       discountPercent: (map['discountPercent'] as num?)?.toDouble(),
       discountFixedAmount: (map['discountFixedAmount'] as num?)?.toDouble(),
+      manualVisibleExpenseTotal:
+          (map['manualVisibleExpenseTotal'] as num?)?.toDouble() ?? 0,
+      manualHiddenExpenseTotal:
+          (map['manualHiddenExpenseTotal'] as num?)?.toDouble() ?? 0,
     );
   }
 }

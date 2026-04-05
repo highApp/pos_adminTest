@@ -1,5 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
+
 import '../models/product.dart';
+import '../utils/firestore_transient.dart';
 
 class ProductService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -130,10 +133,72 @@ class ProductService {
           updatedAt: DateTime.now(),
         );
         await docRef.update(updatedProduct.toMap());
+        _invalidateSearchCache();
         return true;
       }
     }
     return false;
+  }
+
+  /// Decrements stock for each product in one atomic transaction. All reads run
+  /// before writes (Firestore requirement). Throws if any product is missing or
+  /// stock is insufficient so the sale can be aborted without recording it.
+  Future<void> decreaseStockForSale(Map<String, double> quantitiesByProductId) async {
+    if (quantitiesByProductId.isEmpty) return;
+
+    final now = DateTime.now().toIso8601String();
+    await _firestore.runTransaction((transaction) async {
+      final entries = quantitiesByProductId.entries.toList();
+      final refs = entries
+          .map((e) => _firestore.collection(_collection).doc(e.key))
+          .toList();
+      final snapshots = <DocumentSnapshot<Map<String, dynamic>>>[];
+      for (final ref in refs) {
+        final snap = await transaction.get(ref);
+        snapshots.add(snap);
+      }
+      for (var i = 0; i < entries.length; i++) {
+        final productId = entries[i].key;
+        final qty = entries[i].value;
+        if (qty <= 0) continue;
+        final snap = snapshots[i];
+        if (!snap.exists || snap.data() == null) {
+          throw Exception('Product not found: $productId');
+        }
+        final data = snap.data()!;
+        final current = (data['stock'] ?? 0).toDouble();
+        if (current < qty) {
+          final label = data['name']?.toString() ?? productId;
+          throw Exception(
+            'Insufficient stock for $label (available: ${current.toString()}, needed: ${qty.toString()})',
+          );
+        }
+        transaction.update(refs[i], {
+          'stock': current - qty,
+          'updatedAt': now,
+        });
+      }
+    });
+    _invalidateSearchCache();
+  }
+
+  /// Like [decreaseStockForSale] but does not throw when Firestore is offline or
+  /// returns a transient error — returns `true` if stock was written remotely.
+  Future<bool> decreaseStockForSaleIfReachable(
+    Map<String, double> quantitiesByProductId,
+  ) async {
+    try {
+      await decreaseStockForSale(quantitiesByProductId);
+      return true;
+    } on FirebaseException catch (e) {
+      if (isFirestoreTransientOrOffline(e)) {
+        debugPrint(
+          'Stock update skipped (offline/transient: ${e.code}). Sale can still be saved locally.',
+        );
+        return false;
+      }
+      rethrow;
+    }
   }
 
   // Get product by ID

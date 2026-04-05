@@ -7,6 +7,7 @@ import 'package:pdf/widgets.dart' as pw;
 import '../models/product.dart';
 import '../models/sale.dart';
 import '../models/seller.dart';
+import '../constants/receipt_branding.dart';
 import '../utils/receipt_text_to_image.dart';
 import '../utils/receipt_urdu_widget_render.dart';
 import 'product_service.dart';
@@ -91,7 +92,7 @@ class ReceiptPdfService {
               children: [
                 // Header
                 pw.Text(
-                  'AR\'S Traders',
+                  ReceiptBranding.storeName,
                   style: textStyle(fontSize: 11, fontWeight: pw.FontWeight.bold),
                   textAlign: pw.TextAlign.center,
                 ),

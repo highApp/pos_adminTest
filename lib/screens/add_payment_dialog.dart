@@ -32,7 +32,8 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
   final TextEditingController _accountTitleController = TextEditingController();
   final TextEditingController _bankNameController = TextEditingController();
   final TextEditingController _accountHolderNameController = TextEditingController();
-  final TextEditingController _referenceNumberController = TextEditingController();
+  /// Reference for cash (optional) or bank transfer (required when bank selected).
+  final TextEditingController _referenceController = TextEditingController();
   
   bool _isLoading = false;
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
@@ -49,7 +50,7 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
     _accountTitleController.dispose();
     _bankNameController.dispose();
     _accountHolderNameController.dispose();
-    _referenceNumberController.dispose();
+    _referenceController.dispose();
     super.dispose();
   }
 
@@ -96,6 +97,7 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
 
       try {
         final paymentNumber = await _paymentService.getNextPaymentNumber();
+        final refText = _referenceController.text.trim();
         final payment = BuyerPayment(
           id: const Uuid().v4(),
           billId: widget.billId,
@@ -112,9 +114,9 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
           accountHolderName: _paymentType == 'bank_transfer' && _accountHolderNameController.text.trim().isNotEmpty
               ? _accountHolderNameController.text.trim()
               : null,
-          referenceNumber: _paymentType == 'bank_transfer' && _referenceNumberController.text.trim().isNotEmpty
-              ? _referenceNumberController.text.trim()
-              : null,
+          referenceNumber:
+              _paymentType == 'bank_transfer' && refText.isNotEmpty ? refText : null,
+          reference: refText.isNotEmpty ? refText : null,
           createdAt: DateTime.now(),
         );
 
@@ -290,6 +292,28 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
                       ),
                       const SizedBox(height: 16),
 
+                      TextFormField(
+                        controller: _referenceController,
+                        decoration: InputDecoration(
+                          labelText: _paymentType == 'bank_transfer'
+                              ? 'Reference *'
+                              : 'Reference',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.tag),
+                          helperText: _paymentType == 'bank_transfer'
+                              ? 'Transaction / bank reference (required)'
+                              : 'Optional: receipt #, slip id, or note',
+                        ),
+                        validator: (value) {
+                          if (_paymentType == 'bank_transfer' &&
+                              (value == null || value.trim().isEmpty)) {
+                            return 'Enter reference';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 16),
+
                       // Bank Transfer Fields (only show if bank_transfer selected)
                       if (_paymentType == 'bank_transfer') ...[
                         TextFormField(
@@ -332,21 +356,6 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
                           validator: (value) {
                             if (value == null || value.trim().isEmpty) {
                               return 'Enter account holder name';
-                            }
-                            return null;
-                          },
-                        ),
-                        const SizedBox(height: 16),
-                        TextFormField(
-                          controller: _referenceNumberController,
-                          decoration: const InputDecoration(
-                            labelText: 'Reference Number *',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.receipt),
-                          ),
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Enter reference number';
                             }
                             return null;
                           },

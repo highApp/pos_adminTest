@@ -42,6 +42,27 @@ class BorrowService {
     });
   }
 
+  /// Unpaid `borrowed` rows in the borrow book (any date). For dashboard “all-time” vs period filter.
+  Future<double> getTotalOutstandingBorrowedAllTime() async {
+    try {
+      final snapshot = await _firestore
+          .collection(_collection)
+          .where('type', isEqualTo: 'borrowed')
+          .get();
+
+      double total = 0;
+      for (final doc in snapshot.docs) {
+        final borrow = Borrow.fromMap(doc.data());
+        if (!borrow.isPaid) {
+          total += borrow.amount;
+        }
+      }
+      return total;
+    } catch (e) {
+      return 0.0;
+    }
+  }
+
   // Get total borrowed amount by date range (money borrowed from others)
   Future<double> getTotalBorrowedByDateRange(DateTime startDate, DateTime endDate) async {
     try {

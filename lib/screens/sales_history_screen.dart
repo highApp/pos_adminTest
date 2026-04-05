@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
@@ -9,6 +10,7 @@ import '../services/sales_service.dart';
 import '../services/product_service.dart';
 import '../services/seller_order_service.dart';
 import '../services/seller_service.dart';
+import '../services/printer_service.dart';
 import '../services/receipt_pdf_service.dart';
 import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
 
@@ -20,6 +22,8 @@ class SalesHistoryScreen extends StatefulWidget {
 }
 
 class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
+  static const String _profitVisibilityPassword = '5202';
+
   final SalesService _salesService = SalesService();
   final SellerOrderService _sellerOrderService = SellerOrderService();
   final SellerService _sellerService = SellerService();
@@ -28,6 +32,8 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   DateTime? _endDate;
   bool _filterByDate = false;
   String _transactionTypeFilter = 'all'; // 'all', 'pos', 'wholesale'
+  /// Profit lines are hidden until password [ _profitVisibilityPassword ] is entered.
+  bool _showProfitInSalesHistory = false;
 
   @override
   void initState() {
@@ -110,6 +116,22 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                 IconButton(
                   icon: Icon(_filterByDate ? Icons.filter_alt : Icons.filter_alt_outlined),
                   onPressed: _showDateFilter,
+                ),
+                IconButton(
+                  tooltip: _showProfitInSalesHistory
+                      ? 'Hide profit'
+                      : 'Show profit (password)',
+                  icon: Icon(
+                    _showProfitInSalesHistory ? Icons.lock_open : Icons.lock_outline,
+                    color: _showProfitInSalesHistory ? Colors.teal : Colors.grey,
+                  ),
+                  onPressed: () {
+                    if (_showProfitInSalesHistory) {
+                      _confirmHideProfit();
+                    } else {
+                      _showProfitUnlockDialog();
+                    }
+                  },
                 ),
               ],
             ),
@@ -317,6 +339,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                   sales: sales,
                                   searchQuery: searchQuery,
                                   sellerService: _sellerService,
+                                  showProfit: _showProfitInSalesHistory,
                                   onReturn: (sale) => _showReturnDialog(context, sale),
                                 );
                               }
@@ -338,6 +361,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                       }
                                       return _SaleCard(
                                         sale: sale,
+                                        showProfit: _showProfitInSalesHistory,
                                         onReturn: () =>
                                             _showReturnDialog(context, sale),
                                       );
@@ -346,11 +370,15 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                 }
                                 return _SaleCard(
                                   sale: sale,
+                                  showProfit: _showProfitInSalesHistory,
                                   onReturn: () => _showReturnDialog(context, sale),
                                 );
                               } else {
                                 final order = t['data'] as SellerOrder;
-                                return _WholesaleOrderCard(order: order);
+                                return _WholesaleOrderCard(
+                                  order: order,
+                                  showProfit: _showProfitInSalesHistory,
+                                );
                               }
                             },
                           );
@@ -361,6 +389,93 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showProfitUnlockDialog() {
+    final controller = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Show profit'),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Password',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => _tryUnlockProfit(ctx, controller.text),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => _tryUnlockProfit(ctx, controller.text),
+            child: const Text('Unlock'),
+          ),
+        ],
+      ),
+    ).then((_) {
+      // Dispose after the route (and TextField) are fully unmounted — avoids framework assertions.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        controller.dispose();
+      });
+    });
+  }
+
+  void _tryUnlockProfit(BuildContext dialogContext, String password) {
+    if (password == _profitVisibilityPassword) {
+      Navigator.pop(dialogContext);
+      // Pop + setState in the same frame can leave InheritedWidget dependents during teardown.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() => _showProfitInSalesHistory = true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Profit details are visible'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Incorrect password'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  void _confirmHideProfit() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Hide profit'),
+        content: const Text(
+          'Hide profit amounts on this screen until unlocked again?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                setState(() => _showProfitInSalesHistory = false);
+              });
+            },
+            child: const Text('Hide'),
           ),
         ],
       ),
@@ -478,6 +593,7 @@ class _SellerDayGroupTile extends StatelessWidget {
   final List<Sale> sales;
   final String searchQuery;
   final SellerService sellerService;
+  final bool showProfit;
   final void Function(Sale sale) onReturn;
 
   const _SellerDayGroupTile({
@@ -486,6 +602,7 @@ class _SellerDayGroupTile extends StatelessWidget {
     required this.sales,
     required this.searchQuery,
     required this.sellerService,
+    required this.showProfit,
     required this.onReturn,
   });
 
@@ -556,6 +673,7 @@ class _SellerDayGroupTile extends StatelessWidget {
                       padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
                       child: _SaleCard(
                         sale: sale,
+                        showProfit: showProfit,
                         onReturn: () => onReturn(sale),
                       ),
                     ),
@@ -571,10 +689,12 @@ class _SellerDayGroupTile extends StatelessWidget {
 
 class _SaleCard extends StatelessWidget {
   final Sale sale;
+  final bool showProfit;
   final VoidCallback onReturn;
 
   const _SaleCard({
     required this.sale,
+    required this.showProfit,
     required this.onReturn,
   });
 
@@ -634,6 +754,97 @@ class _SaleCard extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error generating PDF: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Same thermal print path as POS payment success → Print (WiFi / BT / USB).
+  Future<void> _handlePrintReceipt(BuildContext context) async {
+    final printerService = PrinterService();
+    try {
+      final connectionType = await printerService.getConnectionType();
+      var needsConfiguration = false;
+      if (connectionType == PrinterConnectionType.wifi) {
+        final printerIp = await printerService.getPrinterIp();
+        needsConfiguration = printerIp == null || printerIp.isEmpty;
+      } else if (connectionType == PrinterConnectionType.bluetooth) {
+        final btDeviceId = await printerService.getBluetoothDeviceId();
+        needsConfiguration = btDeviceId == null;
+      } else if (connectionType == PrinterConnectionType.usb) {
+        final usbDeviceId = await printerService.getUsbDeviceId();
+        needsConfiguration = usbDeviceId == null;
+      }
+
+      if (needsConfiguration) {
+        if (context.mounted) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Printer not configured'),
+              content: const Text(
+                'Set up your thermal printer from the POS screen (complete a test sale and use Print, or printer options there), then try again.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+        }
+        return;
+      }
+
+      Seller? seller;
+      if (sale.sellerId != null) {
+        seller = await _getSeller(sale.sellerId);
+      }
+      if (!context.mounted) return;
+
+      final lang = await printerService.getReceiptLanguage();
+      final success = await printerService.printReceipt(
+        sale,
+        sale.existingDueTotalAtSale,
+        seller,
+        languageCode: lang,
+      );
+
+      if (!context.mounted) return;
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Receipt printed successfully'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      } else {
+        var errorMessage =
+            'Failed to print receipt. Please check printer connection.';
+        if (kIsWeb &&
+            connectionType == PrinterConnectionType.bluetooth) {
+          errorMessage =
+              'Bluetooth printing from the browser often fails. Try WiFi printer or print from the mobile app.';
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } catch (e, st) {
+      debugPrint('Sales history print receipt: $e');
+      debugPrint('$st');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Print error: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -897,7 +1108,7 @@ class _SaleCard extends StatelessWidget {
                   fontSize: 13,
                 ),
               ),
-            if (sale.netProfit > 0 && !sale.isBorrowPayment)
+            if (showProfit && sale.netProfit > 0 && !sale.isBorrowPayment)
               Text(
                 'Profit: ${formatter.format(sale.netProfit)}',
                 style: TextStyle(
@@ -922,17 +1133,29 @@ class _SaleCard extends StatelessWidget {
           children: [
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert),
-              tooltip: 'View or download PDF',
+              tooltip: 'Receipt options',
               onSelected: (value) async {
+                if (value == 'print_receipt') {
+                  await _handlePrintReceipt(context);
+                }
                 if (value == 'view_pdf') await _handleViewPdf(context);
                 if (value == 'download_pdf') await _handleDownloadPdf(context);
               },
               itemBuilder: (context) => [
                 const PopupMenuItem(
+                  value: 'print_receipt',
+                  child: ListTile(
+                    leading: Icon(Icons.print),
+                    title: Text('Print receipt'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                const PopupMenuItem(
                   value: 'view_pdf',
                   child: ListTile(
                     leading: Icon(Icons.picture_as_pdf),
                     title: Text('View PDF'),
+                    contentPadding: EdgeInsets.zero,
                   ),
                 ),
                 const PopupMenuItem(
@@ -940,6 +1163,7 @@ class _SaleCard extends StatelessWidget {
                   child: ListTile(
                     leading: Icon(Icons.download),
                     title: Text('Download PDF'),
+                    contentPadding: EdgeInsets.zero,
                   ),
                 ),
               ],
@@ -1037,7 +1261,7 @@ class _SaleCard extends StatelessWidget {
                     ],
                   ),
                 ],
-                if (sale.netProfit > 0)
+                if (showProfit && sale.netProfit > 0)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1484,8 +1708,12 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
 // Wholesale Order Card Widget
 class _WholesaleOrderCard extends StatelessWidget {
   final SellerOrder order;
+  final bool showProfit;
 
-  const _WholesaleOrderCard({required this.order});
+  const _WholesaleOrderCard({
+    required this.order,
+    required this.showProfit,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1629,13 +1857,14 @@ class _WholesaleOrderCard extends StatelessWidget {
                         fontSize: 14,
                       ),
                     ),
-                    Text(
-                      'Profit: ${formatter.format(item.profit)}',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.green[700],
+                    if (showProfit)
+                      Text(
+                        'Profit: ${formatter.format(item.profit)}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.green[700],
+                        ),
                       ),
-                    ),
                   ],
                 ),
               );
@@ -1678,24 +1907,26 @@ class _WholesaleOrderCard extends StatelessWidget {
                     ),
                   ],
                 ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Total Profit:',
-                      style: TextStyle(fontSize: 14, color: Colors.blue),
-                    ),
-                    Text(
-                      formatter.format(order.profit),
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
+                if (showProfit) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Total Profit:',
+                        style: TextStyle(fontSize: 14, color: Colors.blue),
                       ),
-                    ),
-                  ],
-                ),
+                      Text(
+                        formatter.format(order.profit),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

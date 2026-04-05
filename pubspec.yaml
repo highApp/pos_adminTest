@@ -53,6 +53,13 @@ dependencies:
   
   # Local storage
   shared_preferences: ^2.2.2
+
+  # Offline-first local DB + sync
+  drift: ^2.26.0
+  drift_flutter: ^0.2.7
+  sqlite3_flutter_libs: ^0.5.28
+  connectivity_plus: ^6.1.4
+  internet_connection_checker: ^3.0.1
   
   # Printing
   printing: ^5.13.3
@@ -78,6 +85,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  drift_dev: ^2.26.0
+  build_runner: ^2.4.13
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

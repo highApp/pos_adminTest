@@ -12,6 +12,75 @@ import 'expense_service.dart';
 // Set to true only when debugging seller/borrow/profit logic (avoid log I/O in production)
 bool get _sellerServiceDebug => kDebugMode && false;
 
+/// Firestore may store dates as ISO [String] or [Timestamp].
+DateTime? _parseFirestoreDate(dynamic value) {
+  if (value == null) return null;
+  if (value is Timestamp) return value.toDate();
+  if (value is DateTime) return value;
+  if (value is String) return DateTime.tryParse(value);
+  return null;
+}
+
+DateTime _createdAtForSort(Map<String, dynamic> data) {
+  return _parseFirestoreDate(data['createdAt']) ??
+      DateTime.fromMillisecondsSinceEpoch(0);
+}
+
+DateTime? _saleCalendarDayFromHistoryData(Map<String, dynamic> data) {
+  final d = _parseFirestoreDate(data['saleDate']);
+  if (d == null) return null;
+  return DateTime(d.year, d.month, d.day);
+}
+
+/// Dashboard borrow card: remaining `duePayment` on [seller_history] rows whose `saleDate`
+/// (date-only) falls in the dashboard’s selected range (not all-time).
+class UnpaidSalesDashboardTotals {
+  const UnpaidSalesDashboardTotals({
+    required this.periodOutstandingFromHistory,
+    required this.allTimeOutstandingFromHistory,
+  });
+
+  /// Remaining due on bills dated inside the filter; updates when payments change `duePayment`.
+  final double periodOutstandingFromHistory;
+
+  /// Sum of every positive `duePayment` on [seller_history] (any `saleDate`); live from the same snapshot.
+  final double allTimeOutstandingFromHistory;
+
+  static const UnpaidSalesDashboardTotals empty = UnpaidSalesDashboardTotals(
+    periodOutstandingFromHistory: 0,
+    allTimeOutstandingFromHistory: 0,
+  );
+}
+
+/// Per-seller remaining due on [seller_history] rows in a `saleDate` range (date-only, inclusive).
+class TodaySellerDueSummary {
+  const TodaySellerDueSummary({
+    required this.sellerId,
+    required this.sellerName,
+    required this.remainingDue,
+  });
+
+  final String sellerId;
+  final String sellerName;
+  final double remainingDue;
+}
+
+/// Borrow + real seller profit for the dashboard date filter, computed in one pass (one Firestore round-trip set).
+class DashboardSellerProfitTotals {
+  const DashboardSellerProfitTotals({
+    required this.borrowProfit,
+    required this.realProfit,
+  });
+
+  final double borrowProfit;
+  final double realProfit;
+
+  static const DashboardSellerProfitTotals zero = DashboardSellerProfitTotals(
+    borrowProfit: 0,
+    realProfit: 0,
+  );
+}
+
 /// Merge two streams so that when either emits, the merged stream emits (used for listening to sales + seller_history).
 Stream<Object?> _mergeStreams(Stream<QuerySnapshot> a, Stream<QuerySnapshot> b) {
   final controller = StreamController<Object?>.broadcast(sync: true);
@@ -40,6 +109,8 @@ class SellerService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String _collection = 'sellers';
   static const _dashboardThrottle = Duration(seconds: 25);
+  /// Profit cards: cheaper reads than before, so allow slightly fresher updates.
+  static const _dashboardProfitThrottle = Duration(seconds: 10);
 
   // Get all sellers stream
   Stream<List<Seller>> getSellersStream() {
@@ -145,10 +216,12 @@ class SellerService {
     required double saleAmount,
     required double amountPaid,
     required DateTime saleDate,
+    /// POS "Description (Optional)" / notes — shown on seller history.
+    String? description,
   }) async {
     final duePayment = saleAmount > amountPaid ? saleAmount - amountPaid : 0.0;
-    
-    await _firestore.collection('seller_history').add({
+
+    final data = <String, dynamic>{
       'sellerId': sellerId,
       'saleId': saleId,
       'saleAmount': saleAmount,
@@ -156,7 +229,13 @@ class SellerService {
       'duePayment': duePayment,
       'saleDate': saleDate.toIso8601String(),
       'createdAt': DateTime.now().toIso8601String(),
-    });
+    };
+    final note = description?.trim();
+    if (note != null && note.isNotEmpty) {
+      data['description'] = note;
+    }
+
+    await _firestore.collection('seller_history').add(data);
   }
 
   /// Adds an opening-due record to seller_history (e.g. when importing sellers with existing due).
@@ -277,9 +356,7 @@ class SellerService {
           totalAmount: (data['saleAmount'] ?? 0).toDouble(),
           amountPaid: (data['amountPaid'] ?? 0).toDouble(),
           dueAmount: duePayment,
-          createdAt: data['createdAt'] != null
-              ? DateTime.parse(data['createdAt'])
-              : DateTime.now(),
+          createdAt: _parseFirestoreDate(data['createdAt']) ?? DateTime.now(),
           isPaid: false, // All fetched records have duePayment > 0, so they're unpaid
         );
       }).toList();
@@ -303,12 +380,8 @@ class SellerService {
       // Sort by createdAt descending manually
       final sortedDocs = snapshot.docs.toList()
         ..sort((a, b) {
-          final aDate = a.data()['createdAt'] != null
-              ? DateTime.parse(a.data()['createdAt'])
-              : DateTime(1970);
-          final bDate = b.data()['createdAt'] != null
-              ? DateTime.parse(b.data()['createdAt'])
-              : DateTime(1970);
+          final aDate = _createdAtForSort(a.data());
+          final bDate = _createdAtForSort(b.data());
           return bDate.compareTo(aDate);
         });
 
@@ -336,9 +409,7 @@ class SellerService {
             totalAmount: saleAmount,
             amountPaid: amountPaid,
             dueAmount: duePayment,
-            createdAt: data['createdAt'] != null
-                ? DateTime.parse(data['createdAt'])
-                : DateTime.now(),
+            createdAt: _parseFirestoreDate(data['createdAt']) ?? DateTime.now(),
             isPaid: false,
           ));
         }
@@ -354,107 +425,98 @@ class SellerService {
     }
   }
 
-  // Update seller_history due payments when payment is applied
-  // Returns remaining payment amount (which should be stored as credit if > 0)
-  Future<double> applyPaymentToDuePayments(String sellerId, double paymentAmount) async {
+  /// Reduces [`duePayment`] on open [`seller_history`] rows for this seller.
+  ///
+  /// **Allocation:** rows whose bill [`saleDate`] is on the same calendar day as
+  /// [prioritizeBillsWithSaleDateSameDayAs] are paid first (FIFO by `createdAt` within that group),
+  /// then any other open rows by global FIFO. Pass the **payment / checkout** date so
+  /// “Unpaid sales · Today” and the seller list match user expectations when paying same-day bills.
+  /// Omit [prioritizeBillsWithSaleDateSameDayAs] for strict global FIFO (oldest `createdAt` first).
+  ///
+  /// **Both** of these flows call this before recording the payment on the sale / history:
+  /// - POS checkout when cash is allocated to existing dues (`cashForExistingDues`).
+  /// - Seller history → **Add manual due payment**.
+  /// Offline POS replay ([`SellerPosCheckoutReplay`]) uses the same logic.
+  ///
+  /// Dashboard **Unpaid sales** / **Total borrow** read sums of `duePayment` from `seller_history`,
+  /// so a successful call here is what makes those numbers go down.
+  ///
+  /// Returns cash **not** applied to any bill (becomes seller credit or change upstream).
+  Future<double> applyPaymentToDuePayments(
+    String sellerId,
+    double paymentAmount, {
+    DateTime? prioritizeBillsWithSaleDateSameDayAs,
+  }) async {
     if (_sellerServiceDebug) debugPrint('=== APPLYING PAYMENT TO DUE PAYMENTS ===');
     if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
     if (_sellerServiceDebug) debugPrint('Payment Amount: $paymentAmount');
-    
-    try {
-      // Try to fetch with composite query
-      final snapshot = await _firestore
-          .collection('seller_history')
-          .where('sellerId', isEqualTo: sellerId)
-          .where('duePayment', isGreaterThan: 0)
-          .orderBy('createdAt') // Oldest first (ascending by default)
-          .get();
-      
-      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} records with due payments');
-      
-      double remainingPayment = paymentAmount;
-      
-      // Apply payment to oldest due payments first
-      for (var doc in snapshot.docs) {
-        if (remainingPayment <= 0) break;
-        
-        final data = doc.data();
-        final currentDue = (data['duePayment'] ?? 0).toDouble();
-        
-        if (currentDue > 0) {
-          final paymentApplied = currentDue < remainingPayment ? currentDue : remainingPayment;
-          final newDue = currentDue - paymentApplied;
-          remainingPayment -= paymentApplied;
-          
-          if (_sellerServiceDebug) debugPrint('Record ${doc.id}:');
-          if (_sellerServiceDebug) debugPrint('  - Current Due: $currentDue');
-          if (_sellerServiceDebug) debugPrint('  - Payment Applied: $paymentApplied');
-          if (_sellerServiceDebug) debugPrint('  - New Due: $newDue');
-          
-          // Update the seller_history record
-          await _firestore.collection('seller_history').doc(doc.id).update({
-            'duePayment': newDue,
-            'amountPaid': (data['amountPaid'] ?? 0).toDouble() + paymentApplied,
-          });
-        }
-      }
-      
-      if (_sellerServiceDebug) debugPrint('Remaining payment after applying to dues: $remainingPayment');
-      if (_sellerServiceDebug) debugPrint('=== END APPLYING PAYMENT ===');
-      
-      return remainingPayment; // Return remaining payment amount (should be stored as credit if > 0)
-    } catch (e) {
-      // Fallback: Fetch all and sort manually
-      if (_sellerServiceDebug) debugPrint('Composite index may be needed. Using fallback: $e');
-      final snapshot = await _firestore
-          .collection('seller_history')
-          .where('sellerId', isEqualTo: sellerId)
-          .get();
-      
-      // Sort by createdAt ascending (oldest first)
-      final sortedDocs = snapshot.docs.toList()
-        ..sort((a, b) {
-          final aDate = a.data()['createdAt'] != null
-              ? DateTime.parse(a.data()['createdAt'])
-              : DateTime(1970);
-          final bDate = b.data()['createdAt'] != null
-              ? DateTime.parse(b.data()['createdAt'])
-              : DateTime(1970);
-          return aDate.compareTo(bDate);
-        });
-      
-      double remainingPayment = paymentAmount;
-      
-      // Apply payment to oldest due payments first
-      for (var doc in sortedDocs) {
-        if (remainingPayment <= 0) break;
-        
-        final data = doc.data();
-        final currentDue = (data['duePayment'] ?? 0).toDouble();
-        
-        if (currentDue > 0) {
-          final paymentApplied = currentDue < remainingPayment ? currentDue : remainingPayment;
-          final newDue = currentDue - paymentApplied;
-          remainingPayment -= paymentApplied;
-          
-          if (_sellerServiceDebug) debugPrint('Record ${doc.id}:');
-          if (_sellerServiceDebug) debugPrint('  - Current Due: $currentDue');
-          if (_sellerServiceDebug) debugPrint('  - Payment Applied: $paymentApplied');
-          if (_sellerServiceDebug) debugPrint('  - New Due: $newDue');
-          
-          // Update the seller_history record
-          await _firestore.collection('seller_history').doc(doc.id).update({
-            'duePayment': newDue,
-            'amountPaid': (data['amountPaid'] ?? 0).toDouble() + paymentApplied,
-          });
-        }
-      }
-      
-      if (_sellerServiceDebug) debugPrint('Remaining payment after applying to dues: $remainingPayment');
-      if (_sellerServiceDebug) debugPrint('=== END APPLYING PAYMENT (FALLBACK) ===');
-      
-      return remainingPayment;
+    if (paymentAmount <= 0) return paymentAmount;
+
+    final snapshot = await _firestore
+        .collection('seller_history')
+        .where('sellerId', isEqualTo: sellerId)
+        .get();
+
+    DateTime? priorityDay;
+    final p = prioritizeBillsWithSaleDateSameDayAs;
+    if (p != null) {
+      priorityDay = DateTime(p.year, p.month, p.day);
     }
+
+    final candidates = snapshot.docs
+        .where((doc) => (doc.data()['duePayment'] ?? 0).toDouble() > 0)
+        .toList();
+
+    candidates.sort((a, b) {
+      final da = a.data();
+      final db = b.data();
+      if (priorityDay != null) {
+        final dayA = _saleCalendarDayFromHistoryData(da);
+        final dayB = _saleCalendarDayFromHistoryData(db);
+        final priA = dayA == priorityDay;
+        final priB = dayB == priorityDay;
+        if (priA != priB) {
+          return priA ? -1 : 1;
+        }
+      }
+      return _createdAtForSort(da).compareTo(_createdAtForSort(db));
+    });
+
+    if (_sellerServiceDebug) {
+      debugPrint('Applying to ${candidates.length} open due rows (priority day: $priorityDay)');
+    }
+
+    double remainingPayment = paymentAmount;
+
+    for (final doc in candidates) {
+      if (remainingPayment <= 0) break;
+
+      final data = doc.data();
+      final currentDue = (data['duePayment'] ?? 0).toDouble();
+      if (currentDue <= 0) continue;
+
+      final paymentApplied =
+          currentDue < remainingPayment ? currentDue : remainingPayment;
+      final newDue = currentDue - paymentApplied;
+      remainingPayment -= paymentApplied;
+
+      if (_sellerServiceDebug) debugPrint('Record ${doc.id}:');
+      if (_sellerServiceDebug) debugPrint('  - Current Due: $currentDue');
+      if (_sellerServiceDebug) debugPrint('  - Payment Applied: $paymentApplied');
+      if (_sellerServiceDebug) debugPrint('  - New Due: $newDue');
+
+      await _firestore.collection('seller_history').doc(doc.id).update({
+        'duePayment': newDue,
+        'amountPaid': (data['amountPaid'] ?? 0).toDouble() + paymentApplied,
+      });
+    }
+
+    if (_sellerServiceDebug) {
+      debugPrint('Remaining payment after applying to dues: $remainingPayment');
+      debugPrint('=== END APPLYING PAYMENT ===');
+    }
+
+    return remainingPayment;
   }
 
   // Add credit balance to seller (stored in sellers collection)
@@ -974,7 +1036,7 @@ class SellerService {
         final data = doc.data();
         final duePayment = (data['duePayment'] ?? 0).toDouble();
         final ref = data['referenceNumber'] as String?;
-        final createdAt = data['createdAt'] != null ? DateTime.tryParse(data['createdAt'] as String) : null;
+        final createdAt = _parseFirestoreDate(data['createdAt']);
 
         if (duePayment > 0) totalDue += duePayment;
 
@@ -1036,14 +1098,8 @@ class SellerService {
       final historySnapshot = await _firestore.collection('seller_history').get();
       for (var doc in historySnapshot.docs) {
         final data = doc.data();
-        final saleDateStr = data['saleDate'];
-        if (saleDateStr == null) continue;
-        DateTime? saleDate;
-        try {
-          saleDate = DateTime.parse(saleDateStr);
-        } catch (_) {
-          continue;
-        }
+        final saleDate = _parseFirestoreDate(data['saleDate']);
+        if (saleDate == null) continue;
         if (saleDate.isBefore(start) || saleDate.isAfter(end)) continue;
 
         final recordType = data['recordType'] as String?;
@@ -1130,23 +1186,17 @@ class SellerService {
       double totalUnpaid = 0.0;
       for (var doc in snapshot.docs) {
         final data = doc.data();
-        try {
-          final saleDateStr = data['saleDate'];
-          if (saleDateStr != null) {
-            final saleDate = DateTime.parse(saleDateStr);
-            final duePayment = (data['duePayment'] ?? 0).toDouble();
-            
-            // Check if sale date is within range and has unpaid amount
-            if (duePayment > 0 && 
-                saleDate.isAfter(startDate.subtract(const Duration(seconds: 1))) &&
-                saleDate.isBefore(endDate.add(const Duration(seconds: 1)))) {
-              totalUnpaid += duePayment;
-              if (_sellerServiceDebug) debugPrint('Record ${doc.id}: duePayment = $duePayment (Sale Date: $saleDate, Total so far: $totalUnpaid)');
-            }
+        final saleDate = _parseFirestoreDate(data['saleDate']);
+        if (saleDate == null) continue;
+        final duePayment = (data['duePayment'] ?? 0).toDouble();
+        if (duePayment > 0 &&
+            saleDate.isAfter(startDate.subtract(const Duration(seconds: 1))) &&
+            saleDate.isBefore(endDate.add(const Duration(seconds: 1)))) {
+          totalUnpaid += duePayment;
+          if (_sellerServiceDebug) {
+            debugPrint(
+                'Record ${doc.id}: duePayment = $duePayment (Sale Date: $saleDate, Total so far: $totalUnpaid)');
           }
-        } catch (parseError) {
-          if (_sellerServiceDebug) debugPrint('Error parsing seller_history record ${doc.id}: $parseError');
-          continue;
         }
       }
 
@@ -1190,23 +1240,272 @@ class SellerService {
     }
   }
 
-  // Get total unpaid sales stream (all unpaid sales regardless of date) - throttled for performance
-  Stream<double> getTotalUnpaidSalesStream() {
-    final source = _firestore
-        .collection('seller_history')
-        .snapshots()
-        .map((snapshot) {
-      double totalUnpaid = 0.0;
+  /// [seller_history] listener: unpaid on bills whose `saleDate` (date-only) lies in the range.
+  Stream<UnpaidSalesDashboardTotals> getUnpaidSalesDashboardTotalsStream(
+    DateTime rangeStart,
+    DateTime rangeEnd,
+  ) {
+    final startDay =
+        DateTime(rangeStart.year, rangeStart.month, rangeStart.day);
+    final endDay = DateTime(rangeEnd.year, rangeEnd.month, rangeEnd.day);
+    final source =
+        _firestore.collection('seller_history').snapshots().map((snapshot) {
+      double periodOutstanding = 0.0;
+      double allTimeOutstanding = 0.0;
       for (var doc in snapshot.docs) {
         final data = doc.data();
         final duePayment = (data['duePayment'] ?? 0).toDouble();
-        if (duePayment > 0) {
-          totalUnpaid += duePayment;
+        if (duePayment <= 0) continue;
+        allTimeOutstanding += duePayment;
+        final parsed = _parseFirestoreDate(data['saleDate']);
+        if (parsed == null) continue;
+        final saleDay = DateTime(parsed.year, parsed.month, parsed.day);
+        if (saleDay.isBefore(startDay) || saleDay.isAfter(endDay)) {
+          continue;
+        }
+        periodOutstanding += duePayment;
+      }
+      return UnpaidSalesDashboardTotals(
+        periodOutstandingFromHistory: periodOutstanding,
+        allTimeOutstandingFromHistory: allTimeOutstanding,
+      );
+    });
+    // Do not throttle: _throttleStream drops events within the window, so reduced `duePayment`
+    // after a payment could be missed and "Total borrow" / unpaid would stay wrong until
+    // another unrelated write (or a long wait). This map is cheap (one snapshot iteration).
+    return source;
+  }
+
+  /// Sellers with positive `duePayment` on bills whose `saleDate` is in the range (inclusive, date-only).
+  Future<List<TodaySellerDueSummary>> getOutstandingDueBySellerForDateRange(
+    DateTime rangeStart,
+    DateTime rangeEnd,
+  ) async {
+    try {
+      final snapshot = await _firestore.collection('seller_history').get();
+      final startDay =
+          DateTime(rangeStart.year, rangeStart.month, rangeStart.day);
+      final endDay = DateTime(rangeEnd.year, rangeEnd.month, rangeEnd.day);
+      final bySeller = <String, double>{};
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final due = (data['duePayment'] ?? 0).toDouble();
+        if (due <= 0) continue;
+        final parsed = _parseFirestoreDate(data['saleDate']);
+        if (parsed == null) continue;
+        final saleDay = DateTime(parsed.year, parsed.month, parsed.day);
+        if (saleDay.isBefore(startDay) || saleDay.isAfter(endDay)) {
+          continue;
+        }
+        final sellerId = data['sellerId'] as String?;
+        if (sellerId == null || sellerId.isEmpty) continue;
+        bySeller[sellerId] = (bySeller[sellerId] ?? 0) + due;
+      }
+      final sortedIds = bySeller.keys.toList()
+        ..sort((a, b) => bySeller[b]!.compareTo(bySeller[a]!));
+      final out = <TodaySellerDueSummary>[];
+      for (final id in sortedIds) {
+        final seller = await getSellerById(id);
+        out.add(TodaySellerDueSummary(
+          sellerId: id,
+          sellerName: seller?.name ?? 'Unknown seller',
+          remainingDue: bySeller[id]!,
+        ));
+      }
+      return out;
+    } catch (e) {
+      if (_sellerServiceDebug) {
+        debugPrint('getOutstandingDueBySellerForDateRange: $e');
+      }
+      return [];
+    }
+  }
+
+  static const int _whereInChunkSize = 30;
+
+  Future<void> _addSalesToMapByIds(
+    Iterable<String> saleIds,
+    Map<String, Sale> salesMap,
+  ) async {
+    final ids = saleIds.where((id) => id.isNotEmpty).toList();
+    for (var i = 0; i < ids.length; i += _whereInChunkSize) {
+      final chunk = ids.sublist(
+        i,
+        i + _whereInChunkSize > ids.length ? ids.length : i + _whereInChunkSize,
+      );
+      final snap = await _firestore
+          .collection('sales')
+          .where(FieldPath.documentId, whereIn: chunk)
+          .get();
+      for (final doc in snap.docs) {
+        try {
+          final sale = Sale.fromMap(doc.data());
+          if (!sale.isBorrowPayment) {
+            salesMap[sale.id] = sale;
+          }
+        } catch (e) {
+          if (_sellerServiceDebug) {
+            debugPrint('Error parsing sale ${doc.id}: $e');
+          }
         }
       }
-      return totalUnpaid;
-    });
-    return _throttleStream(source, _dashboardThrottle);
+    }
+  }
+
+  /// Same date semantics as [getBorrowProfitStreamByDateRange] / [getRealProfitFromPaidStreamByDateRange]
+  /// but loads only [seller_history] in range + referenced sales + [sales] in `createdAt` window for walk-ins.
+  Future<DashboardSellerProfitTotals> _computeDashboardSellerProfitsForRange(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final startPad = startDate.subtract(const Duration(seconds: 1));
+    final endPad = endDate.add(const Duration(seconds: 1));
+    final loIso = startPad.toIso8601String();
+    final hiIso = endPad.toIso8601String();
+
+    final historySnapshot = await _firestore
+        .collection('seller_history')
+        .where('saleDate', isGreaterThan: loIso)
+        .where('saleDate', isLessThan: hiIso)
+        .get();
+
+    final saleIdsFromHistory = <String>{};
+    for (final doc in historySnapshot.docs) {
+      final data = doc.data();
+      final saleId = data['saleId'];
+      if (saleId is String && saleId.isNotEmpty) {
+        saleIdsFromHistory.add(saleId);
+      }
+    }
+
+    final salesMap = <String, Sale>{};
+    await _addSalesToMapByIds(saleIdsFromHistory, salesMap);
+
+    final rangeSalesSnap = await _firestore
+        .collection('sales')
+        .where('createdAt', isGreaterThan: loIso)
+        .where('createdAt', isLessThan: hiIso)
+        .get();
+
+    for (final doc in rangeSalesSnap.docs) {
+      try {
+        final sale = Sale.fromMap(doc.data());
+        if (!sale.isBorrowPayment) {
+          salesMap[sale.id] = sale;
+        }
+      } catch (e) {
+        if (_sellerServiceDebug) {
+          debugPrint('Error parsing sale ${doc.id}: $e');
+        }
+      }
+    }
+
+    double totalBorrowProfit = 0.0;
+    for (final doc in historySnapshot.docs) {
+      final data = doc.data();
+      final duePayment = (data['duePayment'] ?? 0).toDouble();
+      final saleId = data['saleId'] ?? '';
+      final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+
+      if (duePayment > 0 &&
+          saleId.isNotEmpty &&
+          salesMap.containsKey(saleId)) {
+        final sale = salesMap[saleId]!;
+        if (sale.profit > 0 && saleAmount > 0) {
+          final unpaidRatio = duePayment / saleAmount;
+          final netProfit = sale.netProfit;
+          totalBorrowProfit += netProfit * unpaidRatio;
+          if (_sellerServiceDebug) {
+            debugPrint(
+              'Borrow Profit (Filtered): Sale $saleId, Due: $duePayment, SaleAmount: $saleAmount, Ratio: $unpaidRatio',
+            );
+          }
+        }
+      }
+    }
+
+    double totalRealProfit = 0.0;
+    final salePayments = <String, double>{};
+    final saleAmounts = <String, double>{};
+    final salesWithSellerHistory = <String>{};
+
+    for (final doc in historySnapshot.docs) {
+      final data = doc.data();
+      final saleId = data['saleId'] ?? '';
+      final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+      final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+
+      if (saleId.isNotEmpty && salesMap.containsKey(saleId)) {
+        salePayments[saleId] = (salePayments[saleId] ?? 0.0) + amountPaid;
+        saleAmounts[saleId] = saleAmount;
+        salesWithSellerHistory.add(saleId);
+      }
+    }
+
+    for (final entry in salePayments.entries) {
+      final saleId = entry.key;
+      final totalPaid = entry.value;
+      final saleAmount = saleAmounts[saleId] ?? 0.0;
+
+      if (totalPaid > 0 && saleAmount > 0 && salesMap.containsKey(saleId)) {
+        final sale = salesMap[saleId]!;
+        if (sale.profit > 0) {
+          final paidRatio = (totalPaid / saleAmount).clamp(0.0, 1.0);
+          final netProfit = sale.netProfit;
+          totalRealProfit += netProfit * paidRatio;
+          if (_sellerServiceDebug) {
+            debugPrint(
+              'Real Profit (Filtered): Sale $saleId, Total Paid: $totalPaid, SaleAmount: $saleAmount, Ratio: $paidRatio',
+            );
+          }
+        }
+      }
+    }
+
+    for (final sale in salesMap.values) {
+      if (salesWithSellerHistory.contains(sale.id)) {
+        continue;
+      }
+      if (!sale.createdAt.isAfter(startPad) ||
+          !sale.createdAt.isBefore(endPad)) {
+        continue;
+      }
+      if (sale.sellerId == null || sale.sellerId!.isEmpty) {
+        final netTotal = sale.netTotal;
+        final amountReceived = sale.amountPaid - sale.change;
+        if (amountReceived >= netTotal && sale.profit > 0) {
+          totalRealProfit += sale.netProfit;
+          if (_sellerServiceDebug) {
+            debugPrint(
+              'Real Profit (No Seller, Filtered): Sale ${sale.id}, Profit: ${sale.netProfit}',
+            );
+          }
+        }
+      }
+    }
+
+    if (_sellerServiceDebug) {
+      debugPrint(
+        'DashboardSellerProfitTotals: borrow=$totalBorrowProfit real=$totalRealProfit',
+      );
+    }
+
+    return DashboardSellerProfitTotals(
+      borrowProfit: totalBorrowProfit,
+      realProfit: totalRealProfit,
+    );
+  }
+
+  /// Single throttled stream for both profit metrics (one shared recompute per tick).
+  Stream<DashboardSellerProfitTotals> getDashboardSellerProfitTotalsStream(
+    DateTime startDate,
+    DateTime endDate,
+  ) {
+    final source = _mergeStreams(
+      _firestore.collection('sales').snapshots(),
+      _firestore.collection('seller_history').snapshots(),
+    ).asyncMap((_) => _computeDashboardSellerProfitsForRange(startDate, endDate));
+    return _throttleStream(source, _dashboardProfitThrottle);
   }
 
   // Get total borrow profit stream (profit from unpaid portions of sales)
@@ -1365,185 +1664,24 @@ class SellerService {
   // Get real profit from paid portions by date range (throttled for dashboard performance)
   // Listens to BOTH sales and seller_history so that when a return is applied (sales doc updated),
   // profit recalculates and dashboard shows reduced profit (netProfit).
-  Stream<double> getRealProfitFromPaidStreamByDateRange(DateTime startDate, DateTime endDate) {
-    final source = _mergeStreams(
-      _firestore.collection('sales').snapshots(),
-      _firestore.collection('seller_history').snapshots(),
-    ).asyncMap((_) async {
-      double totalRealProfit = 0.0;
-      
-      // Fetch latest sales (including updated returnedAmount so netProfit is correct after returns)
-      final salesSnapshot = await _firestore.collection('sales').get();
-      final historySnapshot = await _firestore.collection('seller_history').get();
-      
-      final salesMap = <String, Sale>{};
-      for (var doc in salesSnapshot.docs) {
-        try {
-          final sale = Sale.fromMap(doc.data());
-          // Only include actual sales, not borrow payments
-          if (!sale.isBorrowPayment) {
-            salesMap[sale.id] = sale;
-          }
-        } catch (e) {
-          if (_sellerServiceDebug) debugPrint('Error parsing sale ${doc.id}: $e');
-        }
-      }
-      
-      // Group by saleId to sum all payments for each sale (filtered by date)
-      final salePayments = <String, double>{};
-      final saleAmounts = <String, double>{};
-      final salesWithSellerHistory = <String>{};
-      
-      for (var doc in historySnapshot.docs) {
-        final data = doc.data();
-        final saleId = data['saleId'] ?? '';
-        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
-        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
-        final saleDateStr = data['saleDate'];
-        
-        // Filter by date range
-        if (saleDateStr != null) {
-          try {
-            final saleDate = DateTime.parse(saleDateStr);
-            if (!saleDate.isAfter(startDate.subtract(const Duration(seconds: 1))) ||
-                !saleDate.isBefore(endDate.add(const Duration(seconds: 1)))) {
-              continue; // Skip if outside date range
-            }
-          } catch (e) {
-            if (_sellerServiceDebug) debugPrint('Error parsing saleDate in seller_history ${doc.id}: $e');
-            continue;
-          }
-        } else {
-          continue; // Skip if no saleDate
-        }
-        
-        if (saleId.isNotEmpty && salesMap.containsKey(saleId)) {
-          // Sum all payments for this sale (including payments made to cover dues)
-          salePayments[saleId] = (salePayments[saleId] ?? 0.0) + amountPaid;
-          // Use the latest saleAmount (may have been reduced by returns)
-          saleAmounts[saleId] = saleAmount;
-          // Track which sales have seller history entries
-          salesWithSellerHistory.add(saleId);
-        }
-      }
-      
-      // Calculate profit from total paid amounts (sales with sellers)
-      for (var entry in salePayments.entries) {
-        final saleId = entry.key;
-        final totalPaid = entry.value;
-        final saleAmount = saleAmounts[saleId] ?? 0.0;
-        
-        if (totalPaid > 0 && saleAmount > 0 && salesMap.containsKey(saleId)) {
-          final sale = salesMap[saleId]!;
-          if (sale.profit > 0) {
-            // Calculate profit proportion for total paid amount. Cap ratio at 1.0: after a return,
-            // seller_history.saleAmount is reduced but amountPaid can stay at original total.
-            final paidRatio = (totalPaid / saleAmount).clamp(0.0, 1.0);
-            final netProfit = sale.netProfit; // Profit after returns
-            final realProfit = netProfit * paidRatio;
-            totalRealProfit += realProfit;
-            if (_sellerServiceDebug) debugPrint('Real Profit (Filtered): Sale $saleId, Total Paid: $totalPaid, SaleAmount: $saleAmount, Ratio: $paidRatio, Profit: $realProfit');
-          }
-        }
-      }
-      
-      // Also calculate profit from sales without sellers that are fully paid (within date range)
-      for (var sale in salesMap.values) {
-        // Skip if this sale already has seller history (already counted above)
-        if (salesWithSellerHistory.contains(sale.id)) {
-          continue;
-        }
-        
-        // Filter by date range
-        if (!sale.createdAt.isAfter(startDate.subtract(const Duration(seconds: 1))) ||
-            !sale.createdAt.isBefore(endDate.add(const Duration(seconds: 1)))) {
-          continue; // Skip if outside date range
-        }
-        
-        // Only include sales without sellers that are fully paid
-        if (sale.sellerId == null || sale.sellerId!.isEmpty) {
-          final netTotal = sale.netTotal; // Total after returns
-          final amountReceived = sale.amountPaid - sale.change; // Amount we actually received (excluding change returned)
-          if (amountReceived >= netTotal && sale.profit > 0) {
-            // Sale is fully paid, add full net profit
-            final netProfit = sale.netProfit; // Profit after returns
-            totalRealProfit += netProfit;
-            if (_sellerServiceDebug) debugPrint('Real Profit (No Seller, Filtered): Sale ${sale.id}, Amount Paid: ${sale.amountPaid}, Change: ${sale.change}, Amount Received: $amountReceived, Net Total: $netTotal, Profit: $netProfit');
-          }
-        }
-      }
-      
-      if (_sellerServiceDebug) debugPrint('Total Real Profit from Paid (Filtered): $totalRealProfit');
-      return totalRealProfit;
-    });
-    return _throttleStream(source, _dashboardThrottle);
+  /// Prefer [getDashboardSellerProfitTotalsStream] on the dashboard to avoid duplicate listeners.
+  Stream<double> getRealProfitFromPaidStreamByDateRange(
+    DateTime startDate,
+    DateTime endDate,
+  ) {
+    return getDashboardSellerProfitTotalsStream(startDate, endDate)
+        .map((t) => t.realProfit);
   }
 
   // Get borrow profit by date range (throttled for dashboard performance)
   // Listens to BOTH sales and seller_history so returns reduce borrow profit (netProfit) and dashboard updates.
-  Stream<double> getBorrowProfitStreamByDateRange(DateTime startDate, DateTime endDate) {
-    final source = _mergeStreams(
-      _firestore.collection('sales').snapshots(),
-      _firestore.collection('seller_history').snapshots(),
-    ).asyncMap((_) async {
-      double totalBorrowProfit = 0.0;
-      
-      final salesSnapshot = await _firestore.collection('sales').get();
-      final historySnapshot = await _firestore.collection('seller_history').get();
-      
-      final salesMap = <String, Sale>{};
-      for (var doc in salesSnapshot.docs) {
-        try {
-          final sale = Sale.fromMap(doc.data());
-          if (!sale.isBorrowPayment) {
-            salesMap[sale.id] = sale;
-          }
-        } catch (e) {
-          if (_sellerServiceDebug) debugPrint('Error parsing sale ${doc.id}: $e');
-        }
-      }
-      
-      for (var doc in historySnapshot.docs) {
-        final data = doc.data();
-        final duePayment = (data['duePayment'] ?? 0).toDouble();
-        final saleId = data['saleId'] ?? '';
-        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
-        final saleDateStr = data['saleDate'];
-        
-        // Filter by date range
-        if (saleDateStr != null) {
-          try {
-            final saleDate = DateTime.parse(saleDateStr);
-            if (!saleDate.isAfter(startDate.subtract(const Duration(seconds: 1))) ||
-                !saleDate.isBefore(endDate.add(const Duration(seconds: 1)))) {
-              continue; // Skip if outside date range
-            }
-          } catch (e) {
-            if (_sellerServiceDebug) debugPrint('Error parsing saleDate in seller_history ${doc.id}: $e');
-            continue;
-          }
-        } else {
-          continue; // Skip if no saleDate
-        }
-        
-        if (duePayment > 0 && saleId.isNotEmpty && salesMap.containsKey(saleId)) {
-          final sale = salesMap[saleId]!;
-          if (sale.profit > 0 && saleAmount > 0) {
-            // Calculate profit proportion for unpaid portion
-            // Use current saleAmount (may have been reduced by returns)
-            final unpaidRatio = duePayment / saleAmount;
-            final netProfit = sale.netProfit; // Profit after returns
-            final borrowProfit = netProfit * unpaidRatio;
-            totalBorrowProfit += borrowProfit;
-            if (_sellerServiceDebug) debugPrint('Borrow Profit (Filtered): Sale $saleId, Due: $duePayment, SaleAmount: $saleAmount, Ratio: $unpaidRatio, Profit: $borrowProfit');
-          }
-        }
-      }
-      
-      if (_sellerServiceDebug) debugPrint('Total Borrow Profit (Filtered): $totalBorrowProfit');
-      return totalBorrowProfit;
-    });
-    return _throttleStream(source, _dashboardThrottle);
+  /// Prefer [getDashboardSellerProfitTotalsStream] on the dashboard to avoid duplicate listeners.
+  Stream<double> getBorrowProfitStreamByDateRange(
+    DateTime startDate,
+    DateTime endDate,
+  ) {
+    return getDashboardSellerProfitTotalsStream(startDate, endDate)
+        .map((t) => t.borrowProfit);
   }
 }
 

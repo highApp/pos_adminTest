@@ -7,6 +7,7 @@ import 'providers/seller_cart_provider.dart';
 import 'screens/seller_login_screen.dart';
 import 'screens/seller_home_screen.dart';
 import 'services/seller_auth_service.dart';
+import 'offline/offline_lifecycle_widget.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,23 +39,25 @@ class SellerApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
       create: (_) => SellerCartProvider(),
-      child: MaterialApp(
-        title: 'ARS Traders - Seller',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.green,
-            brightness: Brightness.light,
-          ),
-          useMaterial3: true,
-          cardTheme: CardThemeData(
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+      child: OfflineLifecycleWidget(
+        child: MaterialApp(
+          title: 'ARS Traders - Seller',
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: Colors.green,
+              brightness: Brightness.light,
+            ),
+            useMaterial3: true,
+            cardTheme: CardThemeData(
+              elevation: 2,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
             ),
           ),
+          home: const SellerAuthWrapper(),
         ),
-        home: const SellerAuthWrapper(),
       ),
     );
   }

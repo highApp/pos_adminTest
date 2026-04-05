@@ -19,6 +19,7 @@ import '../services/reset_data_service.dart';
 import '../services/balance_service.dart';
 import '../models/balance_entry.dart';
 import 'seller_history_screen.dart';
+import '../widgets/dashboard_sync_strip.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -38,15 +39,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final resetDataService = ResetDataService();
   final balanceService = BalanceService();
   late final Future<DateTime?> _resetDateFuture;
+  late Future<_AllTimeBorrowTotals> _allTimeBorrowTotalsFuture;
   int? _selectedDays = 0; // -1 = All, 0 = Today, 7/30/90 = Last N Days, null = custom date range
   DateTime? _customStartDate;
   DateTime? _customEndDate;
   bool _showProfit = false; // Hide profit by default
 
+  /// Borrow-book leg only. All-time **seller** due comes from the live `seller_history` stream
+  /// (`UnpaidSalesDashboardTotals.allTimeOutstandingFromHistory`) so it drops immediately after payments.
+  Future<_AllTimeBorrowTotals> _loadAllTimeBorrowTotals() async {
+    final book = await borrowService.getTotalOutstandingBorrowedAllTime();
+    return _AllTimeBorrowTotals(
+      borrowBookBorrowedOutstanding: book,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     _resetDateFuture = resetDataService.getFinancialResetDate();
+    _allTimeBorrowTotalsFuture = _loadAllTimeBorrowTotals();
   }
 
   void _toggleProfitVisibility() {
@@ -294,6 +306,150 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  void _showTodayStillDueSellersDialog(
+    BuildContext context,
+    DateTime rangeStart,
+    DateTime rangeEnd,
+  ) {
+    final fmt = NumberFormat.currency(symbol: 'Rs. ');
+    final rangeTitle = _getDateRangeLabel();
+    // Single future so rebuilds don’t restart the request; avoids blank / stuck UI.
+    final loadFuture = sellerService.getOutstandingDueBySellerForDateRange(
+      rangeStart,
+      rangeEnd,
+    );
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final theme = Theme.of(dialogContext);
+        final screenH = MediaQuery.sizeOf(dialogContext).height;
+        return AlertDialog(
+          icon: Icon(Icons.groups_outlined, color: Colors.amber.shade800),
+          iconColor: Colors.amber.shade800,
+          title: Text(
+            'Sellers — $rangeTitle',
+            style: theme.textTheme.titleLarge,
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: FutureBuilder<List<TodaySellerDueSummary>>(
+              future: loadFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(
+                          color: Colors.amber.shade700,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Loading sellers…',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                if (snapshot.hasError) {
+                  return SelectableText(
+                    'Could not load list.\n${snapshot.error}',
+                    style: TextStyle(color: Colors.red.shade800, fontSize: 14),
+                  );
+                }
+                final rows = snapshot.data ?? [];
+                if (rows.isEmpty) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'No remaining due on seller bills in this period ($rangeTitle).',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: Colors.grey.shade800,
+                      ),
+                    ),
+                  );
+                }
+                return SizedBox(
+                  height: (screenH * 0.45).clamp(120.0, 420.0),
+                  child: ListView.separated(
+                    itemCount: rows.length,
+                    separatorBuilder: (_, __) =>
+                        Divider(height: 1, color: Colors.grey.shade300),
+                    itemBuilder: (context, i) {
+                      final r = rows[i];
+                      final initial = r.sellerName.isNotEmpty
+                          ? r.sellerName[0].toUpperCase()
+                          : '?';
+                      return ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          vertical: 2,
+                          horizontal: 0,
+                        ),
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.amber.shade100,
+                          child: Text(
+                            initial,
+                            style: TextStyle(color: Colors.amber.shade900),
+                          ),
+                        ),
+                        title: Text(
+                          r.sellerName,
+                          style: theme.textTheme.bodyLarge,
+                        ),
+                        subtitle: Text(
+                          r.sellerId,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                        trailing: Text(
+                          fmt.format(r.remainingDue),
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        onTap: () async {
+                          Navigator.pop(dialogContext);
+                          final s = await sellerService.getSellerById(r.sellerId);
+                          if (!context.mounted) return;
+                          if (s == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Seller not found')),
+                            );
+                            return;
+                          }
+                          await Navigator.push<void>(
+                            context,
+                            MaterialPageRoute<void>(
+                              builder: (_) => SellerHistoryScreen(seller: s),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _showCustomDatePicker() async {
     final DateTimeRange? picked = await showDateRangePicker(
       context: context,
@@ -383,7 +539,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     List<Borrow> borrows,
     List<SellerOrder> sellerOrders,
     List<BalanceEntry> balanceEntries,
-    double totalUnpaidSales,
+    double periodOutstandingFromSellerHistory,
     double borrowProfit,
     double realProfitFromPaid,
     double periodCreditReductions, // Credit reductions for the selected date range (Today, Last N Days, or Custom)
@@ -453,7 +609,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       double todayCreditUsed = 0; // Today's credit used only (for breakdown when "Today" is selected)
       double totalCreditAdded = 0; // Credit added from manual overpayments (when payment > due amount)
       double todayCreditAdded = 0; // Today's credit added only (for breakdown when "Today" is selected)
-      double todayBorrowPayments = 0; // Sum of borrow payments made today
+      /// In dashboard date range: `isBorrowPayment` sales (repayments).
+      double periodPosBorrowRepayments = 0;
+      /// In dashboard date range: cash applied to seller `seller_history` dues — manual “due payment”
+      /// sales and POS checkout when part of payment goes to existing dues ([Sale.recoveryBalance]).
+      double periodSellerDueRepayments = 0;
+      /// In dashboard date range: normal sales with change < 0 (POS “Borrow” shortfall).
+      double periodPosBorrowShortfall = 0;
       int totalTransactions = 0;
       
       // Track sales for profit calculation
@@ -461,7 +623,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // Recovery details for "tap to see breakdown" (seller, amount, date per sale)
       final recoveryDetails = <Map<String, dynamic>>[];
 
-      // Get today's date range for borrow payments calculation
       final now = DateTime.now();
       final todayStart = DateTime(now.year, now.month, now.day);
       final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
@@ -560,25 +721,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
               'amount': sale.recoveryBalance,
               'createdAt': sale.createdAt,
             });
+            // Repayment toward seller dues (manual payment or POS cash allocated to old bills).
+            periodSellerDueRepayments += sale.recoveryBalance;
           }
           // Track net credit balance used (after accounting for returns)
           totalCreditUsed += netCreditUsed;
+
+          // POS shortfall in selected period (sales list is already filtered by dashboard dates).
+          if (sale.change < 0) {
+            periodPosBorrowShortfall += -sale.change;
+          }
         } else {
           // Skip borrow payments completely - they should not affect revenue
           // Borrow payments are tracked separately in the borrow section only
           debugPrint('Skipping borrow payment from revenue: ${sale.id}, amount: ${sale.total}');
           
-          // Calculate today's borrow payments sum - only count if sale was created today
-          if (sale.isBorrowPayment && 
-              sale.createdAt.isAfter(todayStart.subtract(const Duration(seconds: 1))) &&
-              sale.createdAt.isBefore(todayEnd.add(const Duration(seconds: 1)))) {
-            todayBorrowPayments += sale.amountPaid;
+          // Borrow repayments in selected period (same filtered sales stream).
+          if (sale.isBorrowPayment) {
+            periodPosBorrowRepayments += sale.amountPaid;
           }
         }
         // Count returns from all sales (including borrow payments if any)
         totalReturned += sale.returnedAmount;
       }
-      
+
       // Real profit from seller_history (includes payments made to cover dues)
       // This is calculated from the stream filtered by date range and passed as parameter
       // It includes profit from all paid amounts (initial payment + payments to cover dues) within the selected date range
@@ -613,7 +779,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
       final netBorrow = totalBorrowed - totalLent;
-      
+      // Seller unpaid + borrow book, both scoped to the dashboard date filter only.
+      final totalBorrowHeadline =
+          periodOutstandingFromSellerHistory + totalBorrowed;
+
       // Calculate net profit: Real profit (from paid portions including payments to cover dues) - Expenses + Wholesale profit
       // This explicitly subtracts expenses from profit and adds wholesale profit
       // Example: Real profit = 1000, Expenses = 200, Wholesale profit = 300, Net Profit = 1100
@@ -656,6 +825,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       debugPrint('Note: Recovery balance is NOT double-counted (excluded from sale revenue)');
       debugPrint('Note: Credit used is tracked separately and NOT included in revenue (already counted when credit was given)');
       debugPrint('Borrow payments are EXCLUDED from revenue');
+      debugPrint(
+        'POS borrow (${_getDateRangeLabel()}): shortfall ${periodPosBorrowShortfall.toStringAsFixed(2)} '
+        '− borrow-book ${periodPosBorrowRepayments.toStringAsFixed(2)} '
+        '− seller dues ${periodSellerDueRepayments.toStringAsFixed(2)} '
+        '= net ${(periodPosBorrowShortfall - periodPosBorrowRepayments - periodSellerDueRepayments).toStringAsFixed(2)}',
+      );
       debugPrint('==========================');
       
       // Calculate revenue for breakdown display
@@ -701,10 +876,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'recoveryDetails': recoveryDetails, // Per-sale recovery for breakdown dialog (seller, amount, date)
         'totalCreditUsed': totalCredit, // Credit = credit applied in sales (credit used from seller's balance)
         'totalBorrowed': totalBorrowed,
+        'totalBorrowHeadline': totalBorrowHeadline,
         'totalLent': totalLent,
         'netBorrow': netBorrow,
-        'totalUnpaidSales': totalUnpaidSales,
-        'todayBorrowPayments': todayBorrowPayments, // Sum of borrow payments made today
+        'totalUnpaidSales': periodOutstandingFromSellerHistory,
+        'periodPosBorrowRepayments': periodPosBorrowRepayments,
+        'periodSellerDueRepayments': periodSellerDueRepayments,
+        'periodPosBorrowShortfall': periodPosBorrowShortfall,
+        'periodPosBorrowNet': periodPosBorrowShortfall -
+            periodPosBorrowRepayments -
+            periodSellerDueRepayments,
         'totalTransactions': totalTransactions + wholesaleTransactions, // POS + Wholesale transactions
         'posTransactions': totalTransactions, // POS transactions only
         'averageTransaction': (totalTransactions + wholesaleTransactions) > 0 
@@ -729,10 +910,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'recoveryDetails': <Map<String, dynamic>>[],
         'totalCreditUsed': 0.0,
         'totalBorrowed': 0.0,
+        'totalBorrowHeadline': 0.0,
         'totalLent': 0.0,
         'netBorrow': 0.0,
         'totalUnpaidSales': 0.0,
-        'todayBorrowPayments': 0.0,
+        'periodPosBorrowRepayments': 0.0,
+        'periodSellerDueRepayments': 0.0,
+        'periodPosBorrowShortfall': 0.0,
+        'periodPosBorrowNet': 0.0,
         'totalTransactions': 0,
         'averageTransaction': 0.0,
       };
@@ -745,7 +930,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       backgroundColor: Colors.grey[50],
       body: RefreshIndicator(
         onRefresh: () async {
-          setState(() {});
+          setState(() {
+            _allTimeBorrowTotalsFuture = _loadAllTimeBorrowTotals();
+          });
+          await _allTimeBorrowTotalsFuture;
         },
         child: Column(
           children: [
@@ -828,6 +1016,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      const DashboardSyncStrip(),
+                      const SizedBox(height: 8),
                       // Stats Cards (filtered by date) - Real-time updates
                       // Never block entire dashboard: use defaults so UI shows immediately, then updates live (no data deleted)
                       FutureBuilder<DateTime?>(
@@ -841,7 +1031,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               : startDate;
                           final effectiveEndDate = endDate;
 
+                          // Force new StreamBuilder state when the range changes (avoids stale borrow/revenue
+                          // snapshots after switching e.g. Last 7 Days → All).
                           return StreamBuilder<List<Sale>>(
+                            key: ValueKey<String>(
+                              'dash_stats_${effectiveStartDate.toIso8601String()}_'
+                              '${effectiveEndDate.toIso8601String()}_'
+                              '${_selectedDays}_${resetDate?.toIso8601String() ?? 'no_reset'}',
+                            ),
                             stream: salesService.getSalesByDateRange(effectiveStartDate, effectiveEndDate),
                             builder: (context, salesSnapshot) {
                               return StreamBuilder<List<Expense>>(
@@ -850,16 +1047,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   return StreamBuilder<List<Borrow>>(
                                     stream: borrowService.getBorrowsByDateRange(effectiveStartDate, effectiveEndDate),
                                     builder: (context, borrowsSnapshot) {
-                                      return StreamBuilder<double>(
-                                        stream: sellerService.getTotalUnpaidSalesStream(),
+                                      return StreamBuilder<UnpaidSalesDashboardTotals>(
+                                        stream: sellerService
+                                            .getUnpaidSalesDashboardTotalsStream(
+                                          effectiveStartDate,
+                                          effectiveEndDate,
+                                        ),
                                         builder: (context, unpaidSnapshot) {
-                                          return StreamBuilder<double>(
-                                            stream: sellerService.getBorrowProfitStreamByDateRange(effectiveStartDate, effectiveEndDate),
-                                            builder: (context, borrowProfitSnapshot) {
-                                              return StreamBuilder<double>(
-                                                stream: sellerService.getRealProfitFromPaidStreamByDateRange(effectiveStartDate, effectiveEndDate),
-                                                builder: (context, realProfitSnapshot) {
-                                                  return StreamBuilder<List<SellerOrder>>(
+                                          return StreamBuilder<DashboardSellerProfitTotals>(
+                                            stream: sellerService
+                                                .getDashboardSellerProfitTotalsStream(
+                                              effectiveStartDate,
+                                              effectiveEndDate,
+                                            ),
+                                            builder: (context, profitTotalsSnapshot) {
+                                              final profitTotals =
+                                                  profitTotalsSnapshot.data ??
+                                                      DashboardSellerProfitTotals.zero;
+                                              final borrowProfit =
+                                                  profitTotals.borrowProfit;
+                                              final realProfit =
+                                                  profitTotals.realProfit;
+                                              return StreamBuilder<List<SellerOrder>>(
                                                     stream: sellerOrderService.getAllOrders(),
                                                     builder: (context, sellerOrdersSnapshot) {
                                                       return StreamBuilder<List<BalanceEntry>>(
@@ -875,9 +1084,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                           final sales = salesSnapshot.data ?? [];
                                                           final expenses = expensesSnapshot.data ?? [];
                                                           final borrows = borrowsSnapshot.data ?? [];
-                                                          final unpaid = unpaidSnapshot.data ?? 0.0;
-                                                          final borrowProfit = borrowProfitSnapshot.data ?? 0.0;
-                                                          final realProfit = realProfitSnapshot.data ?? 0.0;
+                                                          final unpaidTotals =
+                                                              unpaidSnapshot.data ??
+                                                                  UnpaidSalesDashboardTotals.empty;
                                                           final sellerOrders = sellerOrdersSnapshot.data ?? [];
                                                           final balanceEntries = balanceSnapshot.data ?? [];
                                                           final creditBalance = creditBalanceSnapshot.data ?? 0.0;
@@ -895,7 +1104,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                                 borrows,
                                                                 sellerOrders,
                                                                 balanceEntries,
-                                                                unpaid,
+                                                                unpaidTotals
+                                                                    .periodOutstandingFromHistory,
                                                                 borrowProfit,
                                                                 realProfit,
                                                                 periodCreditReductions,
@@ -1071,12 +1281,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                       const SizedBox(width: 16),
                                                       Expanded(
                                                         child: _BorrowCard(
-                                                          totalBorrowed: stats['totalBorrowed'],
+                                                          totalBorrowHeadline:
+                                                              stats['totalBorrowHeadline'],
+                                                          totalBorrowed:
+                                                              stats['totalBorrowed'],
                                                           totalLent: stats['totalLent'],
                                                           netBorrow: stats['netBorrow'],
-                                                          totalUnpaidSales: stats['totalUnpaidSales'],
-                                                          todayBorrowPayments: stats['todayBorrowPayments'],
+                                                          totalUnpaidSales:
+                                                              stats['totalUnpaidSales'],
+                                                          unpaidSalesRowLabel:
+                                                              'Unpaid sales · ${_getDateRangeLabel()}',
+                                                          periodPosBorrowRepayments:
+                                                              stats['periodPosBorrowRepayments'],
+                                                          periodSellerDueRepayments:
+                                                              stats['periodSellerDueRepayments'],
+                                                          periodPosBorrowShortfall:
+                                                              stats['periodPosBorrowShortfall'],
+                                                          periodPosBorrowNet:
+                                                              stats['periodPosBorrowNet'],
+                                                          periodLabel: _getDateRangeLabel(),
+                                                          allTimeBorrowFuture:
+                                                              _allTimeBorrowTotalsFuture,
+                                                          liveAllTimeSellerDue: unpaidTotals
+                                                              .allTimeOutstandingFromHistory,
                                                           formatter: formatter,
+                                                          onTapUnpaidSalesRow: () =>
+                                                              _showTodayStillDueSellersDialog(
+                                                            context,
+                                                            effectiveStartDate,
+                                                            effectiveEndDate,
+                                                          ),
                                                         ),
                                                       ),
                                                     ],
@@ -1095,8 +1329,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   );
                 },
               );
-            },
-          );
         },
       );
     },
@@ -1127,11 +1359,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                       ),
                       const SizedBox(height: 16),
-                      _SalesChart(
-                        startDate: _getStartDate(),
-                        endDate: _getEndDate(),
-                        selectedDays: _selectedDays,
-                        showProfit: _showProfit,
+                      FutureBuilder<DateTime?>(
+                        future: _resetDateFuture,
+                        builder: (context, chartResetSnap) {
+                          final chartReset = chartResetSnap.data;
+                          final chartStartRaw = _getStartDate();
+                          final chartEndRaw = _getEndDate();
+                          final chartEffectiveStart =
+                              (chartReset != null && chartReset.isAfter(chartStartRaw))
+                                  ? chartReset
+                                  : chartStartRaw;
+                          return _SalesChart(
+                            startDate: chartEffectiveStart,
+                            endDate: chartEndRaw,
+                            selectedDays: _selectedDays,
+                            showProfit: _showProfit,
+                          );
+                        },
                       ),
 
                       const SizedBox(height: 32),
@@ -1623,21 +1867,51 @@ class _ProfitCard extends StatelessWidget {
   }
 }
 
+/// Borrow-book “borrowed” outstanding (all time). Seller all-time due is supplied live from the stream.
+class _AllTimeBorrowTotals {
+  const _AllTimeBorrowTotals({
+    required this.borrowBookBorrowedOutstanding,
+  });
+
+  final double borrowBookBorrowedOutstanding;
+}
+
 class _BorrowCard extends StatelessWidget {
+  /// [totalBorrowHeadline] = period seller unpaid + period borrow-book "borrowed" (same date filter).
+  final double totalBorrowHeadline;
   final double totalBorrowed;
   final double totalLent;
   final double netBorrow;
+  /// Remaining seller `duePayment` on bills dated in the selected period only.
   final double totalUnpaidSales;
-  final double todayBorrowPayments;
+  final String unpaidSalesRowLabel;
+  final double periodPosBorrowRepayments;
+  final double periodSellerDueRepayments;
+  final double periodPosBorrowShortfall;
+  final double periodPosBorrowNet;
+  final String periodLabel;
+  final Future<_AllTimeBorrowTotals> allTimeBorrowFuture;
+  /// Live sum of all `seller_history` rows with `duePayment` > 0 (same snapshot as period unpaid).
+  final double liveAllTimeSellerDue;
   final NumberFormat formatter;
+  final VoidCallback onTapUnpaidSalesRow;
 
   const _BorrowCard({
+    required this.totalBorrowHeadline,
     required this.totalBorrowed,
     required this.totalLent,
     required this.netBorrow,
     required this.totalUnpaidSales,
-    required this.todayBorrowPayments,
+    required this.unpaidSalesRowLabel,
+    required this.periodPosBorrowRepayments,
+    required this.periodSellerDueRepayments,
+    required this.periodPosBorrowShortfall,
+    required this.periodPosBorrowNet,
+    required this.periodLabel,
+    required this.allTimeBorrowFuture,
+    required this.liveAllTimeSellerDue,
     required this.formatter,
+    required this.onTapUnpaidSalesRow,
   });
 
   @override
@@ -1670,7 +1944,7 @@ class _BorrowCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           const Text(
-            'Borrow',
+            'Total borrow',
             style: TextStyle(
               color: Colors.white,
               fontSize: 14,
@@ -1679,81 +1953,268 @@ class _BorrowCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            formatter.format(totalBorrowed),
+            formatter.format(totalBorrowHeadline),
             style: const TextStyle(
               color: Colors.white,
               fontSize: 20,
               fontWeight: FontWeight.bold,
             ),
           ),
-          const SizedBox(height: 12),
-          // Unpaid Sales
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(8),
+          const SizedBox(height: 4),
+          Text(
+            'For “$periodLabel”: seller bills dated in range + borrow-book rows created in range',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.78),
+              fontSize: 10,
+              fontWeight: FontWeight.w400,
+              height: 1.25,
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Not the same as all-time owed — see below. Tap row for seller list.',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.72),
+              fontSize: 10,
+              fontWeight: FontWeight.w400,
+              height: 1.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          FutureBuilder<_AllTimeBorrowTotals>(
+            future: allTimeBorrowFuture,
+            builder: (context, snap) {
+              if (snap.hasError) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'Could not load all-time snapshot (pull to retry)',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.85),
+                      fontSize: 10,
+                    ),
+                  ),
+                );
+              }
+              if (snap.connectionState != ConnectionState.done || !snap.hasData) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: LinearProgressIndicator(
+                    minHeight: 2,
+                    backgroundColor: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withOpacity(0.9),
+                  ),
+                );
+              }
+              final t = snap.data!;
+              final combinedAllTime =
+                  liveAllTimeSellerDue + t.borrowBookBorrowedOutstanding;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.shopping_cart_outlined, color: Colors.white, size: 16),
-                    const SizedBox(width: 6),
                     Text(
-                      'Unpaid Sales',
+                      'All-time snapshot',
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.9),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${formatter.format(combinedAllTime)} total '
+                      '(sellers ${formatter.format(liveAllTimeSellerDue)} + borrow book ${formatter.format(t.borrowBookBorrowedOutstanding)})',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.88),
+                        fontSize: 10,
+                        height: 1.25,
+                      ),
+                    ),
+                    Text(
+                      'Pull down to refresh · ignores date filter above',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.65),
+                        fontSize: 9,
+                        height: 1.2,
                       ),
                     ),
                   ],
                 ),
-                Text(
-                  formatter.format(totalUnpaidSales),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                  ),
+              );
+            },
+          ),
+          const SizedBox(height: 4),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onTapUnpaidSalesRow,
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
                 ),
-              ],
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Row(
+                        children: [
+                          const Icon(Icons.shopping_cart_outlined,
+                              color: Colors.white, size: 16),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              unpaidSalesRowLabel,
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.9),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      formatter.format(totalUnpaidSales),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.chevron_right,
+                      color: Colors.white.withOpacity(0.75),
+                      size: 20,
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-          // Today's Borrow Payments (only show if > 0)
-          if (todayBorrowPayments > 0) ...[
+          // Same date filter as Overview: shortfall (change < 0) vs borrow-payment sales.
+          if (periodPosBorrowShortfall > 0 ||
+              periodPosBorrowRepayments > 0 ||
+              periodSellerDueRepayments > 0 ||
+              periodPosBorrowNet != 0) ...[
             const SizedBox(height: 8),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Text(
+                    'POS borrow · $periodLabel',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Icon(Icons.account_balance_wallet, color: Colors.white, size: 16),
-                      const SizedBox(width: 6),
                       Text(
-                        'Today\'s Payments',
+                        'Shortfall on sales (change)',
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.9),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
+                          color: Colors.white.withOpacity(0.88),
+                          fontSize: 11,
+                        ),
+                      ),
+                      Text(
+                        formatter.format(periodPosBorrowShortfall),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
                   ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Borrow-book repayments',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.88),
+                          fontSize: 11,
+                        ),
+                      ),
+                      Text(
+                        '− ${formatter.format(periodPosBorrowRepayments)}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Seller dues repaid',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.88),
+                          fontSize: 11,
+                        ),
+                      ),
+                      Text(
+                        '− ${formatter.format(periodSellerDueRepayments)}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Divider(color: Colors.white.withOpacity(0.25), height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Net (this period)',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.95),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        formatter.format(periodPosBorrowNet),
+                        style: TextStyle(
+                          color: periodPosBorrowNet > 0
+                              ? Colors.orange.shade100
+                              : Colors.green.shade100,
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
                   Text(
-                    formatter.format(todayBorrowPayments),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
+                    'Net = shortfall − borrow-book repayments − seller dues repaid '
+                    '(manual due payments and POS cash to old bills use recovery).',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.65),
+                      fontSize: 9,
+                      height: 1.2,
                     ),
                   ),
                 ],

@@ -295,9 +295,11 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
           ? [
               if (payment.accountTitle != null) payment.accountTitle!,
               if (payment.bankName != null) payment.bankName!,
-              if (payment.referenceNumber != null) 'Ref: ${payment.referenceNumber}',
+              if (payment.effectiveReference != null) 'Ref: ${payment.effectiveReference}',
             ].join(', ')
-          : '-';
+          : (payment.effectiveReference != null
+              ? 'Ref: ${payment.effectiveReference}'
+              : '-');
       final paymentIdDisplay = payment.paymentNumber ?? '-';
 
       tableRows.add(
@@ -786,6 +788,17 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                                   color: Colors.grey[600],
                                 ),
                               ),
+                              if (firstPayment.effectiveReference != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Ref: ${firstPayment.effectiveReference}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.blueGrey.shade700,
+                                  ),
+                                ),
+                              ],
                               if (firstPayment.paymentType == 'bank_transfer') ...[
                                 const SizedBox(height: 4),
                                 if (firstPayment.accountTitle != null)
@@ -794,8 +807,6 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                                   Text('Bank: ${firstPayment.bankName}'),
                                 if (firstPayment.accountHolderName != null)
                                   Text('Holder: ${firstPayment.accountHolderName}'),
-                                if (firstPayment.referenceNumber != null)
-                                  Text('Ref: ${firstPayment.referenceNumber}'),
                               ],
                             ],
                           ),
@@ -908,6 +919,17 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                                         color: Colors.grey[600],
                                       ),
                                     ),
+                                    if (payment.effectiveReference != null) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Ref: ${payment.effectiveReference}',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.blueGrey.shade700,
+                                        ),
+                                      ),
+                                    ],
                                     if (payment.paymentType == 'bank_transfer') ...[
                                       const SizedBox(height: 4),
                                       if (payment.accountTitle != null)
@@ -916,8 +938,6 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                                         Text('Bank: ${payment.bankName}'),
                                       if (payment.accountHolderName != null)
                                         Text('Holder: ${payment.accountHolderName}'),
-                                      if (payment.referenceNumber != null)
-                                        Text('Ref: ${payment.referenceNumber}'),
                                     ],
                                   ],
                                 ),

@@ -1075,9 +1075,9 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                                           color: Colors.grey[700],
                                         ),
                                       ),
-                                      if (item.expense > 0)
+                                      if (item.visibleExpensesOnLine > 0)
                                         Text(
-                                          'Expense: ${_currencyFormatter.format(item.expense)}',
+                                          'Expense: ${_currencyFormatter.format(item.visibleExpensesOnLine)}',
                                           style: TextStyle(
                                             fontSize: 12,
                                             color: Colors.orange.shade700,
@@ -1433,6 +1433,17 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                           color: Colors.grey[600],
                         ),
                       ),
+                      if (payment.effectiveReference != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'Ref: ${payment.effectiveReference}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.blueGrey.shade700,
+                          ),
+                        ),
+                      ],
                       if (payment.paymentType == 'bank_transfer') ...[
                         const SizedBox(height: 4),
                         if (payment.accountTitle != null)
@@ -1441,8 +1452,6 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
                           Text('Bank: ${payment.bankName}'),
                         if (payment.accountHolderName != null)
                           Text('Holder: ${payment.accountHolderName}'),
-                        if (payment.referenceNumber != null)
-                          Text('Ref: ${payment.referenceNumber}'),
                       ],
                     ],
                   ),
@@ -1627,6 +1636,8 @@ class _BuyerBillsScreenState extends State<BuyerBillsScreen> {
       billNumber: bill.billNumber,
       discountPercent: usePct ? pctVal : null,
       discountFixedAmount: useFixed ? fixedVal : null,
+      manualVisibleExpenseTotal: bill.manualVisibleExpenseTotal,
+      manualHiddenExpenseTotal: bill.manualHiddenExpenseTotal,
     );
     await _billService.addBill(updatedBill);
 

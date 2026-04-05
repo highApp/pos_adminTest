@@ -1,15 +1,113 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
+
+import '../database/offline_db.dart';
 import '../models/sale.dart';
+import '../offline/sync_status.dart';
+import '../utils/firestore_transient.dart';
+import 'seller_pos_checkout_replay.dart';
 import 'seller_service.dart';
 
 class SalesService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String _collection = 'sales';
 
-  // Add new sale
-  Future<void> addSale(Sale sale) async {
-    await _firestore.collection(_collection).doc(sale.id).set(sale.toMap());
+  /// Do not block checkout while Firestore retries offline (SDK can wait a long time).
+  static const Duration _eagerFirestoreTimeout = Duration(seconds: 3);
+
+  Map<String, dynamic> _saleDocument(Sale sale, DateTime updatedAtUtc) {
+    final m = Map<String, dynamic>.from(sale.toMap());
+    m['updatedAt'] = updatedAtUtc.toIso8601String();
+    return m;
+  }
+
+  /// Persists to SQLite + sync queue first (native), then uploads to Firestore.
+  /// If the device is offline, the sale stays queued until [SyncCoordinator] runs.
+  ///
+  /// [offlineSellerReplayPayload] is stored only in the local queue JSON under
+  /// [SellerPosCheckoutReplay.queuedSaleMetaKey] and stripped before Firestore writes.
+  Future<void> addSale(
+    Sale sale, {
+    Map<String, dynamic>? offlineSellerReplayPayload,
+  }) async {
+    final updatedAtUtc = DateTime.now().toUtc();
+    final map = _saleDocument(sale, updatedAtUtc);
+    if (offlineSellerReplayPayload != null &&
+        offlineSellerReplayPayload.isNotEmpty) {
+      map[SellerPosCheckoutReplay.queuedSaleMetaKey] = {
+        'sellerReplay': offlineSellerReplayPayload,
+      };
+    }
+
+    Future<void> afterSaleWriteIfReplayQueued() async {
+      final replay = SellerPosCheckoutReplay.decodeSellerReplayFromQueuedSale(map);
+      if (replay == null || replay.isEmpty) return;
+      final outcome = await SellerPosCheckoutReplay.replayFromQueuePayload(
+        firestore: _firestore,
+        saleId: sale.id,
+        payload: replay,
+      );
+      if (outcome == SellerPostSaleReplayOutcome.saleDocumentMissing) {
+        throw StateError('Seller replay: sale ${sale.id} missing after upload');
+      }
+    }
+
+    final remoteMap = SellerPosCheckoutReplay.stripQueuedMetadataForFirestore(map);
+
+    if (kIsWeb || !OfflineDb.isSupported) {
+      await _firestore.collection(_collection).doc(sale.id).set(remoteMap);
+      await afterSaleWriteIfReplayQueued();
+      return;
+    }
+
+    final db = OfflineDb.instance;
+    final dataJson = jsonEncode(map);
+    final opId = const Uuid().v4();
+    late int queueLocalId;
+    await db.transaction(() async {
+      await db.upsertLocalSale(
+        id: sale.id,
+        dataJson: dataJson,
+        updatedAt: updatedAtUtc,
+        syncStatus: SyncStatus.pending,
+      );
+      queueLocalId = await db.enqueueSyncOperation(
+        operationId: opId,
+        actionType: 'create',
+        tableName: _collection,
+        dataJson: dataJson,
+        entityId: sale.id,
+      );
+    });
+
+    try {
+      await _firestore
+          .collection(_collection)
+          .doc(sale.id)
+          .set(remoteMap)
+          .timeout(_eagerFirestoreTimeout);
+      await afterSaleWriteIfReplayQueued();
+      await db.markQueueSynced(queueLocalId);
+      await db.markLocalSaleRemoteSynced(sale.id);
+    } on TimeoutException {
+      debugPrint(
+        'Sale stored locally; Firestore upload skipped for now (timeout) — sync queue will retry.',
+      );
+    } on FirebaseException catch (e) {
+      if (isFirestoreTransientOrOffline(e)) {
+        debugPrint(
+          'Sale stored locally; Firestore upload deferred (${e.code}).',
+        );
+      } else {
+        debugPrint('Sale stored locally; Firestore error: ${e.code} ${e.message}');
+      }
+    } catch (e, st) {
+      debugPrint('Sale stored locally; Firestore upload deferred: $e\n$st');
+    }
   }
 
   // Get all sales stream
@@ -247,6 +345,14 @@ class SalesService {
     }
 
     return totalUnpaid;
+  }
+
+  /// Load a single sale by document id (e.g. for receipts from seller history).
+  Future<Sale?> getSaleById(String saleId) async {
+    if (saleId.isEmpty) return null;
+    final doc = await _firestore.collection(_collection).doc(saleId).get();
+    if (!doc.exists || doc.data() == null) return null;
+    return Sale.fromMap(doc.data()!);
   }
 }
 

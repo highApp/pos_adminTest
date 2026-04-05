@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../constants/receipt_branding.dart';
 import '../models/sale.dart';
 import '../models/seller.dart';
 import '../models/product.dart';
@@ -1208,15 +1209,16 @@ class PrinterService {
     // Initialize printer (ESC @)
     commands.addAll([esc, 0x40]);
 
-    // Enable UTF-8 so product names in Urdu (if any) print correctly; labels are English (ASCII).
-    commands.addAll([fs, 0x28, 0x43, 0x02, 0x00, 0x30, 0x32]);
-
+    // Print store title in default code page *before* UTF-8 mode — some printers
+    // garble the first line (e.g. "COZAR's") if UTF-8 is enabled too early.
     commands.addAll([esc, 0x61, 0x01]); // Center align
     commands.addAll([gs, 0x21, 0x00]); // Normal size
     commands.addAll([esc, 0x21, 0x01]); // Condensed mode
-
-    _addText(commands, 'AR\'S TRADERS\n');
+    _addText(commands, ReceiptBranding.storeNameLine);
     _addText(commands, '${_repeatChar('-', 32)}\n');
+
+    // UTF-8 for Urdu/Arabic product names and labels that need it.
+    commands.addAll([fs, 0x28, 0x43, 0x02, 0x00, 0x30, 0x32]);
 
     commands.addAll([esc, 0x61, 0x00]); // Left align
 
@@ -1233,6 +1235,18 @@ class PrinterService {
     }
     
     _addText(commands, '${_repeatChar('-', 32)}\n');
+
+    final bool manualPaymentReceipt = sale.items.isEmpty &&
+        sale.total < 0.01 &&
+        (sale.customerName?.contains('Manual Payment') ?? false);
+    final bool manualSaleNoItems =
+        sale.items.isEmpty && sale.total > 0.01;
+
+    if (manualPaymentReceipt) {
+      _addText(commands, '${_receiptLabel('manualDuePayment', labelsLanguage)}\n');
+    } else if (manualSaleNoItems) {
+      _addText(commands, '${_receiptLabel('manualSale', labelsLanguage)}\n');
+    }
 
     int itemNumber = 1;
     for (var item in sale.items) {
@@ -1260,7 +1274,11 @@ class PrinterService {
     }
 
     _addText(commands, '${_repeatChar('-', 32)}\n');
-    _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', sale.items.length.toString()));
+    if (sale.items.isNotEmpty) {
+      _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', sale.items.length.toString()));
+    } else if (manualSaleNoItems) {
+      _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', 'N/A'));
+    }
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
     final saleAmount = sale.total - sale.creditUsed;
@@ -1285,6 +1303,17 @@ class PrinterService {
     }
     _addText(commands, _formatLine(_receiptLabel('amountPaid', labelsLanguage), sale.amountPaid.toStringAsFixed(2)));
     _addText(commands, _formatLine(_receiptLabel('change', labelsLanguage), sale.change.toStringAsFixed(2)));
+    if (manualPaymentReceipt) {
+      final creditAdded = sale.amountPaid - sale.recoveryBalance;
+      if (creditAdded > 0.01) {
+        _addText(commands, _formatLine(_receiptLabel('creditAdded', labelsLanguage), creditAdded.toStringAsFixed(2)));
+      }
+    } else if (manualSaleNoItems) {
+      final dueThisSale = (sale.total - sale.amountPaid - sale.creditUsed).clamp(0.0, double.infinity);
+      if (dueThisSale > 0.01) {
+        _addText(commands, _formatLine(_receiptLabel('dueThisSale', labelsLanguage), dueThisSale.toStringAsFixed(2)));
+      }
+    }
     final totalOwedBeforePayment = existingDueTotal + saleAmount;
     final dueBalance = (totalOwedBeforePayment - sale.amountPaid).clamp(0.0, double.infinity);
     if (dueBalance > 0.01) {
@@ -1353,6 +1382,10 @@ class PrinterService {
           case 'amountPaid': return 'ادائیگی';
           case 'change': return 'باقی';
           case 'dueBalance': return 'واجب بقایا';
+          case 'manualSale': return 'دستی فروخت';
+          case 'manualDuePayment': return 'دستی واجب ادائیگی';
+          case 'creditAdded': return 'کریڈٹ شامل';
+          case 'dueThisSale': return 'اس فروخت پر بقایا';
           case 'thankYou': return 'شکریہ!';
           case 'visitAgain': return 'دوبارہ تشریف لائیں';
           default: return key;
@@ -1373,6 +1406,10 @@ class PrinterService {
           case 'amountPaid': return 'المدفوع';
           case 'change': return 'الباقي';
           case 'dueBalance': return 'المبلغ المستحق';
+          case 'manualSale': return 'بيع يدوي';
+          case 'manualDuePayment': return 'دفعة مستحقة يدوية';
+          case 'creditAdded': return 'رصيد مضاف';
+          case 'dueThisSale': return 'مستحق هذه البيعة';
           case 'thankYou': return 'شكراً!';
           case 'visitAgain': return 'مرحباً بعودتك';
           default: return key;
@@ -1393,6 +1430,10 @@ class PrinterService {
           case 'amountPaid': return 'Amount Paid';
           case 'change': return 'Change';
           case 'dueBalance': return 'Due Balance';
+          case 'manualSale': return 'Manual sale';
+          case 'manualDuePayment': return 'Manual due payment';
+          case 'creditAdded': return 'Credit added';
+          case 'dueThisSale': return 'Due (this sale)';
           case 'thankYou': return 'Thank You!';
           case 'visitAgain': return 'Visit Again';
           default: return key;

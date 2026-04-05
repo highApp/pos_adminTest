@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -27,6 +26,9 @@ import '../services/category_service.dart';
 import '../services/printer_service.dart';
 import '../services/receipt_pdf_service.dart';
 import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
+import '../widgets/cart_weight_calculator_sheet.dart';
+import '../database/offline_db.dart';
+import '../offline/sync_coordinator.dart';
 
 class POSScreen extends StatefulWidget {
   const POSScreen({super.key});
@@ -34,6 +36,12 @@ class POSScreen extends StatefulWidget {
   @override
   State<POSScreen> createState() => _POSScreenState();
 }
+
+/// Max wait for Firestore during checkout; after this we treat as offline-style completion.
+const Duration _checkoutFirestoreTimeout = Duration(seconds: 2);
+
+/// Applying cash to old seller dues can touch several documents — must not use the short checkout timeout.
+const Duration _applySellerDuesTimeout = Duration(seconds: 30);
 
 class _POSScreenState extends State<POSScreen> {
   final ProductService _productService = ProductService();
@@ -45,6 +53,9 @@ class _POSScreenState extends State<POSScreen> {
   String _selectedCategory = 'All';
   /// Cached stream so StreamBuilder does not re-subscribe on every build (avoids reload flash).
   late final Stream<List<Product>> _productsStream;
+
+  /// Dedupes [CartProvider.syncProductsFromServer] when stream rebuilds without catalog changes.
+  int _cartCatalogSyncSignature = 0;
 
   @override
   void initState() {
@@ -75,17 +86,30 @@ class _POSScreenState extends State<POSScreen> {
   Future<void> _saveDraft() async {
     final cart = context.read<CartProvider>();
     if (cart.items.isEmpty) return;
+
+    // Controller must live in dialog State and dispose with the route; disposing
+    // it immediately after pop() races TextField teardown and triggers
+    // _dependencies.isEmpty assertions in debug builds.
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (context) => const _SaveDraftNameDialog(),
+    );
+    if (!mounted || result == null) return;
+
+    final draftName = result.isEmpty ? null : result;
     final draft = PosDraft(
       id: const Uuid().v4(),
       createdAt: DateTime.now(),
       saleType: cart.saleType,
+      name: draftName,
       items: cart.items.values
           .map((item) => PosDraftItem(
                 productId: item.product.id,
                 productName: item.product.name,
                 quantity: item.quantity,
-                unitPrice: item.unitPrice,
+                unitPrice: item.displayUnitPrice,
                 saleType: item.saleType,
+                lineSubtotal: item.subtotal,
               ))
           .toList(),
     );
@@ -93,8 +117,12 @@ class _POSScreenState extends State<POSScreen> {
     cart.clear();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Order saved as draft. Start a new bill.'),
+        SnackBar(
+          content: Text(
+            draftName != null
+                ? 'Draft "$draftName" saved. Start a new bill.'
+                : 'Order saved as draft. Start a new bill.',
+          ),
           behavior: SnackBarBehavior.floating,
           backgroundColor: Colors.green,
         ),
@@ -188,6 +216,10 @@ class _POSScreenState extends State<POSScreen> {
                       itemCount: drafts.length,
                       itemBuilder: (context, index) {
                         final draft = drafts[index];
+                        final hasName =
+                            draft.name != null && draft.name!.isNotEmpty;
+                        final summary =
+                            '${draft.itemCount} item(s) • ${formatter.format(draft.totalAmount)}';
                         return ListTile(
                           leading: CircleAvatar(
                             backgroundColor: Colors.green.shade100,
@@ -197,17 +229,22 @@ class _POSScreenState extends State<POSScreen> {
                             ),
                           ),
                           title: Text(
-                            '${draft.itemCount} item(s) • ${formatter.format(draft.totalAmount)}',
+                            hasName ? draft.name! : summary,
                             style: const TextStyle(
                               fontWeight: FontWeight.w600,
                             ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                           subtitle: Text(
-                            dateFormat.format(draft.createdAt),
+                            hasName
+                                ? '$summary\n${dateFormat.format(draft.createdAt)}'
+                                : dateFormat.format(draft.createdAt),
                             style: TextStyle(
                               color: Colors.grey[600],
                               fontSize: 12,
                             ),
+                            maxLines: 2,
                           ),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
@@ -304,19 +341,25 @@ class _POSScreenState extends State<POSScreen> {
       }
     }
     if (mounted) {
+      final named = draft.name != null && draft.name!.isNotEmpty;
+      final nameBit = named ? ' "${draft.name}"' : '';
       if (skipped > 0) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Draft loaded. $skipped item(s) no longer available and were skipped.',
+              'Draft$nameBit loaded. $skipped item(s) no longer available and were skipped.',
             ),
             behavior: SnackBarBehavior.floating,
           ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Draft loaded. You can edit and pay when ready.'),
+          SnackBar(
+            content: Text(
+              named
+                  ? 'Draft "$draft.name" loaded. You can edit and pay when ready.'
+                  : 'Draft loaded. You can edit and pay when ready.',
+            ),
             behavior: SnackBarBehavior.floating,
             backgroundColor: Colors.green,
           ),
@@ -431,7 +474,41 @@ class _POSScreenState extends State<POSScreen> {
 
                       // Get latest products from stream (always use stream as source of truth)
                       final streamProducts = snapshot.data ?? [];
-                      
+
+                      if (snapshot.hasData) {
+                        int nameSig(Product p) => p.name.hashCode;
+                        int mapSig(Map<String, String>? m) {
+                          if (m == null || m.isEmpty) return 0;
+                          return Object.hashAll(m.entries.map((e) => Object.hash(e.key.hashCode, e.value.hashCode)));
+                        }
+                        final sig = Object.hashAll(
+                          streamProducts.map(
+                            (p) => Object.hash(
+                              p.id.hashCode,
+                              p.stock,
+                              p.salePrice,
+                              p.purchasePrice,
+                              p.wholesalePrice?.hashCode ?? 0,
+                              p.dozenPrice?.hashCode ?? 0,
+                              p.bundlePrice?.hashCode ?? 0,
+                              p.bundleSize ?? 0,
+                              p.minimumSalePrice?.hashCode ?? 0,
+                              p.updatedAt.millisecondsSinceEpoch,
+                              nameSig(p),
+                              mapSig(p.names),
+                            ),
+                          ),
+                        );
+                        if (sig != _cartCatalogSyncSignature) {
+                          _cartCatalogSyncSignature = sig;
+                          final toSync = List<Product>.from(streamProducts);
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (!mounted) return;
+                            context.read<CartProvider>().syncProductsFromServer(toSync);
+                          });
+                        }
+                      }
+
                       // If search results exist, merge with latest stream data to get updated stock
                       var products = _searchResults ?? streamProducts;
                       
@@ -457,8 +534,9 @@ class _POSScreenState extends State<POSScreen> {
                             .toList();
                       }
                       
-                      final availableProducts =
-                          products.where((p) => p.stock > 0).toList();
+                      final availableProducts = products
+                          .where((p) => CartItem.hasEnoughStockToAdd(p))
+                          .toList();
 
                       if (availableProducts.isEmpty) {
                         return Center(
@@ -561,39 +639,52 @@ class _POSScreenState extends State<POSScreen> {
   Future<void> _processSale(BuildContext context, double amountPaid, String? sellerId, double existingDueTotal, String? description) async {
     final cart = context.read<CartProvider>();
     final productService = ProductService();
-    final salesService = SalesService();
+    final syncCoordinator =
+        OfflineDb.isSupported ? context.read<SyncCoordinator?>() : null;
+    final quickOffline = syncCoordinator?.isOffline ?? false;
 
+    if (!context.mounted) return;
     // Show loading
     showDialog(
       context: context,
       barrierDismissible: false,
+      useRootNavigator: true,
       builder: (context) => const Center(child: CircularProgressIndicator()),
     );
 
+    Future<void> popLoading() async {
+      if (!context.mounted) return;
+      await Navigator.of(context, rootNavigator: true).maybePop();
+    }
+
     try {
-      // Update stock for each product
-      // Use batch write for better performance and atomicity
-      final batch = FirebaseFirestore.instance.batch();
-      for (var cartItem in cart.items.values) {
-        final docRef = FirebaseFirestore.instance
-            .collection('products')
-            .doc(cartItem.product.id);
-        final doc = await docRef.get();
-        
-        if (doc.exists) {
-          final product = Product.fromMap(doc.data()!);
-          final qtyToDeduct = cartItem.effectiveQuantityForStock;
-          if (product.stock >= qtyToDeduct) {
-            final updatedProduct = product.copyWith(
-              stock: product.stock - qtyToDeduct,
-              updatedAt: DateTime.now(),
-            );
-            batch.update(docRef, updatedProduct.toMap());
-          }
+      final quantitiesByProductId = <String, double>{};
+      for (final cartItem in cart.items.values) {
+        final id = cartItem.product.id;
+        if (id.isEmpty) {
+          throw Exception(
+            'Cannot complete sale: "${cartItem.product.name}" has no product id.',
+          );
+        }
+        final q = cartItem.effectiveQuantityForStock;
+        quantitiesByProductId[id] =
+            (quantitiesByProductId[id] ?? 0.0) + q;
+      }
+
+      /// Remote stock: skip Firestore entirely when already offline (instant).
+      /// Otherwise enforce a short timeout so the spinner never hangs.
+      late final bool stockUpdatedRemotely;
+      if (quickOffline) {
+        stockUpdatedRemotely = false;
+      } else {
+        try {
+          stockUpdatedRemotely = await productService
+              .decreaseStockForSaleIfReachable(quantitiesByProductId)
+              .timeout(_checkoutFirestoreTimeout, onTimeout: () => false);
+        } catch (_) {
+          stockUpdatedRemotely = false;
         }
       }
-      // Commit all stock updates at once
-      await batch.commit();
 
       // Calculate total profit: revenue (subtotal) minus cost (effective qty × purchase price)
       double totalProfit = 0;
@@ -644,10 +735,35 @@ class _POSScreenState extends State<POSScreen> {
         existingDueTotalAtSale: sellerId != null ? existingDueTotal : 0.0,
       );
 
-      await salesService.addSale(sale);
-
       // Save seller history and due payment if seller is selected
-      if (sellerId != null) {
+      if (sellerId != null && quickOffline) {
+        // Fast path: no Firestore (avoids long hangs when network is down).
+        final changeQuick =
+            amountPaid > cart.totalAmount ? amountPaid - cart.totalAmount : 0.0;
+        sale = Sale(
+          id: sale.id,
+          items: sale.items,
+          total: sale.total,
+          profit: sale.profit,
+          amountPaid: sale.amountPaid,
+          change: changeQuick,
+          createdAt: sale.createdAt,
+          customerName: sale.customerName,
+          paymentMethod: sale.paymentMethod,
+          returnedAmount: sale.returnedAmount,
+          isPartialReturn: sale.isPartialReturn,
+          sellerId: sale.sellerId,
+          recoveryBalance: 0.0,
+          isBorrowPayment: sale.isBorrowPayment,
+          creditUsed: 0.0,
+          saleType: sale.saleType,
+          description: sale.description,
+          existingDueTotalAtSale: sale.existingDueTotalAtSale,
+        );
+        debugPrint(
+          'Offline quick checkout: seller credit/dues/history skipped — will sync when online.',
+        );
+      } else if (sellerId != null) {
         debugPrint('=== PROCESSING SELLER PAYMENT ===');
         debugPrint('Seller ID: $sellerId');
         debugPrint('Amount Paid (Cash): $amountPaid');
@@ -657,7 +773,9 @@ class _POSScreenState extends State<POSScreen> {
         final sellerService = SellerService();
         
         // Check for credit balance first
-        double creditBalance = await sellerService.getCreditBalance(sellerId);
+        double creditBalance = await sellerService
+            .getCreditBalance(sellerId)
+            .timeout(_checkoutFirestoreTimeout, onTimeout: () => 0.0);
         debugPrint('Credit Balance: $creditBalance');
         
         // Calculate how payment is applied:
@@ -670,7 +788,9 @@ class _POSScreenState extends State<POSScreen> {
         
         // Use credit balance first
         if (creditBalance > 0 && remainingSaleAmount > 0) {
-          creditUsed = await sellerService.useCreditBalance(sellerId, remainingSaleAmount);
+          creditUsed = await sellerService
+              .useCreditBalance(sellerId, remainingSaleAmount)
+              .timeout(_checkoutFirestoreTimeout, onTimeout: () => 0.0);
           remainingSaleAmount -= creditUsed;
           debugPrint('Credit Used: $creditUsed');
           debugPrint('Remaining Sale Amount after credit: $remainingSaleAmount');
@@ -698,19 +818,22 @@ class _POSScreenState extends State<POSScreen> {
         // Apply cash payment to existing due payments (if any)
         if (cashForExistingDues > 0 && existingDueTotal > 0) {
           debugPrint('Applying $cashForExistingDues to existing due payments...');
-          try {
-            final remainingAfterDues = await sellerService.applyPaymentToDuePayments(sellerId, cashForExistingDues);
-            actualRecoveryBalance = cashForExistingDues - remainingAfterDues;
-            // If there's remaining after paying dues, it should be returned as change (not added to credit)
-            // Change is money returned to the customer, not credit for the seller
-            if (remainingAfterDues > 0) {
-              actualChange = remainingAfterDues;
-              debugPrint('Remaining payment after dues returned as change: $remainingAfterDues');
-            }
-            debugPrint('✓ Payment applied to existing due payments. Recovery Balance: $actualRecoveryBalance');
-          } catch (e) {
-            debugPrint('✗ Error applying payment to existing dues: $e');
+          // Same Firestore updates as Seller history → Add manual due payment. On failure we abort
+          // checkout so the sale is not saved while old dues are still wrong on the server.
+          final remainingAfterDues = await sellerService
+              .applyPaymentToDuePayments(
+                sellerId,
+                cashForExistingDues,
+                prioritizeBillsWithSaleDateSameDayAs: sale.createdAt,
+              )
+              .timeout(_applySellerDuesTimeout);
+          actualRecoveryBalance = cashForExistingDues - remainingAfterDues;
+          // If there's remaining after paying dues, it should be returned as change (not added to credit)
+          if (remainingAfterDues > 0) {
+            actualChange = remainingAfterDues;
+            debugPrint('Remaining payment after dues returned as change: $remainingAfterDues');
           }
+          debugPrint('✓ Payment applied to existing due payments. Recovery Balance: $actualRecoveryBalance');
         } else {
           // Calculate change if there's excess cash
           // IMPORTANT: Change should be returned to customer, NOT added to seller's credit balance
@@ -729,11 +852,6 @@ class _POSScreenState extends State<POSScreen> {
         
         // Update sale with correct recoveryBalance and creditUsed (only if they changed)
         if (actualRecoveryBalance > 0 || actualChange != change || creditUsed > 0) {
-          await FirebaseFirestore.instance.collection('sales').doc(sale.id).update({
-            'recoveryBalance': actualRecoveryBalance,
-            'change': actualChange,
-            'creditUsed': creditUsed,
-          });
           // Create updated sale object for receipt display
           sale = Sale(
             id: sale.id,
@@ -759,13 +877,16 @@ class _POSScreenState extends State<POSScreen> {
         
         // Save seller history for current sale (with total payment including credit)
         try {
-          await sellerService.addSellerHistory(
+          await sellerService
+              .addSellerHistory(
             sellerId: sellerId,
             saleId: sale.id,
             saleAmount: sale.total,
             amountPaid: totalAmountForCurrentSale,
             saleDate: sale.createdAt,
-          );
+            description: description,
+          )
+              .timeout(_checkoutFirestoreTimeout);
           debugPrint('✓ Seller history saved for seller: $sellerId');
           debugPrint('  - Sale Amount: ${sale.total}');
           debugPrint('  - Amount Paid (credit + cash): $totalAmountForCurrentSale');
@@ -794,7 +915,9 @@ class _POSScreenState extends State<POSScreen> {
             debugPrint('Creating due payment with ID: ${duePayment.id}');
             debugPrint('Due payment data: ${duePayment.toMap()}');
             
-            await sellerService.addDuePayment(duePayment);
+            await sellerService
+                .addDuePayment(duePayment)
+                .timeout(_checkoutFirestoreTimeout);
             debugPrint('✓ Due payment saved successfully: Rs. $dueAmount for seller: $sellerId');
           } catch (e) {
             debugPrint('✗ ERROR saving due payment: $e');
@@ -809,16 +932,49 @@ class _POSScreenState extends State<POSScreen> {
         debugPrint('No seller selected. Skipping seller history and due payment.');
       }
 
+      await _salesService.addSale(
+        sale,
+        offlineSellerReplayPayload:
+            (sellerId != null && quickOffline && OfflineDb.isSupported)
+                ? {
+                    'sellerId': sellerId,
+                    'amountPaid': amountPaid,
+                    'cartTotal': cart.totalAmount,
+                    'existingDueTotal': existingDueTotal,
+                    'description': description,
+                    'saleDate': sale.createdAt.toIso8601String(),
+                  }
+                : null,
+      );
+
+      if (!stockUpdatedRemotely && OfflineDb.isSupported) {
+        await OfflineDb.instance.enqueueStockDecrements(quantitiesByProductId);
+      }
+      await syncCoordinator?.onLocalQueueChanged();
+
       // Clear cart
       cart.clear();
 
       if (context.mounted) {
-        Navigator.pop(context); // Close loading
+        await popLoading();
+        final offlineMsg = quickOffline || !stockUpdatedRemotely;
+        if (offlineMsg) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                quickOffline
+                    ? 'Offline: sale saved on this device. Stock & seller records will sync when online — see top bar.'
+                    : 'Sale saved. Some server updates are pending — see sync bar at top.',
+              ),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
         _showReceiptDialog(context, sale, existingDueTotal);
       }
     } catch (e) {
       if (context.mounted) {
-        Navigator.pop(context); // Close loading
+        await popLoading();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: $e')),
         );
@@ -3061,11 +3217,16 @@ class _CartPanel extends StatelessWidget {
               // Reverse the list to show most recently added items first
               final cartItemsList = cart.items.values.toList().reversed.toList();
               return ListView.builder(
+                // New sale type must rebuild line state (controllers, /doz vs /unit labels).
+                key: ValueKey(cart.saleType),
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 itemCount: cartItemsList.length,
                 itemBuilder: (context, index) {
                   final cartItem = cartItemsList[index];
-                  return _CartItemTile(cartItem: cartItem);
+                  return _CartItemTile(
+                    key: ValueKey('${cartItem.product.id}_${cart.saleType}'),
+                    cartItem: cartItem,
+                  );
                 },
               );
             },
@@ -3084,7 +3245,7 @@ class _CartPanel extends StatelessWidget {
 class _CartItemTile extends StatefulWidget {
   final CartItem cartItem;
 
-  const _CartItemTile({required this.cartItem});
+  const _CartItemTile({super.key, required this.cartItem});
 
   @override
   State<_CartItemTile> createState() => _CartItemTileState();
@@ -3109,11 +3270,20 @@ class _CartItemTileState extends State<_CartItemTile> {
   @override
   void didUpdateWidget(covariant _CartItemTile oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Sync controllers when quantity, price or subtotal change (same ref can have updated values after provider notify)
+    // Sync controllers when quantity, price, subtotal, or sale mode change (wholesale ↔ regular).
     final qtyChanged = oldWidget.cartItem.quantity != widget.cartItem.quantity;
     final priceChanged = oldWidget.cartItem.displayUnitPrice != widget.cartItem.displayUnitPrice;
     final subtotalChanged = oldWidget.cartItem.subtotal != widget.cartItem.subtotal;
-    if (oldWidget.cartItem != widget.cartItem || qtyChanged || priceChanged || subtotalChanged) {
+    final saleModeChanged = oldWidget.cartItem.saleType != widget.cartItem.saleType ||
+        oldWidget.cartItem.usesDozenPricing != widget.cartItem.usesDozenPricing ||
+        oldWidget.cartItem.usesBundlePricing != widget.cartItem.usesBundlePricing ||
+        oldWidget.cartItem.supportsFractionalQuantity !=
+            widget.cartItem.supportsFractionalQuantity;
+    if (oldWidget.cartItem != widget.cartItem ||
+        qtyChanged ||
+        priceChanged ||
+        subtotalChanged ||
+        saleModeChanged) {
       _quantityController.text = widget.cartItem.quantity.toStringAsFixed(widget.cartItem.supportsFractionalQuantity ? 3 : 0);
       _priceController.text = widget.cartItem.displayUnitPrice.toStringAsFixed(2);
       _subtotalController.text = widget.cartItem.subtotal.toStringAsFixed(2);
@@ -3131,6 +3301,51 @@ class _CartItemTileState extends State<_CartItemTile> {
     _priceController.dispose();
     _subtotalController.dispose();
     super.dispose();
+  }
+
+  Future<void> _openWeightCalculator(BuildContext context) async {
+    final item = widget.cartItem;
+    final applied = await CartWeightCalculatorSheet.show(
+      context,
+      cartItem: item,
+    );
+    if (!context.mounted || applied == null) return;
+
+    final maxQ = item.product.stock;
+    var q = applied;
+    final messenger = ScaffoldMessenger.of(context);
+    // Calculator can yield small amounts (e.g. Rs 50 ÷ Rs 1400/kg); do not use
+    // g/ml/l step min (0.1) here — only global fractional floor + stock cap.
+    final floor = item.supportsFractionalQuantity
+        ? CartItem.fractionalMinQuantity
+        : item.minQuantity;
+    if (q < floor) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Quantity must be at least ${floor.toStringAsFixed(item.supportsFractionalQuantity ? 3 : 0)} ${item.product.unit.trim()}',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (q > maxQ) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Quantity cannot exceed stock ($maxQ ${item.product.unit.trim()})',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      q = maxQ;
+    }
+    context.read<CartProvider>().updateQuantity(
+          item.product.id,
+          q,
+          allowSubStepMinimum: item.supportsFractionalQuantity,
+        );
   }
 
   @override
@@ -3233,6 +3448,18 @@ class _CartItemTileState extends State<_CartItemTile> {
                     ],
                   ),
                 ),
+                if (widget.cartItem.supportsFractionalQuantity)
+                  IconButton(
+                    icon: Icon(Icons.scale_outlined,
+                        color: Colors.green.shade600, size: 22),
+                    tooltip: 'Weight calculator',
+                    onPressed: () => _openWeightCalculator(context),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 36,
+                      minHeight: 36,
+                    ),
+                  ),
                 // Delete Button
                 IconButton(
                   icon: Icon(Icons.close, color: Colors.grey[400], size: 20),
@@ -4748,6 +4975,59 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       ),
     );
       },
+    );
+  }
+}
+
+/// Optional name for a POS draft; [TextEditingController] is owned here so it is
+/// disposed after the route is removed (safe with [TextField] + [autofocus]).
+class _SaveDraftNameDialog extends StatefulWidget {
+  const _SaveDraftNameDialog();
+
+  @override
+  State<_SaveDraftNameDialog> createState() => _SaveDraftNameDialogState();
+}
+
+class _SaveDraftNameDialogState extends State<_SaveDraftNameDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Save as draft'),
+      content: TextField(
+        controller: _controller,
+        decoration: const InputDecoration(
+          labelText: 'Name (optional)',
+          hintText: 'e.g. customer or table',
+          border: OutlineInputBorder(),
+        ),
+        textCapitalization: TextCapitalization.sentences,
+        maxLength: 80,
+        autofocus: true,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _controller.text.trim()),
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

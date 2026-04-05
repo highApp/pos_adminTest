@@ -70,14 +70,21 @@ class CartItem {
     if (!supportsFractionalQuantity) return 1.0;
     final unit = product.unit.trim().toLowerCase();
     final normalizedUnit = unit == 'gm' ? 'g' : unit;
-    const oneUnitStep = ['g', 'ml', 'kg', 'l'];
-    return oneUnitStep.contains(normalizedUnit) ? 1.0 : CartItem.fractionalIncrement;
+    if (CartItem.unitUsesSmallFractionDefault(product.unit)) {
+      return CartItem.smallFractionUnitStep;
+    }
+    if (normalizedUnit == 'kg') return 1.0;
+    return CartItem.fractionalIncrement;
   }
 
   /// Min quantity: 1 so you can manually type 10, 30, 48, etc. +/- still use step (12 or bundleSize).
   double get minQuantity {
     if (usesDozenPricing || usesBundlePricing) return 1.0;
-    return supportsFractionalQuantity ? CartItem.fractionalMinQuantity : 1.0;
+    if (!supportsFractionalQuantity) return 1.0;
+    if (CartItem.unitUsesSmallFractionDefault(product.unit)) {
+      return CartItem.smallFractionUnitStep;
+    }
+    return CartItem.fractionalMinQuantity;
   }
 
   /// Fractional qty only when selling by weight/volume and not using dozen/bundle.
@@ -87,6 +94,32 @@ class CartItem {
     final normalizedUnit = unit == 'gm' ? 'g' : unit;
     const weightVolumeUnits = ['kg', 'g', 'l', 'ml', 'lb', 'oz', 'ton'];
     return weightVolumeUnits.contains(normalizedUnit);
+  }
+
+  /// g, ml, l (and gm): +/- step and minimum editable line qty (after adding).
+  static const double smallFractionUnitStep = 0.1;
+
+  /// g, ml, l: minimum stock to appear in POS / add (below this, e.g. 0.05 g, hide).
+  static const double smallFractionMinStockToAdd = 0.1;
+
+  /// Default first-line qty for g, ml, l when stock ≥ this (e.g. 1.0 g); if stock is lower, default is all of it (e.g. 0.5).
+  static const double smallFractionDefaultCartQuantity = 1.0;
+
+  /// Grams, millilitres, litres — not kg (kg keeps 1.0 step / default).
+  static bool unitUsesSmallFractionDefault(String unit) {
+    final u = unit.trim().toLowerCase();
+    final n = u == 'gm' ? 'g' : u;
+    return n == 'g' || n == 'ml' || n == 'l';
+  }
+
+  /// POS grid / add button (g/ml/l need ≥ [smallFractionMinStockToAdd], e.g. 0.5 g is OK).
+  static bool hasEnoughStockToAdd(Product product) {
+    if (product.stock <= 0) return false;
+    if (unitUsesSmallFractionDefault(product.unit) &&
+        product.stock < smallFractionMinStockToAdd) {
+      return false;
+    }
+    return true;
   }
 
   /// Minimum quantity for fractional units (e.g. 0.001 kg = 1 gram).
@@ -122,16 +155,72 @@ class CartProvider with ChangeNotifier {
 
   void setSaleType(SaleType type) {
     _saleType = type;
-    // Update all existing cart items with new sale type
-    for (var item in _items.values) {
-      item.saleType = type;
+    // New [CartItem] instances so POS cart tiles' didUpdateWidget sees changes
+    // (mutating the same instance makes old/new widget compare equal).
+    final next = <String, CartItem>{};
+    for (final entry in _items.entries) {
+      final old = entry.value;
+      final item = CartItem(
+        product: old.product,
+        quantity: old.quantity,
+        saleType: type,
+      );
+      if (type == SaleType.wholesale) {
+        if (!_applyWholesaleQuantitySnap(item) || item.quantity <= 0) {
+          continue;
+        }
+      }
+      next[entry.key] = item;
     }
+    _items
+      ..clear()
+      ..addAll(next);
     notifyListeners();
+  }
+
+  /// When switching to wholesale with dozen/bundle pricing, snap quantity to full
+  /// dozens (12) or full bundles so totals match bundle/dozen prices. Per-piece
+  /// wholesale keeps quantity unchanged.
+  ///
+  /// Returns false if the line should be dropped (no wholesale price config).
+  bool _applyWholesaleQuantitySnap(CartItem item) {
+    final p = item.product;
+    final hasBundle = p.bundlePrice != null &&
+        p.bundleSize != null &&
+        p.bundleSize! > 0;
+    if (p.dozenPrice == null && p.wholesalePrice == null && !hasBundle) {
+      return false;
+    }
+    if (p.dozenPrice != null) {
+      _snapQuantityToStep(item, 12.0);
+      return true;
+    }
+    if (hasBundle) {
+      _snapQuantityToStep(item, p.bundleSize!.toDouble());
+      return true;
+    }
+    return true;
+  }
+
+  void _snapQuantityToStep(CartItem item, double step) {
+    if (step <= 0) return;
+    final stock = item.product.stock;
+    var q = item.quantity;
+    var snapped = (q / step).ceil() * step;
+    if (snapped < step) snapped = step;
+    if (snapped > stock) {
+      final maxFull = (stock / step).floor() * step;
+      snapped = maxFull >= step ? maxFull : stock;
+    }
+    item.quantity = snapped;
   }
 
   void addItem(Product product) {
     if (product.stock <= 0) {
       return; // Don't add out of stock items
+    }
+    if (!CartItem.hasEnoughStockToAdd(product)) {
+      return;
     }
 
     // In wholesale mode, require at least one: wholesale, dozen, or bundle price.
@@ -156,8 +245,9 @@ class CartProvider with ChangeNotifier {
         notifyListeners();
       }
     } else {
-      // Default quantity: 12 (dozen size) or bundle size (e.g. 24) so cart shows 12 / 24, not 1.
-      double initialQuantity = 1.0;
+      // Default quantity: wholesale dozen/bundle → 12 / bundleSize; else 1.0.
+      // g/ml/l: stock ≥ 1.0 → default 1.0; stock < 1.0 → default 0.1 (not full stock).
+      double initialQuantity = CartItem.smallFractionDefaultCartQuantity;
       if (_saleType == SaleType.wholesale) {
         if (product.dozenPrice != null) {
           initialQuantity = 12.0; // 1 dozen = 12 pieces
@@ -166,6 +256,15 @@ class CartProvider with ChangeNotifier {
             product.bundleSize! > 0) {
           initialQuantity = product.bundleSize!.toDouble(); // 1 bundle = bundleSize pieces
         }
+      }
+      if (CartItem.unitUsesSmallFractionDefault(product.unit) &&
+          initialQuantity == CartItem.smallFractionDefaultCartQuantity) {
+        initialQuantity = product.stock >= CartItem.smallFractionDefaultCartQuantity
+            ? CartItem.smallFractionDefaultCartQuantity
+            : CartItem.smallFractionUnitStep;
+      }
+      if (initialQuantity > product.stock) {
+        initialQuantity = product.stock;
       }
       _items[product.id] =
           CartItem(product: product, quantity: initialQuantity, saleType: _saleType);
@@ -178,10 +277,21 @@ class CartProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  void updateQuantity(String productId, double quantity) {
+  /// [allowSubStepMinimum]: for weight/volume lines, g/ml/l use 0.1 as normal
+  /// [CartItem.minQuantity] for +/- — set true when applying weight-calculator
+  /// results so amounts like 0.0357 kg are allowed (floor [CartItem.fractionalMinQuantity]).
+  void updateQuantity(
+    String productId,
+    double quantity, {
+    bool allowSubStepMinimum = false,
+  }) {
     if (_items.containsKey(productId)) {
-      final product = _items[productId]!.product;
-      if (quantity > 0 && quantity <= product.stock) {
+      final cartItem = _items[productId]!;
+      final product = cartItem.product;
+      final minQ = allowSubStepMinimum && cartItem.supportsFractionalQuantity
+          ? CartItem.fractionalMinQuantity
+          : cartItem.minQuantity;
+      if (quantity > 0 && quantity >= minQ && quantity <= product.stock) {
         _items[productId]!.quantity = quantity;
         notifyListeners();
       }
@@ -295,6 +405,76 @@ class CartProvider with ChangeNotifier {
       final increment = cartItem.quantityStep;
       final effectiveNeeded = cartItem.effectiveQuantityFor(cartItem.quantity + increment);
       return effectiveNeeded <= cartItem.product.stock;
+    }
+    return true;
+  }
+
+  /// Syncs each cart line with the latest catalog [Product] from Firestore
+  /// (stock, sale/wholesale/dozen/bundle prices, purchase price, names, etc.).
+  /// POS line uses server data so product edits and buyer-bill stock/avg updates apply in real time.
+  void syncProductsFromServer(List<Product> latestProducts) {
+    if (_items.isEmpty) return;
+    final map = {for (final p in latestProducts) p.id: p};
+    final keys = _items.keys.toList();
+    var changed = false;
+    for (final key in keys) {
+      final item = _items[key];
+      if (item == null) continue;
+      final latest = map[key];
+      if (latest == null) continue;
+
+      if (latest.stock <= 0) {
+        _items.remove(key);
+        changed = true;
+        continue;
+      }
+      if (CartItem.unitUsesSmallFractionDefault(latest.unit) &&
+          latest.stock < CartItem.smallFractionMinStockToAdd) {
+        _items.remove(key);
+        changed = true;
+        continue;
+      }
+
+      var newQty = item.quantity;
+      if (newQty > latest.stock) {
+        newQty = latest.stock;
+      }
+
+      if (!_sameCatalogProduct(item.product, latest) || newQty != item.quantity) {
+        _items[key] = CartItem(
+          product: latest,
+          quantity: newQty,
+          saleType: item.saleType,
+        );
+        changed = true;
+      }
+    }
+    if (changed) notifyListeners();
+  }
+
+  bool _sameCatalogProduct(Product a, Product b) {
+    if (identical(a, b)) return true;
+    if (a.stock != b.stock ||
+        a.salePrice != b.salePrice ||
+        a.purchasePrice != b.purchasePrice ||
+        a.wholesalePrice != b.wholesalePrice ||
+        a.dozenPrice != b.dozenPrice ||
+        a.bundlePrice != b.bundlePrice ||
+        a.bundleSize != b.bundleSize ||
+        a.minimumSalePrice != b.minimumSalePrice ||
+        a.unit != b.unit ||
+        a.name != b.name ||
+        a.updatedAt != b.updatedAt) {
+      return false;
+    }
+    final an = a.names;
+    final bn = b.names;
+    if ((an == null) != (bn == null)) return false;
+    if (an != null && bn != null) {
+      if (an.length != bn.length) return false;
+      for (final e in an.entries) {
+        if (bn[e.key] != e.value) return false;
+      }
     }
     return true;
   }

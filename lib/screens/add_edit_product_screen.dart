@@ -649,6 +649,24 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   Future<void> _saveProduct() async {
     if (!_formKey.currentState!.validate()) return;
 
+    final bundlePriceVal = double.tryParse(_bundlePriceController.text.trim());
+    final bundleSizeVal = int.tryParse(_bundleSizeController.text.trim());
+    if (bundlePriceVal != null &&
+        bundlePriceVal > 0 &&
+        (bundleSizeVal == null || bundleSizeVal <= 0)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Enter bundle size (pcs per bundle) when bundle price is set',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });
@@ -1280,38 +1298,6 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               },
             ),
             const SizedBox(height: 16),
-            TextFormField(
-              controller: _minimumSalePriceController,
-              decoration: const InputDecoration(
-                labelText: 'Minimum Sale Price',
-                hintText: 'Optional. Cannot sell below this price in POS.',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.sell),
-                prefixText: 'Rs. ',
-                helperText: 'If set, POS will not allow selling below this price. If empty, purchase price is used as floor.',
-              ),
-              keyboardType: TextInputType.number,
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-              ],
-              validator: (value) {
-                if (value == null || value.trim().isEmpty) return null;
-                final v = double.tryParse(value.trim());
-                if (v == null) return 'Enter valid price';
-                if (v < 0) return 'Cannot be negative';
-                return null;
-              },
-              onChanged: (value) {
-                if (_formKey.currentState != null) {
-                  Future.microtask(() {
-                    if (_formKey.currentState != null) {
-                      _formKey.currentState!.validate();
-                    }
-                  });
-                }
-              },
-            ),
-            const SizedBox(height: 16),
             // Toggle between manual and percentage mode
             Row(
               children: [
@@ -1636,59 +1622,64 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               ),
             ],
             const SizedBox(height: 16),
-            TextFormField(
-              controller: _dozenPriceController,
-              decoration: const InputDecoration(
-                labelText: 'Dozen (Dorzan) Price',
-                hintText: 'Optional (price for 12 pieces)',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.inventory_2),
-                prefixText: 'Rs. ',
-                helperText: 'Used in POS when Wholesale is selected (12 items = 1 dozen)',
-              ),
-              keyboardType: TextInputType.number,
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-              ],
-              validator: (value) {
-                if (value != null && value.isNotEmpty) {
-                  final dozenPrice = double.tryParse(value);
-                  if (dozenPrice == null) return 'Invalid price';
-                  if (dozenPrice <= 0) return 'Must be > 0';
-                  final purchasePrice = double.tryParse(_purchasePriceController.text);
-                  // purchasePrice is per single item; dozen price must be >= 12 * purchasePrice.
-                  if (purchasePrice != null &&
-                      purchasePrice > 0 &&
-                      dozenPrice < (purchasePrice * 12)) {
-                    return 'Dozen price cannot be less than 12× purchase price (Rs. ${(purchasePrice * 12).toStringAsFixed(2)})';
-                  }
-                }
-                return null;
-              },
-              onChanged: (value) {
-                if (_formKey.currentState != null) {
-                  Future.microtask(() {
-                    if (_formKey.currentState != null) {
-                      _formKey.currentState!.validate();
-                    }
-                  });
-                }
-              },
-            ),
-            const SizedBox(height: 16),
+            // Same row layout as Add Item (buyer bill): dozen | bundle price | bundle size.
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: TextFormField(
+                    controller: _dozenPriceController,
+                    decoration: const InputDecoration(
+                      labelText: 'Dozen price',
+                      hintText: '12 pcs',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.inventory_2, size: 20),
+                      prefixText: 'Rs. ',
+                      helperText: 'Price per 12',
+                      isDense: true,
+                    ),
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                    ],
+                    validator: (value) {
+                      if (value != null && value.isNotEmpty) {
+                        final dozenPrice = double.tryParse(value);
+                        if (dozenPrice == null) return 'Invalid price';
+                        if (dozenPrice <= 0) return 'Must be > 0';
+                        final purchasePrice =
+                            double.tryParse(_purchasePriceController.text);
+                        if (purchasePrice != null &&
+                            purchasePrice > 0 &&
+                            dozenPrice < (purchasePrice * 12)) {
+                          return '≥ 12× purchase (Rs. ${(purchasePrice * 12).toStringAsFixed(2)})';
+                        }
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      if (_formKey.currentState != null) {
+                        Future.microtask(() {
+                          if (_formKey.currentState != null) {
+                            _formKey.currentState!.validate();
+                          }
+                        });
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
                     controller: _bundlePriceController,
                     decoration: const InputDecoration(
-                      labelText: 'Bundle Price',
-                      hintText: 'Optional (price per bundle)',
+                      labelText: 'Bundle price',
+                      hintText: 'e.g. 10, 16, 20',
                       border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.layers),
+                      prefixIcon: Icon(Icons.layers, size: 20),
                       prefixText: 'Rs. ',
-                      helperText: 'Wholesale: price per bundle',
+                      helperText: 'Price per bundle',
+                      isDense: true,
                     ),
                     keyboardType: TextInputType.number,
                     inputFormatters: [
@@ -1700,13 +1691,15 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                         if (bundlePrice == null) return 'Invalid price';
                         if (bundlePrice <= 0) return 'Must be > 0';
                         final sizeStr = _bundleSizeController.text.trim();
-                        if (sizeStr.isEmpty) return 'Set Bundle Size';
+                        if (sizeStr.isEmpty) return 'Set bundle size';
                         final bundleSize = int.tryParse(sizeStr);
-                        if (bundleSize == null || bundleSize < 1) return 'Enter a number (1 or more)';
-                        final purchasePrice = double.tryParse(_purchasePriceController.text);
-                        if (purchasePrice != null && purchasePrice > 0 &&
+                        if (bundleSize == null || bundleSize < 1) return 'Size ≥ 1';
+                        final purchasePrice =
+                            double.tryParse(_purchasePriceController.text);
+                        if (purchasePrice != null &&
+                            purchasePrice > 0 &&
                             bundlePrice < (purchasePrice * bundleSize)) {
-                          return 'Bundle price cannot be less than $bundleSize× purchase price';
+                          return '< ${bundleSize}× purchase';
                         }
                       }
                       return null;
@@ -1714,7 +1707,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                     onChanged: (value) {
                       if (_formKey.currentState != null) {
                         Future.microtask(() {
-                          if (_formKey.currentState != null) _formKey.currentState!.validate();
+                          if (_formKey.currentState != null) {
+                            _formKey.currentState!.validate();
+                          }
                         });
                       }
                     },
@@ -1725,11 +1720,12 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                   child: TextFormField(
                     controller: _bundleSizeController,
                     decoration: const InputDecoration(
-                      labelText: 'Bundle Size',
-                      hintText: 'e.g. 10, 24, 36, 48, 50',
+                      labelText: 'Bundle size',
+                      hintText: 'e.g. 10, 24, 36',
                       border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.numbers),
-                      helperText: 'Any number (items per bundle)',
+                      prefixIcon: Icon(Icons.numbers, size: 20),
+                      helperText: 'Pcs per bundle',
+                      isDense: true,
                     ),
                     keyboardType: TextInputType.number,
                     inputFormatters: [
@@ -1737,22 +1733,58 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                     ],
                     validator: (value) {
                       if (_bundlePriceController.text.trim().isNotEmpty) {
-                        if (value == null || value.isEmpty) return 'Required when Bundle Price is set';
+                        if (value == null || value.isEmpty) {
+                          return 'Required with bundle price';
+                        }
                         final n = int.tryParse(value);
-                        if (n == null || n < 1) return 'Enter a number (1 or more)';
+                        if (n == null || n < 1) return 'Size ≥ 1';
                       }
                       return null;
                     },
                     onChanged: (value) {
                       if (_formKey.currentState != null) {
                         Future.microtask(() {
-                          if (_formKey.currentState != null) _formKey.currentState!.validate();
+                          if (_formKey.currentState != null) {
+                            _formKey.currentState!.validate();
+                          }
                         });
                       }
                     },
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _minimumSalePriceController,
+              decoration: const InputDecoration(
+                labelText: 'Minimum sale price',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.vertical_align_bottom, size: 20),
+                prefixText: 'Rs. ',
+                helperText:
+                    'Floor for POS sale price; optional (empty = use purchase price as floor)',
+              ),
+              keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+              ],
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) return null;
+                final v = double.tryParse(value.trim());
+                if (v == null) return 'Enter valid price';
+                if (v < 0) return 'Cannot be negative';
+                return null;
+              },
+              onChanged: (value) {
+                if (_formKey.currentState != null) {
+                  Future.microtask(() {
+                    if (_formKey.currentState != null) {
+                      _formKey.currentState!.validate();
+                    }
+                  });
+                }
+              },
             ),
             const SizedBox(height: 16),
             TextFormField(
