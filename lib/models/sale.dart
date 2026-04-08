@@ -71,8 +71,8 @@ class Sale {
     return Sale(
       id: map['id'] ?? '',
       items: (map['items'] as List<dynamic>?)
-              ?.map((item) => SaleItem.fromMap(item as Map<String, dynamic>))
-              .toList() ??
+          ?.map((item) => SaleItem.fromMap(item as Map<String, dynamic>))
+          .toList() ??
           [],
       total: (map['total'] ?? 0).toDouble(),
       profit: (map['profit'] ?? 0).toDouble(),
@@ -94,15 +94,45 @@ class Sale {
       existingDueTotalAtSale: (map['existingDueTotalAtSale'] ?? 0).toDouble(),
     );
   }
-  
+
   // Get net total (total minus returned amount)
   double get netTotal => total - returnedAmount;
-  
-  // Calculate net profit (profit proportional to net total)
+
+  /// True when every line has a stored cost so we can compute net profit from remaining qty exactly.
+  bool get _allItemsHavePurchasePrice =>
+      items.isNotEmpty && items.every((i) => i.purchasePrice != null);
+
+  // Net profit after returns: exact margin on **remaining** quantity when cost was saved per line;
+  // otherwise proportional (legacy sales without purchasePrice on items).
   double get netProfit {
+    if (isBorrowPayment) return 0.0;
+    if (returnedAmount <= 0) return profit;
+    if (_allItemsHavePurchasePrice) {
+      final sum = items.fold<double>(
+        0.0,
+            (s, i) =>
+        s + (i.price - (i.purchasePrice ?? 0)) * i.remainingQuantity,
+      );
+      return sum < 0 ? 0.0 : sum;
+    }
     if (total == 0) return 0;
-    // Profit reduces proportionally to the returned amount
     return profit * (netTotal / total);
+  }
+}
+
+extension SaleItemNetLineProfit on SaleItem {
+  /// Net profit on **remaining** (not returned) quantity: \((price − cost)×rem\).
+  /// If [SaleItem.purchasePrice] is null (old sales), uses this line’s share of [sale].netProfit.
+  double netLineProfit(Sale sale) {
+    final rem = remainingQuantity;
+    if (rem <= 0) return 0.0;
+    final pp = purchasePrice;
+    if (pp != null) {
+      return (price - pp) * rem;
+    }
+    final netTotal = sale.netTotal;
+    if (netTotal <= 0 || sale.isBorrowPayment) return 0.0;
+    return sale.netProfit * (remainingSubtotal / netTotal);
   }
 }
 

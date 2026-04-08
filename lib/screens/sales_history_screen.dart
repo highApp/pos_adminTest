@@ -1,5 +1,8 @@
+import 'dart:async' show unawaited;
+
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
 import '../models/sale.dart';
@@ -67,13 +70,13 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _searchController.text.isNotEmpty
                     ? IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          setState(() {
-                            _searchController.clear();
-                          });
-                        },
-                      )
+                  icon: const Icon(Icons.clear),
+                  onPressed: () {
+                    setState(() {
+                      _searchController.clear();
+                    });
+                  },
+                )
                     : null,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -195,7 +198,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                             orders = orders.where((order) {
                               final orderDate = order.completedAt ?? order.createdAt;
                               return orderDate.isAfter(_startDate!.subtract(const Duration(seconds: 1))) &&
-                                     orderDate.isBefore(_endDate!.add(const Duration(days: 1)));
+                                  orderDate.isBefore(_endDate!.add(const Duration(days: 1)));
                             }).toList();
                           }
 
@@ -212,12 +215,12 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                             // First filter by fields we can check directly
                             sales = sales.where((sale) {
                               // Search in description
-                              if (sale.description != null && 
+                              if (sale.description != null &&
                                   sale.description!.toLowerCase().contains(searchQuery)) {
                                 return true;
                               }
                               // Search in customer name
-                              if (sale.customerName != null && 
+                              if (sale.customerName != null &&
                                   sale.customerName!.toLowerCase().contains(searchQuery)) {
                                 return true;
                               }
@@ -226,7 +229,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                 return true;
                               }
                               // Search in item names
-                              if (sale.items.any((item) => 
+                              if (sale.items.any((item) =>
                                   item.productName.toLowerCase().contains(searchQuery))) {
                                 return true;
                               }
@@ -238,7 +241,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
 
                           // Create combined list
                           final combinedTransactions = <Map<String, dynamic>>[];
-                          
+
                           // Add sales
                           for (var sale in sales) {
                             combinedTransactions.add({
@@ -396,44 +399,23 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   }
 
   void _showProfitUnlockDialog() {
-    final controller = TextEditingController();
-    showDialog<void>(
+    showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Show profit'),
-        content: TextField(
-          controller: controller,
-          obscureText: true,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: 'Password',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (_) => _tryUnlockProfit(ctx, controller.text),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => _tryUnlockProfit(ctx, controller.text),
-            child: const Text('Unlock'),
-          ),
-        ],
+      barrierDismissible: true,
+      builder: (dialogContext) => _ProfitUnlockDialog(
+        expectedPassword: _profitVisibilityPassword,
+        onWrongPassword: () {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Incorrect password'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        },
       ),
-    ).then((_) {
-      // Dispose after the route (and TextField) are fully unmounted — avoids framework assertions.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        controller.dispose();
-      });
-    });
-  }
-
-  void _tryUnlockProfit(BuildContext dialogContext, String password) {
-    if (password == _profitVisibilityPassword) {
-      Navigator.pop(dialogContext);
-      // Pop + setState in the same frame can leave InheritedWidget dependents during teardown.
+    ).then((unlocked) {
+      if (!mounted || unlocked != true) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         setState(() => _showProfitInSalesHistory = true);
@@ -444,14 +426,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
           ),
         );
       });
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Incorrect password'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
+    });
   }
 
   void _confirmHideProfit() {
@@ -485,7 +460,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   void _showReturnDialog(BuildContext context, Sale sale) {
     // Check if there are any items that can be returned
     final returnableItems = sale.items.where((item) => item.remainingQuantity > 0).toList();
-    
+
     if (returnableItems.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('All items have already been returned')),
@@ -586,6 +561,79 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   }
 }
 
+/// Owns [TextEditingController] so it is disposed only after the route removes the [TextField]
+/// (disposing from the parent [showDialog] `.then` caused "used after disposed" on Chrome).
+class _ProfitUnlockDialog extends StatefulWidget {
+  const _ProfitUnlockDialog({
+    required this.expectedPassword,
+    required this.onWrongPassword,
+  });
+
+  final String expectedPassword;
+  final VoidCallback onWrongPassword;
+
+  @override
+  State<_ProfitUnlockDialog> createState() => _ProfitUnlockDialogState();
+}
+
+class _ProfitUnlockDialogState extends State<_ProfitUnlockDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+    final password = _controller.text.trim();
+    if (password == widget.expectedPassword) {
+      Navigator.of(context).pop(true);
+    } else {
+      widget.onWrongPassword();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Show profit'),
+      content: TextField(
+        controller: _controller,
+        obscureText: true,
+        keyboardType: TextInputType.text,
+        inputFormatters: [
+          FilteringTextInputFormatter.allow(RegExp(r'[0-9]')),
+        ],
+        decoration: const InputDecoration(
+          labelText: 'Password',
+          border: OutlineInputBorder(),
+        ),
+        onSubmitted: (_) => unawaited(_submit()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => unawaited(_submit()),
+          child: const Text('Unlock'),
+        ),
+      ],
+    );
+  }
+}
+
 /// Expandable tile for multiple POS sales by the same seller on the same day.
 class _SellerDayGroupTile extends StatelessWidget {
   final String? sellerId;
@@ -611,13 +659,13 @@ class _SellerDayGroupTile extends StatelessWidget {
     final formatter = NumberFormat.currency(symbol: 'Rs. ');
     final dateStr = DateFormat('MMM dd, yyyy').format(date);
     final totalAmount =
-        sales.fold<double>(0.0, (sum, s) => sum + s.total);
+    sales.fold<double>(0.0, (sum, s) => sum + s.total);
     final future = sellerId != null
         ? Future.wait([
-            sellerService.getSellerById(sellerId!),
-            sellerService.getTotalDueAmountForSeller(sellerId!),
-            sellerService.getCreditBalance(sellerId!),
-          ])
+      sellerService.getSellerById(sellerId!),
+      sellerService.getTotalDueAmountForSeller(sellerId!),
+      sellerService.getCreditBalance(sellerId!),
+    ])
         : Future.value(<dynamic>[null, 0.0, 0.0]);
     return FutureBuilder<List<dynamic>>(
       future: future,
@@ -670,14 +718,14 @@ class _SellerDayGroupTile extends StatelessWidget {
               children: sales
                   .map(
                     (sale) => Padding(
-                      padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
-                      child: _SaleCard(
-                        sale: sale,
-                        showProfit: showProfit,
-                        onReturn: () => onReturn(sale),
-                      ),
-                    ),
-                  )
+                  padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+                  child: _SaleCard(
+                    sale: sale,
+                    showProfit: showProfit,
+                    onReturn: () => onReturn(sale),
+                  ),
+                ),
+              )
                   .toList(),
             ),
           ),
@@ -828,7 +876,7 @@ class _SaleCard extends StatelessWidget {
         if (kIsWeb &&
             connectionType == PrinterConnectionType.bluetooth) {
           errorMessage =
-              'Bluetooth printing from the browser often fails. Try WiFi printer or print from the mobile app.';
+          'Bluetooth printing from the browser often fails. Try WiFi printer or print from the mobile app.';
         }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -909,7 +957,7 @@ class _SaleCard extends StatelessWidget {
         leading: CircleAvatar(
           backgroundColor: hasReturns ? Colors.orange.shade100 : Colors.green.shade100,
           child: Icon(
-            hasReturns ? Icons.assignment_return : Icons.receipt, 
+            hasReturns ? Icons.assignment_return : Icons.receipt,
             color: hasReturns ? Colors.orange.shade700 : Colors.green.shade700,
           ),
         ),
@@ -918,7 +966,7 @@ class _SaleCard extends StatelessWidget {
             Text(
               formatter.format(sale.total),
               style: TextStyle(
-                fontWeight: FontWeight.bold, 
+                fontWeight: FontWeight.bold,
                 fontSize: 18,
                 decoration: hasReturns ? TextDecoration.lineThrough : null,
               ),
@@ -1189,10 +1237,17 @@ class _SaleCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 ...sale.items.map((item) {
+                  final showLineEconomics =
+                      showProfit && !sale.isBorrowPayment;
+                  final lineNetProfit = showLineEconomics
+                      ? item.netLineProfit(sale)
+                      : null;
+                  final pp = item.purchasePrice;
                   return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
                           child: Column(
@@ -1210,9 +1265,38 @@ class _SaleCard extends StatelessWidget {
                             ],
                           ),
                         ),
-                        Text(
-                          formatter.format(item.subtotal),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (showLineEconomics) ...[
+                              if (pp != null)
+                                Text(
+                                  'Cost/u: ${formatter.format(pp)}',
+                                  style: TextStyle(
+                                    color: Colors.grey.shade700,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              if (lineNetProfit != null) ...[
+                                Text(
+                                  item.remainingQuantity <= 0
+                                      ? 'Line profit: —'
+                                      : 'Line profit: ${formatter.format(lineNetProfit)}',
+                                  style: TextStyle(
+                                    color: Colors.teal.shade700,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 2),
+                            ],
+                            Text(
+                              formatter.format(item.subtotal),
+                              style:
+                              const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -1474,12 +1558,12 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
                               icon: const Icon(Icons.remove_circle_outline),
                               onPressed: returnQty > 0
                                   ? () {
-                                      setState(() {
-                                        // Support fractional quantities for weight-based items
-                                        final decrement = returnQty % 1 == 0 ? 1.0 : 0.1;
-                                        _returnQuantities[item.productId] = (returnQty - decrement).clamp(0.0, item.remainingQuantity);
-                                      });
-                                    }
+                                setState(() {
+                                  // Support fractional quantities for weight-based items
+                                  final decrement = returnQty % 1 == 0 ? 1.0 : 0.1;
+                                  _returnQuantities[item.productId] = (returnQty - decrement).clamp(0.0, item.remainingQuantity);
+                                });
+                              }
                                   : null,
                             ),
                             Container(
@@ -1500,12 +1584,12 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
                               icon: const Icon(Icons.add_circle_outline),
                               onPressed: returnQty < item.remainingQuantity
                                   ? () {
-                                      setState(() {
-                                        // Support fractional quantities for weight-based items
-                                        final increment = returnQty % 1 == 0 ? 1.0 : 0.1;
-                                        _returnQuantities[item.productId] = (returnQty + increment).clamp(0.0, item.remainingQuantity);
-                                      });
-                                    }
+                                setState(() {
+                                  // Support fractional quantities for weight-based items
+                                  final increment = returnQty % 1 == 0 ? 1.0 : 0.1;
+                                  _returnQuantities[item.productId] = (returnQty + increment).clamp(0.0, item.remainingQuantity);
+                                });
+                              }
                                   : null,
                             ),
                           ],
@@ -1576,17 +1660,17 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
                     ),
                     child: _isProcessing
                         ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
                         : const Text(
-                            'Process Return',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
+                      'Process Return',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
               ],
@@ -1603,6 +1687,22 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
     });
 
     try {
+      // Fill missing cost from product so net profit can use line-accurate math after save
+      final resolvedPurchaseByProductId = <String, double>{};
+      for (var item in widget.sale.items) {
+        if (item.productId.isEmpty) continue;
+        if (item.purchasePrice != null) {
+          resolvedPurchaseByProductId[item.productId] = item.purchasePrice!;
+          continue;
+        }
+        try {
+          final p = await _productService.getProductById(item.productId);
+          if (p != null) {
+            resolvedPurchaseByProductId[item.productId] = p.purchasePrice;
+          }
+        } catch (_) {}
+      }
+
       // Calculate total return amount
       double totalReturnAmount = 0;
       final updatedItems = <SaleItem>[];
@@ -1615,6 +1715,9 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
 
         totalReturnAmount += item.price * returnQty;
 
+        final resolvedPp = item.purchasePrice ??
+            resolvedPurchaseByProductId[item.productId];
+
         // Create updated sale item
         updatedItems.add(SaleItem(
           productId: item.productId,
@@ -1623,6 +1726,7 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
           quantity: item.quantity,
           subtotal: item.subtotal,
           returnedQuantity: newReturnedQty,
+          purchasePrice: resolvedPp,
         ));
 
         // Track stock updates (accumulate if same product appears multiple times)
@@ -1645,7 +1749,7 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
 
       // Store previous returned amount before update
       final previousReturnedAmount = widget.sale.returnedAmount;
-      
+
       // Create updated sale - IMPORTANT: Preserve all original sale fields including creditUsed and recoveryBalance
       final updatedSale = Sale(
         id: widget.sale.id,
@@ -1677,7 +1781,7 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
           SnackBar(
             content: Text(
               'Return processed: ${NumberFormat.currency(symbol: 'Rs. ').format(totalReturnAmount)} refunded\n'
-              'Stock restored for ${stockUpdates.length} product(s)',
+                  'Stock restored for ${stockUpdates.length} product(s)',
             ),
             backgroundColor: Colors.orange,
             duration: const Duration(seconds: 3),

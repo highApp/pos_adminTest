@@ -8,10 +8,21 @@ class CartItem {
   double quantity; // Changed from int to double to support fractional quantities
   SaleType saleType;
 
+  /// Cart-only price edits. Stored separately so [CartProvider.syncProductsFromServer]
+  /// can refresh stock/catalog from Firestore without reverting manual prices.
+  double? overrideRegularSalePrice;
+  double? overrideWholesalePrice;
+  double? overrideDozenPrice;
+  double? overrideBundlePrice;
+
   CartItem({
     required this.product,
     this.quantity = 1.0,
     this.saleType = SaleType.regular,
+    this.overrideRegularSalePrice,
+    this.overrideWholesalePrice,
+    this.overrideDozenPrice,
+    this.overrideBundlePrice,
   });
 
   bool get _isPieceUnit {
@@ -38,17 +49,29 @@ class CartItem {
   double get unitPrice {
     // Per-piece price: dozen = dozenPrice/12, bundle = bundlePrice/bundleSize. Same for all units.
     if (saleType == SaleType.wholesale) {
-      if (usesDozenPricing) return product.dozenPrice! / 12.0;
-      if (usesBundlePricing) return product.bundlePrice! / product.bundleSize!;
-      if (product.wholesalePrice != null) return product.wholesalePrice!;
+      if (usesDozenPricing) {
+        final d = overrideDozenPrice ?? product.dozenPrice!;
+        return d / 12.0;
+      }
+      if (usesBundlePricing) {
+        final b = overrideBundlePrice ?? product.bundlePrice!;
+        return b / product.bundleSize!;
+      }
+      if (product.wholesalePrice != null) {
+        return overrideWholesalePrice ?? product.wholesalePrice!;
+      }
     }
-    return product.salePrice;
+    return overrideRegularSalePrice ?? product.salePrice;
   }
 
   /// What to show in UI as the "unit price" (dozen price, bundle price, or per-unit).
   double get displayUnitPrice {
-    if (saleType == SaleType.wholesale && usesDozenPricing) return product.dozenPrice!;
-    if (saleType == SaleType.wholesale && usesBundlePricing) return product.bundlePrice!;
+    if (saleType == SaleType.wholesale && usesDozenPricing) {
+      return overrideDozenPrice ?? product.dozenPrice!;
+    }
+    if (saleType == SaleType.wholesale && usesBundlePricing) {
+      return overrideBundlePrice ?? product.bundlePrice!;
+    }
     return unitPrice;
   }
 
@@ -63,15 +86,24 @@ class CartItem {
 
   double get subtotal => unitPrice * quantity;
 
-  /// Quantity step: +/− add/subtract one dozen (12) or one bundle (bundleSize). Same for KG, G, ML, pieces.
+  /// Quantity step for +/−: dozen (12), bundle, pieces (1), kg (1).
+  ///
+  /// **g / ml / l** (and `gm`): step depends on **current** quantity so 1.0→2.0 not 1.0→1.1;
+  /// below 1 unit, step is 0.1 so 0.1→0.2; finer steps under 0.1 for very small amounts.
   double get quantityStep {
     if (usesDozenPricing) return 12.0;
-    if (usesBundlePricing && product.bundleSize != null) return product.bundleSize!.toDouble();
+    if (usesBundlePricing && product.bundleSize != null) {
+      return product.bundleSize!.toDouble();
+    }
     if (!supportsFractionalQuantity) return 1.0;
     final unit = product.unit.trim().toLowerCase();
     final normalizedUnit = unit == 'gm' ? 'g' : unit;
     if (CartItem.unitUsesSmallFractionDefault(product.unit)) {
-      return CartItem.smallFractionUnitStep;
+      final q = quantity;
+      if (q + 1e-9 >= 1.0) return 1.0;
+      if (q + 1e-9 >= 0.1) return CartItem.smallFractionUnitStep;
+      if (q + 1e-9 >= 0.01) return 0.01;
+      return 0.001;
     }
     if (normalizedUnit == 'kg') return 1.0;
     return CartItem.fractionalIncrement;
@@ -153,6 +185,18 @@ class CartProvider with ChangeNotifier {
     return _items.values.fold(0.0, (sum, item) => sum + item.subtotal);
   }
 
+  /// Sum of line quantities, formatted for UI (no unnecessary trailing zeros).
+  String get formattedTotalQuantity {
+    final t = totalItems;
+    if ((t - t.roundToDouble()).abs() < 1e-9) {
+      return t.round().toString();
+    }
+    var s = t.toStringAsFixed(3);
+    s = s.replaceFirst(RegExp(r'0+$'), '');
+    s = s.replaceFirst(RegExp(r'\.$'), '');
+    return s;
+  }
+
   void setSaleType(SaleType type) {
     _saleType = type;
     // New [CartItem] instances so POS cart tiles' didUpdateWidget sees changes
@@ -164,6 +208,10 @@ class CartProvider with ChangeNotifier {
         product: old.product,
         quantity: old.quantity,
         saleType: type,
+        overrideRegularSalePrice: old.overrideRegularSalePrice,
+        overrideWholesalePrice: old.overrideWholesalePrice,
+        overrideDozenPrice: old.overrideDozenPrice,
+        overrideBundlePrice: old.overrideBundlePrice,
       );
       if (type == SaleType.wholesale) {
         if (!_applyWholesaleQuantitySnap(item) || item.quantity <= 0) {
@@ -300,25 +348,18 @@ class CartProvider with ChangeNotifier {
 
   void updatePrice(String productId, double newPrice) {
     if (_items.containsKey(productId)) {
-      // Create a new product with updated price for this cart session only
-      final originalProduct = _items[productId]!.product;
-      final saleType = _items[productId]!.saleType;
       final cartItem = _items[productId]!;
-      Product updatedProduct;
-      if (saleType == SaleType.wholesale) {
+      if (cartItem.saleType == SaleType.wholesale) {
         if (cartItem.usesDozenPricing) {
-          updatedProduct = originalProduct.copyWith(dozenPrice: newPrice);
+          cartItem.overrideDozenPrice = newPrice;
         } else if (cartItem.usesBundlePricing) {
-          updatedProduct = originalProduct.copyWith(bundlePrice: newPrice);
+          cartItem.overrideBundlePrice = newPrice;
         } else {
-          updatedProduct = originalProduct.copyWith(wholesalePrice: newPrice);
+          cartItem.overrideWholesalePrice = newPrice;
         }
       } else {
-        updatedProduct = originalProduct.copyWith(salePrice: newPrice);
+        cartItem.overrideRegularSalePrice = newPrice;
       }
-
-      // Update the cart item with the new product (price only affects this cart)
-      _items[productId]!.product = updatedProduct;
       notifyListeners();
     }
   }
@@ -445,6 +486,10 @@ class CartProvider with ChangeNotifier {
           product: latest,
           quantity: newQty,
           saleType: item.saleType,
+          overrideRegularSalePrice: item.overrideRegularSalePrice,
+          overrideWholesalePrice: item.overrideWholesalePrice,
+          overrideDozenPrice: item.overrideDozenPrice,
+          overrideBundlePrice: item.overrideBundlePrice,
         );
         changed = true;
       }

@@ -1139,7 +1139,15 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   bool _isUpdatingWholesaleFromDozen = false;
   DateTime? _selectedDate;
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
-  bool _isManualTotalEdit = false;
+  /// True when line total is not exactly (per-pack before tax × Qty) × (1 + Tax%).
+  bool _lineTotalDiffersFromPerPackCalc() {
+    final p = double.tryParse(_priceController.text) ?? 0.0;
+    final q = double.tryParse(_quantityController.text) ?? 0.0;
+    final actual = double.tryParse(_totalPriceController.text) ?? 0.0;
+    if (p <= 0 || q <= 0 || actual <= 0) return false;
+    final expected = (p * q) * _getTaxMultiplier();
+    return (expected - actual).abs() > 0.02;
+  }
   String? _selectedCategory; // set from widget.initialCategory for new item, or from product when editing
   Product? _selectedProduct;
   /// Rebuild only the calculated-fields section (stops full-dialog setState on every keystroke).
@@ -1244,9 +1252,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _packSizeController.addListener(_updateSingleUnitPrice);
     _quantityController.addListener(_updateSingleUnitPrice);
 
-    // Bundle ↔ Wholesale and Dozen ↔ Wholesale real-time sync (same as Add/Edit Product)
+    // Bundle ↔ Wholesale real-time sync; dozen from wholesale only on tap (see dozen field)
     _wholesalePriceController.addListener(_updateBundlePriceFromWholesale);
-    _wholesalePriceController.addListener(_updateDozenPriceFromWholesale);
     _bundleSizeController.addListener(_updateBundlePriceFromWholesale);
     _bundlePriceController.addListener(_updateWholesalePriceFromBundle);
     _dozenPriceController.addListener(_updateWholesalePriceFromDozen);
@@ -1258,6 +1265,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _quantityController.addListener(_updateTotalQty);
     _packSizeController.addListener(_updateTotalQty);
     _bonusQtyController.addListener(_updateTotalQty);
+    _bonusQtyController.addListener(_updateSingleUnitPrice);
+    _totalPriceController.addListener(_updateSingleUnitPrice);
     _totalQtyController.addListener(_onTotalQtyChanged);
     
     // Load product stock if editing existing item
@@ -1338,16 +1347,16 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     });
   }
 
-  /// When wholesale price changes: dozen price = wholesale × 12. Skip if wholesale was set from bundle (dozen and bundle separate).
-  void _updateDozenPriceFromWholesale() {
-    if (_isUpdatingWholesaleFromDozen || _isUpdatingWholesaleFromBundle) return;
+  /// Tap dozen field (when empty) to set dozen = wholesale × 12 if wholesale is set.
+  void _fillDozenFromWholesaleOnTap() {
+    if (_dozenPriceController.text.trim().isNotEmpty) return;
     final wholesale = double.tryParse(_wholesalePriceController.text.trim());
-    if (wholesale != null && wholesale > 0) {
-      _isUpdatingDozenFromWholesale = true;
-      _dozenPriceController.text = (wholesale * 12).toStringAsFixed(2);
-      _isUpdatingDozenFromWholesale = false;
-      _calculatedVersion.value++;
-    }
+    if (wholesale == null || wholesale <= 0) return;
+    if (_isUpdatingWholesaleFromDozen || _isUpdatingWholesaleFromBundle) return;
+    _isUpdatingDozenFromWholesale = true;
+    _dozenPriceController.text = (wholesale * 12).toStringAsFixed(2);
+    _isUpdatingDozenFromWholesale = false;
+    _calculatedVersion.value++;
   }
 
   /// When dozen price changes: wholesale price = dozen price / 12. Do not change bundle (dozen and bundle are separate).
@@ -1510,20 +1519,17 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   }
 
   void _onPriceOrQuantityChanged() {
-    // Only auto-calculate total if user hasn't manually edited it recently
-    // Buyer bill: Total Price = (Price × Quantity) × (1 + Tax%) ; expense is your cost, not added to buyer total
-    if (!_isManualTotalEdit) {
-      final price = double.tryParse(_priceController.text) ?? 0.0;
-      final quantity = double.tryParse(_quantityController.text) ?? 0.0;
-      final baseTotal = price * quantity;
-      final taxMult = _getTaxMultiplier();
-      final calculatedTotal = baseTotal * taxMult;
-      
-      // Temporarily remove listeners to avoid recursive updates
-      _totalPriceController.removeListener(_onTotalPriceChanged);
-      _totalPriceController.text = calculatedTotal > 0 ? calculatedTotal.toStringAsFixed(2) : '';
-      _totalPriceController.addListener(_onTotalPriceChanged);
-    }
+    // Line total (tax incl.) = (per-pack before tax × Qty) × (1 + Tax%).
+    final price = double.tryParse(_priceController.text) ?? 0.0;
+    final quantity = double.tryParse(_quantityController.text) ?? 0.0;
+    final baseTotal = price * quantity;
+    final taxMult = _getTaxMultiplier();
+    final calculatedTotal = baseTotal * taxMult;
+
+    _totalPriceController.removeListener(_onTotalPriceChanged);
+    _totalPriceController.text =
+        calculatedTotal > 0 ? calculatedTotal.toStringAsFixed(2) : '';
+    _totalPriceController.addListener(_onTotalPriceChanged);
     _calculatedVersion.value++;
     // Debounce stock refresh so typing doesn't trigger repeated fetches/rebuilds
     _stockUpdateDebounce?.cancel();
@@ -1533,73 +1539,61 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   }
 
   void _onExpenseChanged() {
-    // Total Price for buyer = (Price × Quantity) × (1 + Tax%); expense does not change buyer total
-    if (!_isManualTotalEdit && mounted) {
-      final price = double.tryParse(_priceController.text) ?? 0.0;
-      final quantity = double.tryParse(_quantityController.text) ?? 0.0;
-      final baseTotal = price * quantity;
-      final taxMult = _getTaxMultiplier();
-      final calculatedTotal = baseTotal * taxMult;
-      
-      // Temporarily remove listener to avoid recursive updates
-      _totalPriceController.removeListener(_onTotalPriceChanged);
-      _totalPriceController.text = calculatedTotal > 0 ? calculatedTotal.toStringAsFixed(2) : '';
-      _totalPriceController.addListener(_onTotalPriceChanged);
-      _calculatedVersion.value++;
-    }
+    // Expenses are not added to buyer line total; only refresh derived single-unit display.
+    if (!mounted) return;
+    _updateSingleUnitPrice();
   }
   
   void _onTotalPriceChanged() {
-    // When total price is manually changed, recalculate the price field (base price before tax)
-    // Total Price shown = (Price × Quantity) × (1 + Tax%), so base price = totalPrice / (quantity * taxMult)
+    // User edited line total (tax incl.) → derive per-pack before tax = (total ÷ tax) ÷ Qty
     final totalPrice = double.tryParse(_totalPriceController.text) ?? 0.0;
     final quantity = double.tryParse(_quantityController.text) ?? 1.0;
     final taxMult = _getTaxMultiplier();
-    
+
     if (totalPrice > 0 && quantity > 0 && taxMult > 0) {
-      _isManualTotalEdit = true;
       final baseTotal = totalPrice / taxMult;
       final newPrice = baseTotal / quantity;
-      
-      // Temporarily remove listener to avoid recursive updates
+
       _priceController.removeListener(_onPriceOrQuantityChanged);
-      _priceController.text = newPrice > 0 ? newPrice.toStringAsFixed(2) : '';
+      // Extra decimals so line total round-trips (e.g. 19325.77 / 10 → per-pack precise enough)
+      _priceController.text = newPrice > 0 ? newPrice.toStringAsFixed(6) : '';
       _priceController.addListener(_onPriceOrQuantityChanged);
       _calculatedVersion.value++;
     }
   }
-  
+
   void _resetToCalculated() {
     setState(() {
-      _isManualTotalEdit = false;
       _onPriceOrQuantityChanged();
     });
   }
   
-  void _updateSingleUnitPrice() {
-    final price = double.tryParse(_priceController.text) ?? 0.0;
-    final packSize = double.tryParse(_packSizeController.text) ?? 1.0;
+  /// Same formula as the read-only **Total Qty** field: (Qty × Pack Size) + Bonus.
+  /// Used so **Single Unit Price** stays aligned when packing type is unset but pack size is set.
+  double _computeDisplayedLineTotalQty() {
     final qty = double.tryParse(_quantityController.text) ?? 0.0;
+    final packSize = double.tryParse(_packSizeController.text) ?? 0.0;
+    final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
+    final baseQty = (qty > 0 && packSize > 0) ? qty * packSize : 0.0;
+    return baseQty + bonusQty;
+  }
+
+  /// Amortized cost per smallest unit: (Total Price + line expenses) ÷ Total Qty.
+  /// Uses the **Total Price** field (tax-inclusive buyer line total) so manual totals match the UI.
+  void _updateSingleUnitPrice() {
+    final totalUnits = _computeDisplayedLineTotalQty();
+    final totalPrice = double.tryParse(_totalPriceController.text) ?? 0.0;
     final expense = double.tryParse(_expenseController.text) ?? 0.0;
     final hiddenExpense = double.tryParse(_hiddenExpenseController.text) ?? 0.0;
     final preservedDistVis = widget.item?.distributedVisibleExpense ?? 0.0;
     final preservedDistHid = widget.item?.distributedHiddenExpense ?? 0.0;
-    final hasPacking = (_selectedPackingType != null && _selectedPackingType!.trim().isNotEmpty);
-    final taxMult = _getTaxMultiplier();
-    
-    // Buyer total (tax-inclusive) = (price * qty) * taxMult. Expense is our cost, not added to buyer.
-    // Single unit price (buyer-facing, tax-inclusive) = buyer total / total units.
-    final totalUnits = (hasPacking && packSize > 0) ? (qty * packSize) : qty;
-    final buyerTotal = (price * qty) * taxMult;
     final lineOverhead =
         expense + hiddenExpense + preservedDistVis + preservedDistHid;
-    final totalCostForUnit = buyerTotal + lineOverhead;
+    final numerator = totalPrice + lineOverhead;
 
-    if (totalUnits > 0 && totalCostForUnit > 0) {
-      final singleUnitPrice = totalCostForUnit / totalUnits;
-      _singleUnitPriceController.text = singleUnitPrice.toStringAsFixed(2);
-    } else if (totalUnits > 0 && buyerTotal > 0) {
-      _singleUnitPriceController.text = (buyerTotal / totalUnits).toStringAsFixed(2);
+    if (totalUnits > 0 && numerator > 0) {
+      _singleUnitPriceController.text =
+          (numerator / totalUnits).toStringAsFixed(2);
     } else {
       _singleUnitPriceController.text = '';
     }
@@ -1608,12 +1602,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
 
   void _updateTotalQty() {
     if (_isSyncingQtyPackSize) return;
-    final qty = double.tryParse(_quantityController.text) ?? 0.0;
-    final packSize = double.tryParse(_packSizeController.text) ?? 0.0;
-    final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
-
-    final baseQty = (qty > 0 && packSize > 0) ? qty * packSize : 0.0;
-    final totalQty = baseQty + bonusQty;
+    final totalQty = _computeDisplayedLineTotalQty();
 
     _isSyncingQtyPackSize = true;
     _totalQtyController.text = totalQty > 0
@@ -1664,6 +1653,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _priceController.removeListener(_onPriceOrQuantityChanged);
     _quantityController.removeListener(_onPriceOrQuantityChanged);
     _totalPriceController.removeListener(_onTotalPriceChanged);
+    _totalPriceController.removeListener(_updateSingleUnitPrice);
     _expenseController.removeListener(_onExpenseChanged);
     _hiddenExpenseController.removeListener(_onExpenseChanged);
     _productSearchController.removeListener(_onProductSearchChanged);
@@ -1675,6 +1665,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _quantityController.removeListener(_updateTotalQty);
     _packSizeController.removeListener(_updateTotalQty);
     _bonusQtyController.removeListener(_updateTotalQty);
+    _bonusQtyController.removeListener(_updateSingleUnitPrice);
     _totalQtyController.removeListener(_onTotalQtyChanged);
     _taxPercentController.removeListener(_onTaxPercentChanged);
     _salePriceController.dispose();
@@ -2447,12 +2438,13 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                           border: OutlineInputBorder(),
                           prefixIcon: Icon(Icons.inventory_2, size: 20),
                           prefixText: 'Rs. ',
-                          helperText: 'Price per 12',
+                          helperText: 'Tap when empty to fill 12× wholesale',
                         ),
                         keyboardType: TextInputType.number,
                         inputFormatters: [
                           FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                         ],
+                        onTap: _fillDozenFromWholesaleOnTap,
                         onChanged: (_) => _calculatedVersion.value++,
                       ),
                     ),
@@ -2582,13 +2574,19 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                     child: TextFormField(
                       controller: _priceController,
                       decoration: InputDecoration(
-                        labelText: 'Price *',
+                        labelText: (_selectedPackingType != null &&
+                                _selectedPackingType!.trim().isNotEmpty)
+                            ? 'Price per $_selectedPackingType (before tax) *'
+                            : 'Unit price (before tax) *',
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.currency_rupee),
                         prefixText: 'Rs. ',
                         helperText: _showExtendedPricing
-                            ? 'Purchase price (use Sale/Wholesale above as reference or tap buttons to fill)'
-                            : 'Purchase price',
+                            ? (_selectedPackingType != null &&
+                                    _selectedPackingType!.trim().isNotEmpty)
+                                ? 'One pack cost before tax — or type Line total below'
+                                : 'Purchase price (use Sale/Wholesale above or tap buttons to fill)'
+                            : 'Before tax; Line total below includes tax',
                         suffixIcon: _showExtendedPricing
                             ? Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -2648,7 +2646,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                       ),
                       keyboardType: TextInputType.number,
                       inputFormatters: [
-                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,6}')),
                       ],
                       onChanged: (_) {
                         // Listeners update calculated fields via _calculatedVersion
@@ -2672,8 +2670,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                     child: TextFormField(
                       controller: _quantityController,
                       decoration: InputDecoration(
-                        labelText: _selectedPackingType != null 
-                            ? '$_selectedPackingType *' 
+                        labelText: _selectedPackingType != null
+                            ? '$_selectedPackingType count *'
                             : 'Qty *',
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.numbers),
@@ -2704,6 +2702,76 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 16),
+              ValueListenableBuilder<int>(
+                valueListenable: _calculatedVersion,
+                builder: (context, _, __) {
+                  final differs = _lineTotalDiffersFromPerPackCalc();
+                  return TextFormField(
+                    controller: _totalPriceController,
+                    decoration: InputDecoration(
+                      labelText: 'Line total (tax incl.) *',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.payments_outlined),
+                      prefixText: 'Rs. ',
+                      filled: true,
+                      fillColor: Colors.purple.shade50,
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.calculate_outlined, size: 22),
+                            tooltip: 'Calculator',
+                            onPressed: () async {
+                              final v = await _CalculatorDialog.show(
+                                context,
+                                initialValue: _totalPriceController.text,
+                              );
+                              if (v != null && mounted) {
+                                _totalPriceController.text = v.toStringAsFixed(2);
+                                _calculatedVersion.value++;
+                              }
+                            },
+                          ),
+                          if (differs)
+                            IconButton(
+                              icon: const Icon(Icons.refresh, size: 20),
+                              tooltip:
+                                  'Set line total from per-pack × qty × (1 + tax)',
+                              onPressed: _resetToCalculated,
+                              color: Colors.purple.shade700,
+                            ),
+                        ],
+                      ),
+                      helperText: differs
+                          ? 'Differs from per-pack × qty — refresh to align, or keep your line total'
+                          : '(Per-pack before tax × Qty) × (1 + Tax%). Edit here to enter full line total — per-pack updates',
+                      helperMaxLines: 3,
+                    ),
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                    ],
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.purple.shade700,
+                      fontSize: 16,
+                    ),
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Enter line total';
+                      }
+                      if (double.tryParse(value) == null) {
+                        return 'Invalid price';
+                      }
+                      if (double.parse(value) < 0) {
+                        return 'Cannot be negative';
+                      }
+                      return null;
+                    },
+                  );
+                },
               ),
               const SizedBox(height: 16),
               // Tax % Field
@@ -2773,98 +2841,36 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                         decoration: InputDecoration(
                           labelText: 'Single Unit Price',
                           border: const OutlineInputBorder(),
-                          prefixIcon: const Icon(Icons.attach_money),
+                          prefixIcon: const Icon(Icons.currency_rupee),
                           prefixText: 'Rs. ',
                           filled: true,
                           fillColor: Colors.blue.shade50,
-                          helperText: _selectedPackingType != null
-                              ? 'Total Price ÷ (Pack Size × $_selectedPackingType)'
-                              : 'Total Price ÷ (Pack Size × Qty)',
+                          helperText:
+                              '(Total Price + visible/hidden/distributed expenses) ÷ Total Qty',
+                          helperMaxLines: 2,
                         ),
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
                         controller: _totalQtyController,
-                readOnly: false,
-                decoration: InputDecoration(
-                  labelText: 'Total Qty',
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.calculate_outlined),
-                  filled: true,
-                  fillColor: Colors.green.shade50,
-                  helperText: _selectedPackingType != null
-                      ? 'Calculated: ($_selectedPackingType × Pack Size) + Bonus Qty'
-                      : 'Calculated: (Qty × Pack Size) + Bonus Qty',
-                ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                ],
-              ),
-              const SizedBox(height: 16),
-              // Total Price Field (Editable)
-              TextFormField(
-                controller: _totalPriceController,
-                decoration: InputDecoration(
-                  labelText: 'Total Price *',
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.calculate),
-                  prefixText: 'Rs. ',
-                  filled: true,
-                  fillColor: Colors.purple.shade50,
-                  suffixIcon: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.calculate_outlined, size: 22),
-                        tooltip: 'Calculator',
-                        onPressed: () async {
-                          final v = await _CalculatorDialog.show(
-                            context,
-                            initialValue: _totalPriceController.text,
-                          );
-                          if (v != null && mounted) {
-                            _totalPriceController.text = v.toStringAsFixed(2);
-                            _calculatedVersion.value++;
-                          }
-                        },
-                      ),
-                      if (_isManualTotalEdit)
-                        IconButton(
-                          icon: const Icon(Icons.refresh, size: 20),
-                          tooltip: 'Reset to calculated value',
-                          onPressed: _resetToCalculated,
-                          color: Colors.purple.shade700,
+                        readOnly: false,
+                        decoration: InputDecoration(
+                          labelText: 'Total Qty',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.calculate_outlined),
+                          filled: true,
+                          fillColor: Colors.green.shade50,
+                          helperText: _selectedPackingType != null
+                              ? 'Calculated: ($_selectedPackingType × Pack Size) + Bonus Qty'
+                              : 'Calculated: (Qty × Pack Size) + Bonus Qty',
                         ),
-                    ],
-                  ),
-                  helperText: _isManualTotalEdit
-                      ? 'Manual override - tap refresh to auto-calculate'
-                      : 'Price × Quantity (expense is your cost; not added to buyer total)',
-                  helperMaxLines: 2,
-                ),
-                keyboardType: TextInputType.number,
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                ],
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.purple.shade700,
-                  fontSize: 16,
-                ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Enter total price';
-                  }
-                  if (double.tryParse(value) == null) {
-                    return 'Invalid price';
-                  }
-                  if (double.parse(value) < 0) {
-                    return 'Cannot be negative';
-                  }
-                  return null;
-                },
-              ),
+                        keyboardType:
+                            const TextInputType.numberWithOptions(decimal: true),
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                              RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                      ),
                     ],
                   );
                 },

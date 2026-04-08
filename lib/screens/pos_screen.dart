@@ -720,6 +720,7 @@ class _POSScreenState extends State<POSScreen> {
                   price: cartItem.unitPrice,
                   quantity: cartItem.effectiveQuantityForStock,
                   subtotal: cartItem.subtotal,
+                  purchasePrice: cartItem.product.purchasePrice,
                 ))
             .toList(),
         total: cart.totalAmount,
@@ -3083,21 +3084,28 @@ class _CartPanel extends StatelessWidget {
               const SizedBox(width: 4),
               Consumer<CartProvider>(
                 builder: (context, cart, child) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      '${cart.totalItems}',
-                      style: TextStyle(
-                        color: Colors.green.shade700,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                  final lines = cart.itemCount;
+                  final qty = cart.formattedTotalQuantity;
+                  return Tooltip(
+                    message: lines == 0
+                        ? 'Cart is empty'
+                        : '$lines ${lines == 1 ? 'product' : 'products'} · $qty total qty',
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        lines == 0 ? '0' : '$lines · $qty',
+                        style: TextStyle(
+                          color: Colors.green.shade700,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
                       ),
                     ),
                   );
@@ -3878,7 +3886,9 @@ class _CartSummary extends StatelessWidget {
                       children: [
                         Flexible(
                           child: Text(
-                            'Subtotal (${cart.totalItems.toStringAsFixed(1)} items)',
+                            cart.itemCount == 0
+                                ? 'Subtotal'
+                                : 'Subtotal (${cart.itemCount} ${cart.itemCount == 1 ? 'product' : 'products'}, ${cart.formattedTotalQuantity} qty)',
                             style: TextStyle(
                               fontSize: 15,
                               color: Colors.grey[700],

@@ -5,6 +5,8 @@ class SaleItem {
   final double quantity; // Changed to double to support fractional quantities
   final double subtotal;
   final double returnedQuantity; // Number of items returned (changed to double)
+  /// Purchase cost **per unit** at checkout (same unit as [price]). Null = legacy sale (no field).
+  final double? purchasePrice;
 
   SaleItem({
     required this.productId,
@@ -13,10 +15,11 @@ class SaleItem {
     required this.quantity,
     required this.subtotal,
     this.returnedQuantity = 0,
+    this.purchasePrice,
   });
 
   Map<String, dynamic> toMap() {
-    return {
+    final m = <String, dynamic>{
       'productId': productId,
       'productName': productName,
       'price': price,
@@ -24,9 +27,14 @@ class SaleItem {
       'subtotal': subtotal,
       'returnedQuantity': returnedQuantity,
     };
+    if (purchasePrice != null) {
+      m['purchasePrice'] = purchasePrice;
+    }
+    return m;
   }
 
   factory SaleItem.fromMap(Map<String, dynamic> map) {
+    final rawPp = map['purchasePrice'];
     return SaleItem(
       productId: map['productId'] ?? '',
       productName: map['productName'] ?? '',
@@ -34,6 +42,8 @@ class SaleItem {
       quantity: (map['quantity'] ?? 0).toDouble(),
       subtotal: (map['subtotal'] ?? 0).toDouble(),
       returnedQuantity: (map['returnedQuantity'] ?? 0).toDouble(),
+      purchasePrice:
+          rawPp != null ? (rawPp as num).toDouble() : null,
     );
   }
   

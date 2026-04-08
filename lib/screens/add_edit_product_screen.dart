@@ -122,8 +122,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _wholesalePriceController.addListener(_updateBundlePriceFromWholesale);
     _bundleSizeController.addListener(_updateBundlePriceFromWholesale);
     _bundlePriceController.addListener(_updateWholesalePriceFromBundle);
-    // Dozen ↔ Wholesale real-time sync: dozen price = wholesale × 12
-    _wholesalePriceController.addListener(_updateDozenPriceFromWholesale);
+    // Dozen → wholesale only while typing dozen; wholesale → dozen on tap (see dozen field onTap)
     _dozenPriceController.addListener(_updateWholesalePriceFromDozen);
   }
 
@@ -257,15 +256,15 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     }
   }
 
-  /// When wholesale price changes: dozen price = wholesale × 12. Skip if wholesale was set from bundle (keep dozen separate).
-  void _updateDozenPriceFromWholesale() {
-    if (_isUpdatingWholesaleFromDozen || _isUpdatingWholesaleFromBundle) return;
+  /// Tap dozen field (when empty) to set dozen = wholesale × 12 if wholesale is set.
+  void _fillDozenFromWholesaleOnTap() {
+    if (_dozenPriceController.text.trim().isNotEmpty) return;
     final wholesale = double.tryParse(_wholesalePriceController.text.trim());
-    if (wholesale != null && wholesale > 0) {
-      _isUpdatingDozenFromWholesale = true;
-      _dozenPriceController.text = (wholesale * 12).toStringAsFixed(2);
-      _isUpdatingDozenFromWholesale = false;
-    }
+    if (wholesale == null || wholesale <= 0) return;
+    if (_isUpdatingWholesaleFromDozen || _isUpdatingWholesaleFromBundle) return;
+    _isUpdatingDozenFromWholesale = true;
+    _dozenPriceController.text = (wholesale * 12).toStringAsFixed(2);
+    _isUpdatingDozenFromWholesale = false;
   }
 
   /// When dozen price changes: wholesale price = dozen price / 12. Do not change bundle (dozen and bundle are separate).
@@ -1635,13 +1634,14 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.inventory_2, size: 20),
                       prefixText: 'Rs. ',
-                      helperText: 'Price per 12',
+                      helperText: 'Tap when empty to fill 12× wholesale',
                       isDense: true,
                     ),
                     keyboardType: TextInputType.number,
                     inputFormatters: [
                       FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                     ],
+                    onTap: _fillDozenFromWholesaleOnTap,
                     validator: (value) {
                       if (value != null && value.isNotEmpty) {
                         final dozenPrice = double.tryParse(value);
