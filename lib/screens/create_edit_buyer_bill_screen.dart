@@ -23,6 +23,37 @@ List<double> _splitTotalEvenly(double total, int n) {
   return List.generate(n, (i) => (q + (i < r ? 1 : 0)) / 100.0);
 }
 
+/// Same "Total Qty" as the bill line: packs × pack size + bonus (matches list tile).
+double _billLineTotalQty(BuyerBillItem item) {
+  final packSize = item.packSize > 0 ? item.packSize : 1.0;
+  final w = (item.quantity * packSize) + item.bonusQty;
+  return w > 0 ? w : 0.0;
+}
+
+/// Split [total] across [weights] proportionally (whole cents; sums to [total]).
+/// If all weights are zero, falls back to equal split per line.
+List<double> _splitTotalByWeights(double total, List<double> weights) {
+  final n = weights.length;
+  if (n == 0) return [];
+  final sumW = weights.fold(0.0, (a, b) => a + b);
+  if (sumW <= 0) {
+    return _splitTotalEvenly(total, n);
+  }
+  final cents = (total * 100).round();
+  final raw = List<double>.generate(n, (i) => cents * weights[i] / sumW);
+  final parts = List<int>.generate(n, (i) => raw[i].floor());
+  final allocated = parts.fold(0, (a, b) => a + b);
+  var remainder = cents - allocated;
+  final fracs =
+  List<double>.generate(n, (i) => raw[i] - parts[i].toDouble());
+  final order = List<int>.generate(n, (i) => i)
+    ..sort((a, b) => fracs[b].compareTo(fracs[a]));
+  for (var k = 0; k < remainder; k++) {
+    parts[order[k]] += 1;
+  }
+  return List.generate(n, (i) => parts[i] / 100.0);
+}
+
 class CreateEditBuyerBillScreen extends StatefulWidget {
   final Buyer buyer;
   final BuyerBill? bill;
@@ -151,18 +182,20 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
     });
   }
 
-  /// Distributes manual bill-level totals evenly across all lines (visible vs hidden).
+  /// Distributes manual bill-level totals across lines by each line's total qty
+  /// (quantity × pack size + bonus), same as "Total Qty" on the bill.
   void _redistributeManualExpenses() {
     final n = _items.length;
     if (n == 0) return;
     final visTotal = (double.tryParse(_manualVisibleExpenseController.text) ??
-            0.0)
+        0.0)
         .clamp(0.0, double.infinity);
     final hidTotal = (double.tryParse(_manualHiddenExpenseController.text) ??
-            0.0)
+        0.0)
         .clamp(0.0, double.infinity);
-    final sharesVis = _splitTotalEvenly(visTotal, n);
-    final sharesHid = _splitTotalEvenly(hidTotal, n);
+    final weights = _items.map(_billLineTotalQty).toList();
+    final sharesVis = _splitTotalByWeights(visTotal, weights);
+    final sharesHid = _splitTotalByWeights(hidTotal, weights);
     for (var i = 0; i < n; i++) {
       final item = _items[i];
       final buyer = item.subtotal -
@@ -203,6 +236,11 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
 
   double get _total {
     return _items.fold(0.0, (sum, item) => sum + item.buyerLineSubtotal);
+  }
+
+  /// Sum of each line's Total Qty (qty × pack size + bonus); matches expense weights.
+  double get _totalBillLineQtySum {
+    return _items.fold(0.0, (sum, item) => sum + _billLineTotalQty(item));
   }
 
   /// Bill expenses that appear in the summary (item-level visible + distributed visible).
@@ -365,7 +403,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
       ));
     } else if (category != null && category.isNotEmpty) {
       final unitLabel =
-          item.unit.trim().isNotEmpty ? item.unit.trim() : 'pcs';
+      item.unit.trim().isNotEmpty ? item.unit.trim() : 'pcs';
       final sale = item.newProductSalePrice ?? (unitCost * 1.1);
       final newProduct = Product(
         id: const Uuid().v4(),
@@ -426,7 +464,7 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
       await _updateProductStockForBill();
 
       final priceWithoutExpense = double.tryParse(
-            _finalPriceWithoutExpenseController.text.trim()) ?? _total;
+          _finalPriceWithoutExpenseController.text.trim()) ?? _total;
       final bill = BuyerBill(
         id: widget.bill?.id ?? const Uuid().v4(),
         buyerId: widget.buyer.id,
@@ -436,9 +474,9 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
         totalExpense: _totalVisibleExpense,
         finalPrice: priceWithoutExpense, // Manual or calculated (used for balance)
         manualVisibleExpenseTotal:
-            double.tryParse(_manualVisibleExpenseController.text) ?? 0.0,
+        double.tryParse(_manualVisibleExpenseController.text) ?? 0.0,
         manualHiddenExpenseTotal:
-            double.tryParse(_manualHiddenExpenseController.text) ?? 0.0,
+        double.tryParse(_manualHiddenExpenseController.text) ?? 0.0,
         amountPaid: widget.bill?.amountPaid ?? 0.0, // Keep existing or default to 0
         change: widget.bill?.change ?? 0.0, // Keep existing or default to 0
         createdAt: widget.bill?.createdAt ?? DateTime.now(),
@@ -498,41 +536,154 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
         await _saveDraftAndPop();
       },
       child: Scaffold(
-      appBar: AppBar(
-        title: Text(widget.bill == null ? 'Create Bill' : 'Edit Bill'),
-        elevation: 0,
-      ),
-      body: Form(
-        key: _formKey,
-        child: Column(
-          children: [
-            // Buyer Info and Bill Number
-            Container(
-              padding: const EdgeInsets.all(16),
-              color: Colors.purple.shade50,
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      CircleAvatar(
-                        backgroundColor: Colors.purple.shade100,
-                        child: Icon(Icons.person, color: Colors.purple.shade700),
+        appBar: AppBar(
+          title: Text(widget.bill == null ? 'Create Bill' : 'Edit Bill'),
+          elevation: 0,
+        ),
+        body: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              // Buyer Info and Bill Number
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.purple.shade50,
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: Colors.purple.shade100,
+                          child: Icon(Icons.person, color: Colors.purple.shade700),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                widget.buyer.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              if (widget.buyer.phone != null)
+                                Text(
+                                  widget.buyer.phone!,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _billNumberController,
+                      decoration: const InputDecoration(
+                        labelText: 'Bill Number *',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.receipt_long),
+                        helperText: 'Enter bill number or use auto-generated',
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return 'Please enter a bill number';
+                        }
+                        return null;
+                      },
+                    ),
+                  ],
+                ),
+              ),
+
+              // Items List
+              Expanded(
+                child: _items.isEmpty
+                    ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.shopping_cart_outlined,
+                          size: 64, color: Colors.grey[400]),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'No items added',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Tap the button below to add items',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                )
+                    : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _items.length,
+                  itemBuilder: (context, index) {
+                    final item = _items[index];
+                    final packSize = item.packSize > 0 ? item.packSize : 1.0;
+                    final totalQty = (item.quantity * packSize) + item.bonusQty;
+                    final unitPrice = item.packSize > 1 ? (item.price / item.packSize) : item.price;
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.purple.shade100,
+                          child: Text(
+                            '${index + 1}',
+                            style: TextStyle(
+                              color: Colors.purple.shade700,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        title: Text(
+                          item.itemName,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              widget.buyer.name,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
+                              '${item.quantity} ${item.unit} × ${_currencyFormatter.format(item.price)}',
+                            ),
+                            Text(
+                              'Total Qty: ${totalQty % 1 == 0 ? totalQty.toInt() : totalQty.toStringAsFixed(2)}  •  Unit Price: ${_currencyFormatter.format(unitPrice)}',
+                              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                            ),
+                            Text(
+                              'Total: ${_currencyFormatter.format(item.buyerLineSubtotal)}',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.purple.shade700,
                               ),
                             ),
-                            if (widget.buyer.phone != null)
+                            if (item.visibleExpensesOnLine > 0)
                               Text(
-                                widget.buyer.phone!,
+                                'Expense: ${_currencyFormatter.format(item.visibleExpensesOnLine)}',
+                                style: TextStyle(
+                                  color: Colors.orange.shade700,
+                                ),
+                              ),
+                            if (item.date != null)
+                              Text(
+                                'Date: ${DateFormat('MMM dd, yyyy').format(item.date!)}',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: Colors.grey[600],
@@ -540,352 +691,252 @@ class _CreateEditBuyerBillScreenState extends State<CreateEditBuyerBillScreen> {
                               ),
                           ],
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: _billNumberController,
-                    decoration: const InputDecoration(
-                      labelText: 'Bill Number *',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.receipt_long),
-                      helperText: 'Enter bill number or use auto-generated',
-                    ),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                    ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter a bill number';
-                      }
-                      return null;
-                    },
-                  ),
-                ],
-              ),
-            ),
-
-            // Items List
-            Expanded(
-              child: _items.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.shopping_cart_outlined,
-                              size: 64, color: Colors.grey[400]),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'No items added',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Tap the button below to add items',
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: _items.length,
-                      itemBuilder: (context, index) {
-                        final item = _items[index];
-                        final packSize = item.packSize > 0 ? item.packSize : 1.0;
-                        final totalQty = (item.quantity * packSize) + item.bonusQty;
-                        final unitPrice = item.packSize > 1 ? (item.price / item.packSize) : item.price;
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: Colors.purple.shade100,
-                              child: Text(
-                                '${index + 1}',
-                                style: TextStyle(
-                                  color: Colors.purple.shade700,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                            title: Text(
-                              item.itemName,
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _currencyFormatter.format(item.subtotal),
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
+                                fontSize: 16,
                               ),
                             ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '${item.quantity} ${item.unit} × ${_currencyFormatter.format(item.price)}',
-                                ),
-                                Text(
-                                  'Total Qty: ${totalQty % 1 == 0 ? totalQty.toInt() : totalQty.toStringAsFixed(2)}  •  Unit Price: ${_currencyFormatter.format(unitPrice)}',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey[700]),
-                                ),
-                                Text(
-                                  'Total: ${_currencyFormatter.format(item.buyerLineSubtotal)}',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                    color: Colors.purple.shade700,
-                                  ),
-                                ),
-                                if (item.visibleExpensesOnLine > 0)
-                                  Text(
-                                    'Expense: ${_currencyFormatter.format(item.visibleExpensesOnLine)}',
-                                    style: TextStyle(
-                                      color: Colors.orange.shade700,
-                                    ),
-                                  ),
-                                if (item.date != null)
-                                  Text(
-                                    'Date: ${DateFormat('MMM dd, yyyy').format(item.date!)}',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey[600],
-                                    ),
-                                  ),
-                              ],
+                            const SizedBox(width: 8),
+                            IconButton(
+                              icon: const Icon(Icons.edit, size: 20),
+                              onPressed: () => _editItem(index),
+                              color: Colors.blue,
                             ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _currencyFormatter.format(item.subtotal),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                IconButton(
-                                  icon: const Icon(Icons.edit, size: 20),
-                                  onPressed: () => _editItem(index),
-                                  color: Colors.blue,
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete, size: 20),
-                                  onPressed: () => _removeItem(index),
-                                  color: Colors.red,
-                                ),
-                              ],
+                            IconButton(
+                              icon: const Icon(Icons.delete, size: 20),
+                              onPressed: () => _removeItem(index),
+                              color: Colors.red,
                             ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+
+              // Summary and Payment
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 10,
+                      offset: const Offset(0, -2),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    // Totals
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Total count (all lines):'),
+                        Text(
+                          _totalBillLineQtySum % 1 == 0
+                              ? _totalBillLineQtySum.toInt().toString()
+                              : _totalBillLineQtySum.toStringAsFixed(2),
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Subtotal:'),
+                        Text(
+                          _currencyFormatter.format(_total),
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Total Expense:'),
+                        Text(
+                          _currencyFormatter.format(_totalVisibleExpense),
+                          style: TextStyle(
+                            fontWeight: FontWeight.w500,
+                            color: Colors.orange.shade700,
                           ),
-                        );
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Split bill expense across all lines',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextFormField(
+                      controller: _manualVisibleExpenseController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                            RegExp(r'^\d*\.?\d*')),
+                      ],
+                      decoration: InputDecoration(
+                        labelText: 'Manual bill expense (on bill)',
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.receipt_long),
+                        prefixText: 'Rs. ',
+                        helperText:
+                        'Total shown in summary; split by each line\'s Total Qty',
+                        isDense: true,
+                        helperMaxLines: 2,
+                      ),
+                      onChanged: (_) => _onManualBillExpenseInputsChanged(),
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: _manualHiddenExpenseController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                            RegExp(r'^\d*\.?\d*')),
+                      ],
+                      decoration: InputDecoration(
+                        labelText: 'Manual internal expense (hidden)',
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.visibility_off_outlined),
+                        prefixText: 'Rs. ',
+                        helperText:
+                        'Affects line totals only; split by Total Qty; not on bill',
+                        isDense: true,
+                        helperMaxLines: 2,
+                      ),
+                      onChanged: (_) => _onManualBillExpenseInputsChanged(),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        const Text('Final Price (without expense):'),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 140,
+                              child: TextField(
+                                controller: _finalPriceWithoutExpenseController,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
+                                ],
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  border: OutlineInputBorder(),
+                                ),
+                                onChanged: (_) => setState(() {}),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.calculate),
+                              tooltip: 'Calculator',
+                              onPressed: () async {
+                                final v = await _CalculatorDialog.show(
+                                  context,
+                                  initialValue: _finalPriceWithoutExpenseController.text,
+                                );
+                                if (v != null && mounted) {
+                                  _finalPriceWithoutExpenseController.text = v.toStringAsFixed(2);
+                                  setState(() {});
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const Divider(),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Final Price (with expense):',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          _currencyFormatter.format(_finalPrice),
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.purple.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Notes - Show for both create and edit
+                    TextFormField(
+                      initialValue: _notes,
+                      decoration: const InputDecoration(
+                        labelText: 'Notes (Optional)',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.note),
+                      ),
+                      maxLines: 2,
+                      onChanged: (value) {
+                        _notes = value;
                       },
                     ),
-            ),
+                    const SizedBox(height: 16),
 
-            // Summary and Payment
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 10,
-                    offset: const Offset(0, -2),
-                  ),
-                ],
+                    // Save Button
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _isLoading ? null : _saveBill,
+                        icon: _isLoading
+                            ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                            : const Icon(Icons.save),
+                        label: Text(widget.bill == null ? 'Create Bill' : 'Update Bill'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.all(16),
+                          backgroundColor: Colors.purple,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              child: Column(
-                children: [
-                  // Totals
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Subtotal:'),
-                      Text(
-                        _currencyFormatter.format(_total),
-                        style: const TextStyle(fontWeight: FontWeight.w500),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Total Expense:'),
-                      Text(
-                        _currencyFormatter.format(_totalVisibleExpense),
-                        style: TextStyle(
-                          fontWeight: FontWeight.w500,
-                          color: Colors.orange.shade700,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Split bill expense across all lines',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.grey.shade700,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  TextFormField(
-                    controller: _manualVisibleExpenseController,
-                    keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true),
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(
-                          RegExp(r'^\d*\.?\d*')),
-                    ],
-                    decoration: InputDecoration(
-                      labelText: 'Manual bill expense (on bill)',
-                      border: const OutlineInputBorder(),
-                      prefixIcon: const Icon(Icons.receipt_long),
-                      prefixText: 'Rs. ',
-                      helperText:
-                          'Total shown in summary; divided equally across items',
-                      isDense: true,
-                      helperMaxLines: 2,
-                    ),
-                    onChanged: (_) => _onManualBillExpenseInputsChanged(),
-                  ),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: _manualHiddenExpenseController,
-                    keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true),
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(
-                          RegExp(r'^\d*\.?\d*')),
-                    ],
-                    decoration: InputDecoration(
-                      labelText: 'Manual internal expense (hidden)',
-                      border: const OutlineInputBorder(),
-                      prefixIcon: const Icon(Icons.visibility_off_outlined),
-                      prefixText: 'Rs. ',
-                      helperText:
-                          'Affects line totals only; not shown on bill or summary',
-                      isDense: true,
-                      helperMaxLines: 2,
-                    ),
-                    onChanged: (_) => _onManualBillExpenseInputsChanged(),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      const Text('Final Price (without expense):'),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: 140,
-                            child: TextField(
-                              controller: _finalPriceWithoutExpenseController,
-                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                              inputFormatters: [
-                                FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*')),
-                              ],
-                              decoration: const InputDecoration(
-                                isDense: true,
-                                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                border: OutlineInputBorder(),
-                              ),
-                              onChanged: (_) => setState(() {}),
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.calculate),
-                            tooltip: 'Calculator',
-                            onPressed: () async {
-                              final v = await _CalculatorDialog.show(
-                                context,
-                                initialValue: _finalPriceWithoutExpenseController.text,
-                              );
-                              if (v != null && mounted) {
-                                _finalPriceWithoutExpenseController.text = v.toStringAsFixed(2);
-                                setState(() {});
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  const Divider(),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Final Price (with expense):',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      Text(
-                        _currencyFormatter.format(_finalPrice),
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.purple.shade700,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Notes - Show for both create and edit
-                  TextFormField(
-                    initialValue: _notes,
-                    decoration: const InputDecoration(
-                      labelText: 'Notes (Optional)',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.note),
-                    ),
-                    maxLines: 2,
-                    onChanged: (value) {
-                      _notes = value;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Save Button
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _isLoading ? null : _saveBill,
-                      icon: _isLoading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.save),
-                      label: Text(widget.bill == null ? 'Create Bill' : 'Update Bill'),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.all(16),
-                        backgroundColor: Colors.purple,
-                        foregroundColor: Colors.white,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+            ],
+          ),
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: _addItem,
+          backgroundColor: Colors.purple,
+          child: const Icon(Icons.add),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addItem,
-        backgroundColor: Colors.purple,
-        child: const Icon(Icons.add),
-      ),
-    ),
     );
   }
 }
@@ -1159,8 +1210,8 @@ class _AddItemDialogState extends State<_AddItemDialog> {
   /// New line: category + manual name, no product picked from list.
   bool get _isNewItemMode =>
       _selectedCategory != null &&
-      _selectedProduct == null &&
-      _nameController.text.trim().isNotEmpty;
+          _selectedProduct == null &&
+          _nameController.text.trim().isNotEmpty;
 
   /// Show sale / wholesale / dozen / bundle fields (existing product or new-item flow).
   bool get _showExtendedPricing => _selectedProduct != null || _isNewItemMode;
@@ -1221,10 +1272,10 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       final unit = widget.item!.unit.trim();
       if (_packingTypes.any((t) => t.toLowerCase() == unit.toLowerCase())) {
         _selectedPackingType = _packingTypes.firstWhere(
-            (t) => t.toLowerCase() == unit.toLowerCase());
+                (t) => t.toLowerCase() == unit.toLowerCase());
       }
     }
-    
+
     // Initialize total price controller (buyer total = (Price × Quantity) × (1 + Tax%); expense is your cost)
     final initialPrice = double.tryParse(_priceController.text) ?? 0.0;
     final initialQuantity = double.tryParse(_quantityController.text) ?? 0.0;
@@ -1232,21 +1283,21 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     final initialTotal = (initialPrice * initialQuantity) * initialTaxMult;
     _totalPriceController = TextEditingController(
         text: initialTotal > 0 ? initialTotal.toStringAsFixed(2) : '');
-    
+
     // Add listeners to recalculate total when price or quantity changes
     _priceController.addListener(_onPriceOrQuantityChanged);
     _quantityController.addListener(_onPriceOrQuantityChanged);
-    
+
     // Add listener to recalculate price when total is manually changed
     _totalPriceController.addListener(_onTotalPriceChanged);
-    
+
     // Add listener to update total price when expense changes
     _expenseController.addListener(_onExpenseChanged);
     _hiddenExpenseController.addListener(_onExpenseChanged);
-    
+
     // Add listener for product search
     _productSearchController.addListener(_onProductSearchChanged);
-    
+
     // Add listeners to update single unit price
     _priceController.addListener(_updateSingleUnitPrice);
     _packSizeController.addListener(_updateSingleUnitPrice);
@@ -1268,12 +1319,12 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     _bonusQtyController.addListener(_updateSingleUnitPrice);
     _totalPriceController.addListener(_updateSingleUnitPrice);
     _totalQtyController.addListener(_onTotalQtyChanged);
-    
+
     // Load product stock if editing existing item
     if (widget.item != null && _nameController.text.isNotEmpty) {
       _loadProductStockByName(_nameController.text);
     }
-    
+
     // Calculate initial single unit price
     _updateSingleUnitPrice();
 
@@ -1307,16 +1358,16 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       }
     }
   }
-  
+
   Future<void> _loadProductStockByName(String productName) async {
     // Search for product by name to get current stock
     try {
       final products = await _productService.searchProducts(productName);
       final matchingProduct = products.firstWhere(
-        (p) => p.name.toLowerCase() == productName.toLowerCase(),
+            (p) => p.name.toLowerCase() == productName.toLowerCase(),
         orElse: () => products.isNotEmpty ? products.first : throw StateError('Product not found'),
       );
-      
+
       if (mounted) {
         setState(() {
           _selectedProduct = matchingProduct;
@@ -1339,7 +1390,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       print('Could not load product stock: $e');
     }
   }
-  
+
   void _onProductSearchChanged() {
     _productSearchDebounce?.cancel();
     _productSearchDebounce = Timer(const Duration(milliseconds: 300), () {
@@ -1420,7 +1471,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
 
   List<Product> _getFilteredProducts(List<Product> allProducts) {
     var products = allProducts;
-    
+
     // Filter by category if selected (case-insensitive matching)
     if (_selectedCategory != null) {
       final selectedCategoryLower = _selectedCategory!.trim().toLowerCase();
@@ -1428,7 +1479,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
         final productCategoryLower = p.category.trim().toLowerCase();
         return productCategoryLower == selectedCategoryLower;
       }).toList();
-      
+
       // Debug: Print category matching info
       if (products.isEmpty && allProducts.isNotEmpty) {
         // Get unique categories from all products for debugging
@@ -1439,7 +1490,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
         print('Filtered products: ${products.length}');
       }
     }
-    
+
     // Filter by search query if any
     final query = _productSearchController.text.trim().toLowerCase();
     if (query.isNotEmpty) {
@@ -1449,17 +1500,17 @@ class _AddItemDialogState extends State<_AddItemDialog> {
             (product.description?.toLowerCase().contains(query) ?? false);
       }).toList();
     }
-    
+
     return products;
   }
-  
+
   bool _shouldShowProductList() {
     // Show products if:
     // 1. A category is selected (show all products in that category)
     // 2. OR search query is not empty (show filtered results)
     return _selectedCategory != null || _productSearchController.text.isNotEmpty;
   }
-  
+
   void _onProductSelected(Product product) async {
     // Get latest product stock
     final latestProduct = await _productService.getProductById(product.id);
@@ -1482,7 +1533,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       if (unit.isNotEmpty) {
         if (_packingTypes.any((t) => t.toLowerCase() == unit)) {
           _selectedPackingType = _packingTypes.firstWhere(
-            (t) => t.toLowerCase() == unit,
+                (t) => t.toLowerCase() == unit,
           );
         } else if (unit == 'pcs' || unit == 'pieces') {
           _selectedPackingType = 'Piece';
@@ -1495,7 +1546,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     });
     _onPriceOrQuantityChanged();
   }
-  
+
   void _updateStockInfo() async {
     if (_selectedProduct != null) {
       final latestProduct = await _productService.getProductById(_selectedProduct!.id);
@@ -1507,7 +1558,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       }
     }
   }
-  
+
   double _getTaxMultiplier() {
     final taxPercent = double.tryParse(_taxPercentController.text) ?? 0.0;
     return 1.0 + (taxPercent / 100.0);
@@ -1528,7 +1579,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
 
     _totalPriceController.removeListener(_onTotalPriceChanged);
     _totalPriceController.text =
-        calculatedTotal > 0 ? calculatedTotal.toStringAsFixed(2) : '';
+    calculatedTotal > 0 ? calculatedTotal.toStringAsFixed(2) : '';
     _totalPriceController.addListener(_onTotalPriceChanged);
     _calculatedVersion.value++;
     // Debounce stock refresh so typing doesn't trigger repeated fetches/rebuilds
@@ -1543,7 +1594,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
     if (!mounted) return;
     _updateSingleUnitPrice();
   }
-  
+
   void _onTotalPriceChanged() {
     // User edited line total (tax incl.) → derive per-pack before tax = (total ÷ tax) ÷ Qty
     final totalPrice = double.tryParse(_totalPriceController.text) ?? 0.0;
@@ -1567,7 +1618,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
       _onPriceOrQuantityChanged();
     });
   }
-  
+
   /// Same formula as the read-only **Total Qty** field: (Qty × Pack Size) + Bonus.
   /// Used so **Single Unit Price** stays aligned when packing type is unset but pack size is set.
   double _computeDisplayedLineTotalQty() {
@@ -1919,112 +1970,112 @@ class _AddItemDialogState extends State<_AddItemDialog> {
           DirectionalFocusIntent: DirectionalFocusAction(),
         },
         child: AlertDialog(
-      title: Text(widget.item == null ? 'Add Item' : 'Edit Item'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-              // Recent categories: one-tap to select (very easy)
-              if (widget.item == null && widget.recentCategories.isNotEmpty) ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Recent',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: Colors.grey.shade600,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: widget.recentCategories.map((name) {
-                    final isSelected = _selectedCategory == name;
-                    return ActionChip(
-                      label: Text(name),
-                      avatar: Icon(
-                        isSelected ? Icons.check_circle : Icons.category_outlined,
-                        size: 18,
-                        color: isSelected ? Colors.white : Colors.grey.shade600,
+          title: Text(widget.item == null ? 'Add Item' : 'Edit Item'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Form(
+              key: _formKey,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Recent categories: one-tap to select (very easy)
+                    if (widget.item == null && widget.recentCategories.isNotEmpty) ...[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Recent',
+                          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
-                      backgroundColor: isSelected
-                          ? Theme.of(context).primaryColor
-                          : Colors.grey.shade200,
-                      side: BorderSide(
-                        color: isSelected
-                            ? Theme.of(context).primaryColor
-                            : Colors.grey.shade400,
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: widget.recentCategories.map((name) {
+                          final isSelected = _selectedCategory == name;
+                          return ActionChip(
+                            label: Text(name),
+                            avatar: Icon(
+                              isSelected ? Icons.check_circle : Icons.category_outlined,
+                              size: 18,
+                              color: isSelected ? Colors.white : Colors.grey.shade600,
+                            ),
+                            backgroundColor: isSelected
+                                ? Theme.of(context).primaryColor
+                                : Colors.grey.shade200,
+                            side: BorderSide(
+                              color: isSelected
+                                  ? Theme.of(context).primaryColor
+                                  : Colors.grey.shade400,
+                            ),
+                            onPressed: () => _onCategorySelected(name),
+                          );
+                        }).toList(),
                       ),
-                      onPressed: () => _onCategorySelected(name),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 14),
-              ],
-              // Category Dropdown
-              StreamBuilder<List<Category>>(
-                stream: _categoryService.getCategoriesStream(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const SizedBox(
-                      height: 56,
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  
-                  final categories = snapshot.data ?? [];
-                  final categoryNames = categories.map((c) => c.name).toList();
-                  
-                  return DropdownButtonFormField<String>(
-                    value: _selectedCategory,
-                    decoration: const InputDecoration(
-                      labelText: 'Category',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.category),
-                      helperText: 'Select a category to filter products',
-                    ),
-                    items: [
-                      const DropdownMenuItem<String>(
-                        value: null,
-                        child: Text('All Categories'),
-                      ),
-                      ...categoryNames.map((name) => DropdownMenuItem<String>(
-                        value: name,
-                        child: Text(name),
-                      )),
+                      const SizedBox(height: 14),
                     ],
-                    onChanged: _onCategorySelected,
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              
-              // Product Search Dropdown
-              StreamBuilder<List<Product>>(
-                stream: _productService.getProductsStream(),
-                builder: (context, snapshot) {
-                  final allProducts = snapshot.data ?? [];
-                  final filteredProducts = _getFilteredProducts(allProducts);
-                  
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TextFormField(
-                        controller: _productSearchController,
-                        decoration: InputDecoration(
-                          labelText: _selectedCategory != null
-                              ? 'Search Product in $_selectedCategory *'
-                              : 'Search Product *',
-                          border: const OutlineInputBorder(),
-                          prefixIcon: const Icon(Icons.search),
-                          suffixIcon: _selectedProduct != null
-                              ? IconButton(
+                    // Category Dropdown
+                    StreamBuilder<List<Category>>(
+                      stream: _categoryService.getCategoriesStream(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState == ConnectionState.waiting) {
+                          return const SizedBox(
+                            height: 56,
+                            child: Center(child: CircularProgressIndicator()),
+                          );
+                        }
+
+                        final categories = snapshot.data ?? [];
+                        final categoryNames = categories.map((c) => c.name).toList();
+
+                        return DropdownButtonFormField<String>(
+                          value: _selectedCategory,
+                          decoration: const InputDecoration(
+                            labelText: 'Category',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.category),
+                            helperText: 'Select a category to filter products',
+                          ),
+                          items: [
+                            const DropdownMenuItem<String>(
+                              value: null,
+                              child: Text('All Categories'),
+                            ),
+                            ...categoryNames.map((name) => DropdownMenuItem<String>(
+                              value: name,
+                              child: Text(name),
+                            )),
+                          ],
+                          onChanged: _onCategorySelected,
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Product Search Dropdown
+                    StreamBuilder<List<Product>>(
+                      stream: _productService.getProductsStream(),
+                      builder: (context, snapshot) {
+                        final allProducts = snapshot.data ?? [];
+                        final filteredProducts = _getFilteredProducts(allProducts);
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TextFormField(
+                              controller: _productSearchController,
+                              decoration: InputDecoration(
+                                labelText: _selectedCategory != null
+                                    ? 'Search Product in $_selectedCategory *'
+                                    : 'Search Product *',
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.search),
+                                suffixIcon: _selectedProduct != null
+                                    ? IconButton(
                                   icon: const Icon(Icons.clear),
                                   onPressed: () {
                                     setState(() {
@@ -2042,553 +2093,553 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                     });
                                   },
                                 )
-                              : null,
-                          helperText: _selectedCategory != null
-                              ? 'Type to search or see all products below'
-                              : 'Select a category first to see products',
-                        ),
-                        onChanged: (_) {
-                          // Rebuild deferred via _onProductSearchChanged debounce
-                        },
-                        validator: (value) {
-                          if (_selectedProduct == null && _nameController.text.isEmpty) {
-                            return 'Please select a product from the list below';
-                          }
-                          return null;
-                        },
-                      ),
-                      if (_shouldShowProductList())
-                        Builder(
-                          builder: (context) {
-                            if (snapshot.connectionState == ConnectionState.waiting) {
-                              return Container(
-                                margin: const EdgeInsets.only(top: 8),
-                                padding: const EdgeInsets.all(16),
-                                child: const Center(child: CircularProgressIndicator()),
-                              );
-                            }
-                            
-                            if (filteredProducts.isEmpty) {
-                              // Show helpful message based on context
-                              String message;
-                              final searchText = _productSearchController.text;
-                              if (_selectedCategory != null && searchText.isEmpty) {
-                                message = 'No products found in "$_selectedCategory" category.\n\nPlease check:\n• Category name matches exactly\n• Products are assigned to this category';
-                              } else if (_selectedCategory != null && searchText.isNotEmpty) {
-                                message = 'No products found matching "$searchText" in "$_selectedCategory"';
-                              } else if (searchText.isNotEmpty) {
-                                message = 'No products found matching "$searchText"';
-                              } else {
-                                message = 'No products available';
-                              }
-                              
-                              return Container(
-                                margin: const EdgeInsets.only(top: 8),
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade100,
-                                  border: Border.all(color: Colors.grey.shade300),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  message,
-                                  style: TextStyle(color: Colors.grey[600]),
-                                ),
-                              );
-                            }
-                            
-                            return Container(
-                              margin: const EdgeInsets.only(top: 8),
-                              constraints: const BoxConstraints(maxHeight: 200),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                border: Border.all(color: Colors.grey.shade300),
-                                borderRadius: BorderRadius.circular(4),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.1),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
+                                    : null,
+                                helperText: _selectedCategory != null
+                                    ? 'Type to search or see all products below'
+                                    : 'Select a category first to see products',
                               ),
-                              child: ListView.builder(
-                                shrinkWrap: true,
-                                itemCount: filteredProducts.length,
-                                itemBuilder: (context, index) {
-                                  final product = filteredProducts[index];
-                                  return InkWell(
-                                    onTap: () {
-                                      _onProductSelected(product);
-                                    },
-                                    child: Container(
+                              onChanged: (_) {
+                                // Rebuild deferred via _onProductSearchChanged debounce
+                              },
+                              validator: (value) {
+                                if (_selectedProduct == null && _nameController.text.isEmpty) {
+                                  return 'Please select a product from the list below';
+                                }
+                                return null;
+                              },
+                            ),
+                            if (_shouldShowProductList())
+                              Builder(
+                                builder: (context) {
+                                  if (snapshot.connectionState == ConnectionState.waiting) {
+                                    return Container(
+                                      margin: const EdgeInsets.only(top: 8),
+                                      padding: const EdgeInsets.all(16),
+                                      child: const Center(child: CircularProgressIndicator()),
+                                    );
+                                  }
+
+                                  if (filteredProducts.isEmpty) {
+                                    // Show helpful message based on context
+                                    String message;
+                                    final searchText = _productSearchController.text;
+                                    if (_selectedCategory != null && searchText.isEmpty) {
+                                      message = 'No products found in "$_selectedCategory" category.\n\nPlease check:\n• Category name matches exactly\n• Products are assigned to this category';
+                                    } else if (_selectedCategory != null && searchText.isNotEmpty) {
+                                      message = 'No products found matching "$searchText" in "$_selectedCategory"';
+                                    } else if (searchText.isNotEmpty) {
+                                      message = 'No products found matching "$searchText"';
+                                    } else {
+                                      message = 'No products available';
+                                    }
+
+                                    return Container(
+                                      margin: const EdgeInsets.only(top: 8),
+                                      padding: const EdgeInsets.all(12),
                                       decoration: BoxDecoration(
-                                        border: Border(
-                                          bottom: BorderSide(
-                                            color: Colors.grey.shade200,
-                                            width: index < filteredProducts.length - 1 ? 1 : 0,
-                                          ),
-                                        ),
+                                        color: Colors.grey.shade100,
+                                        border: Border.all(color: Colors.grey.shade300),
+                                        borderRadius: BorderRadius.circular(4),
                                       ),
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(12.0),
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              product.name,
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.bold,
-                                                fontSize: 16,
+                                      child: Text(
+                                        message,
+                                        style: TextStyle(color: Colors.grey[600]),
+                                      ),
+                                    );
+                                  }
+
+                                  return Container(
+                                    margin: const EdgeInsets.only(top: 8),
+                                    constraints: const BoxConstraints(maxHeight: 200),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      border: Border.all(color: Colors.grey.shade300),
+                                      borderRadius: BorderRadius.circular(4),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withOpacity(0.1),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                    child: ListView.builder(
+                                      shrinkWrap: true,
+                                      itemCount: filteredProducts.length,
+                                      itemBuilder: (context, index) {
+                                        final product = filteredProducts[index];
+                                        return InkWell(
+                                          onTap: () {
+                                            _onProductSelected(product);
+                                          },
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              border: Border(
+                                                bottom: BorderSide(
+                                                  color: Colors.grey.shade200,
+                                                  width: index < filteredProducts.length - 1 ? 1 : 0,
+                                                ),
                                               ),
                                             ),
-                                            const SizedBox(height: 4),
-                                            Row(
-                                              children: [
-                                                Text(
-                                                  'Purchase Rs. ${product.purchasePrice.toStringAsFixed(2)}',
-                                                  style: TextStyle(
-                                                    color: Colors.purple.shade700,
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Text(
-                                                  '| Sale Rs. ${product.salePrice.toStringAsFixed(2)}',
-                                                  style: TextStyle(
-                                                    fontSize: 12,
-                                                    color: Colors.blue.shade700,
-                                                    fontWeight: FontWeight.w500,
-                                                  ),
-                                                ),
-                                                if (product.wholesalePrice != null) ...[
-                                                  const SizedBox(width: 6),
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(12.0),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
                                                   Text(
-                                                    '| Wholesale Rs. ${product.wholesalePrice!.toStringAsFixed(2)}',
-                                                    style: TextStyle(
-                                                      fontSize: 12,
-                                                      color: Colors.teal.shade700,
-                                                      fontWeight: FontWeight.w500,
+                                                    product.name,
+                                                    style: const TextStyle(
+                                                      fontWeight: FontWeight.bold,
+                                                      fontSize: 16,
                                                     ),
                                                   ),
+                                                  const SizedBox(height: 4),
+                                                  Row(
+                                                    children: [
+                                                      Text(
+                                                        'Purchase Rs. ${product.purchasePrice.toStringAsFixed(2)}',
+                                                        style: TextStyle(
+                                                          color: Colors.purple.shade700,
+                                                          fontWeight: FontWeight.w600,
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 8),
+                                                      Text(
+                                                        '| Sale Rs. ${product.salePrice.toStringAsFixed(2)}',
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: Colors.blue.shade700,
+                                                          fontWeight: FontWeight.w500,
+                                                        ),
+                                                      ),
+                                                      if (product.wholesalePrice != null) ...[
+                                                        const SizedBox(width: 6),
+                                                        Text(
+                                                          '| Wholesale Rs. ${product.wholesalePrice!.toStringAsFixed(2)}',
+                                                          style: TextStyle(
+                                                            fontSize: 12,
+                                                            color: Colors.teal.shade700,
+                                                            fontWeight: FontWeight.w500,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                      const SizedBox(width: 8),
+                                                      Text(
+                                                        '| ${product.unit}',
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: Colors.grey[600],
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 8),
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                        decoration: BoxDecoration(
+                                                          color: product.stock > 0 ? Colors.green.shade50 : Colors.red.shade50,
+                                                          borderRadius: BorderRadius.circular(4),
+                                                          border: Border.all(
+                                                            color: product.stock > 0 ? Colors.green.shade200 : Colors.red.shade200,
+                                                          ),
+                                                        ),
+                                                        child: Text(
+                                                          'Stock: ${product.stock}',
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            color: product.stock > 0 ? Colors.green.shade700 : Colors.red.shade700,
+                                                            fontWeight: FontWeight.w600,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  if (product.barcode != null)
+                                                    Text(
+                                                      'Barcode: ${product.barcode}',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.grey[600],
+                                                      ),
+                                                    ),
                                                 ],
-                                                const SizedBox(width: 8),
-                                                Text(
-                                                  '| ${product.unit}',
-                                                  style: TextStyle(
-                                                    fontSize: 12,
-                                                    color: Colors.grey[600],
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                  decoration: BoxDecoration(
-                                                    color: product.stock > 0 ? Colors.green.shade50 : Colors.red.shade50,
-                                                    borderRadius: BorderRadius.circular(4),
-                                                    border: Border.all(
-                                                      color: product.stock > 0 ? Colors.green.shade200 : Colors.red.shade200,
-                                                    ),
-                                                  ),
-                                                  child: Text(
-                                                    'Stock: ${product.stock}',
-                                                    style: TextStyle(
-                                                      fontSize: 11,
-                                                      color: product.stock > 0 ? Colors.green.shade700 : Colors.red.shade700,
-                                                      fontWeight: FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            if (product.barcode != null)
-                                              Text(
-                                                'Barcode: ${product.barcode}',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.grey[600],
-                                                ),
                                               ),
-                                          ],
-                                        ),
-                                      ),
+                                            ),
+                                          ),
+                                        );
+                                      },
                                     ),
                                   );
                                 },
                               ),
-                            );
-                          },
-                        ),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              
-              // Item Name (can be manually edited)
-              TextFormField(
-                controller: _nameController,
-                decoration: InputDecoration(
-                  labelText: 'Item Name *',
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.shopping_bag),
-                  helperText: _selectedCategory != null
-                      ? 'Auto-filled from product or enter manually (will create new product)'
-                      : 'Auto-filled from product or enter manually',
-                ),
-                onChanged: (value) {
-                  // Clear selected product if name is manually changed
-                  if (value.trim().toLowerCase() != _selectedProduct?.name.toLowerCase()) {
-                    setState(() {
-                      _selectedProduct = null;
-                      _currentProductStock = null;
-                      _dozenPriceController.clear();
-                      _bundlePriceController.clear();
-                      _bundleSizeController.clear();
-                      _minimumSalePriceController.clear();
-                    });
-                  }
-                },
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Please enter item name';
-                  }
-                  // If manually entering and category is selected, that's fine
-                  // If no category selected, warn user
-                  if (_selectedCategory == null && _selectedProduct == null) {
-                    return 'Please select a category first or select a product';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              // Stock Information Display (rebuilds only when _calculatedVersion changes)
-              ValueListenableBuilder<int>(
-                valueListenable: _calculatedVersion,
-                builder: (context, _, __) {
-                  if (_selectedProduct == null || _currentProductStock == null) return const SizedBox.shrink();
-                  return
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: _currentProductStock! > 0 ? Colors.green.shade50 : Colors.red.shade50,
-                    border: Border.all(
-                      color: _currentProductStock! > 0 ? Colors.green.shade200 : Colors.red.shade200,
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        _currentProductStock! > 0 ? Icons.inventory_2 : Icons.inventory_2_outlined,
-                        color: _currentProductStock! > 0 ? Colors.green.shade700 : Colors.red.shade700,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Available Stock: ${_currentProductStock!.toStringAsFixed(2)} ${_selectedProduct!.unit}',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: _currentProductStock! > 0 ? Colors.green.shade700 : Colors.red.shade700,
-                              ),
-                            ),
-                            if (_quantityController.text.isNotEmpty)
-                              Builder(
-                                builder: (context) {
-                                  final enteredQty = double.tryParse(_quantityController.text) ?? 0.0;
-                                  final enteredBasePrice =
-                                      double.tryParse(_priceController.text) ?? 0.0;
-                                  final enteredExpense = double.tryParse(_expenseController.text) ?? 0.0;
-                                  final enteredHidden =
-                                      double.tryParse(_hiddenExpenseController.text) ?? 0.0;
-                                  final distVis =
-                                      widget.item?.distributedVisibleExpense ?? 0.0;
-                                  final distHid =
-                                      widget.item?.distributedHiddenExpense ?? 0.0;
-                                  final buyerLineTotal =
-                                      double.tryParse(_totalPriceController.text) ?? 0.0;
-                                  final packSize = double.tryParse(_packSizeController.text) ?? 1.0;
-                                  final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
-                                  final hasPacking = (_selectedPackingType != null && _selectedPackingType!.trim().isNotEmpty);
-                                  // Use same formula as _addItemStock so preview matches saved average
-                                  final baseUnits = (hasPacking && packSize > 0)
-                                      ? (enteredQty * packSize)
-                                      : enteredQty;
-                                  final totalUnitsBeingAdded = baseUnits + bonusQty;
-                                  final totalStock = _currentProductStock! + totalUnitsBeingAdded;
-                                  final oldStock = _currentProductStock!;
-                                  final oldPrice = _selectedProduct!.purchasePrice;
-                                  final oldTotalValue = oldStock * oldPrice;
-                                  final totalValue = buyerLineTotal +
-                                      enteredExpense +
-                                      enteredHidden +
-                                      distVis +
-                                      distHid;
-                                  final unitCost = baseUnits > 0
-                                      ? totalValue / baseUnits
-                                      : (hasPacking && packSize > 0
-                                          ? enteredBasePrice / packSize
-                                          : enteredBasePrice);
-                                  final valueAdded = totalUnitsBeingAdded * unitCost;
-                                  final totalValueAfter = oldTotalValue + valueAdded;
-                                  final averagePrice = totalStock > 0 ? totalValueAfter / totalStock : unitCost;
-                                  return Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        'After adding: ${totalStock.toStringAsFixed(2)} ${_selectedProduct!.unit} total',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          color: Colors.green.shade700,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      if (buyerLineTotal > 0 && enteredQty > 0) ...[
-                                        Text(
-                                          'Average purchase price: Rs. ${averagePrice.toStringAsFixed(2)} (saved when bill is saved)',
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.blue.shade700,
-                                            fontWeight: FontWeight.w500,
-                                            fontStyle: FontStyle.italic,
-                                          ),
-                                        ),
-                                        Text(
-                                          'If this product is in other lines, final average uses all lines in order.',
-                                          style: TextStyle(
-                                            fontSize: 10,
-                                            color: Colors.grey.shade600,
-                                            fontStyle: FontStyle.italic,
-                                          ),
-                                        ),
-                                      ],
-                                    ],
-                                  );
-                                },
-                              ),
                           ],
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-                },
-              ),
-              // Sale / wholesale / dozen / bundle: existing product or new manual item
-              if (_showExtendedPricing)
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _salePriceController,
-                        decoration: InputDecoration(
-                          labelText: 'Sale price',
-                          border: const OutlineInputBorder(),
-                          prefixIcon: const Icon(Icons.sell, size: 20),
-                          prefixText: 'Rs. ',
-                          filled: true,
-                          fillColor: Colors.blue.shade50,
-                          helperText: 'Editable; tap "Use sale" on Price to apply',
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                        ],
-                        onChanged: (_) => _calculatedVersion.value++,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _wholesalePriceController,
-                        decoration: InputDecoration(
-                          labelText: 'Wholesale price',
-                          border: const OutlineInputBorder(),
-                          prefixIcon: const Icon(Icons.store, size: 20),
-                          prefixText: 'Rs. ',
-                          filled: true,
-                          fillColor: Colors.teal.shade50,
-                          helperText: 'Editable; tap "Use wholesale" on Price to apply',
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                        ],
-                        onChanged: (_) => _calculatedVersion.value++,
-                      ),
-                    ),
-                  ],
-                ),
-              if (_showExtendedPricing) const SizedBox(height: 16),
-              if (_showExtendedPricing)
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _dozenPriceController,
-                        decoration: const InputDecoration(
-                          labelText: 'Dozen price',
-                          hintText: '12 pcs',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.inventory_2, size: 20),
-                          prefixText: 'Rs. ',
-                          helperText: 'Tap when empty to fill 12× wholesale',
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                        ],
-                        onTap: _fillDozenFromWholesaleOnTap,
-                        onChanged: (_) => _calculatedVersion.value++,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _bundlePriceController,
-                        decoration: const InputDecoration(
-                          labelText: 'Bundle price',
-                          hintText: 'e.g. 10, 16, 20',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.layers, size: 20),
-                          prefixText: 'Rs. ',
-                          helperText: 'Price per bundle',
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                        ],
-                        onChanged: (_) => _calculatedVersion.value++,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _bundleSizeController,
-                        decoration: const InputDecoration(
-                          labelText: 'Bundle size',
-                          hintText: 'e.g. 10, 24, 36, 48, 50',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.numbers, size: 20),
-                          helperText: 'Any number (pcs per bundle)',
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                        ],
-                        onChanged: (_) => _calculatedVersion.value++,
-                      ),
-                    ),
-                  ],
-                ),
-              if (_isNewItemMode) ...[
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _minimumSalePriceController,
-                  decoration: const InputDecoration(
-                    labelText: 'Minimum sale price',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.vertical_align_bottom, size: 20),
-                    prefixText: 'Rs. ',
-                    helperText:
-                        'Floor for POS sale price; optional (leave empty if none)',
-                  ),
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                  ],
-                  onChanged: (_) => _calculatedVersion.value++,
-                ),
-              ],
-              if (_showExtendedPricing) const SizedBox(height: 16),
-              // Packing Type and Pack Size Row
-              Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: DropdownButtonFormField<String>(
-                      value: _selectedPackingType,
-                      decoration: const InputDecoration(
-                        labelText: 'Packing Type',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.inventory_2),
-                        helperText: 'Select packing type',
-                      ),
-                      items: _packingTypes.map((type) {
-                        return DropdownMenuItem<String>(
-                          value: type,
-                          child: Text(type),
                         );
-                      }).toList(),
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedPackingType = value;
-                        });
                       },
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _packSizeController,
-                      decoration: const InputDecoration(
-                        labelText: 'Pack Size (no of qty)',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.numbers),
-                        helperText: 'Quantity per pack',
+                    const SizedBox(height: 16),
+
+                    // Item Name (can be manually edited)
+                    TextFormField(
+                      controller: _nameController,
+                      decoration: InputDecoration(
+                        labelText: 'Item Name *',
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.shopping_bag),
+                        helperText: _selectedCategory != null
+                            ? 'Auto-filled from product or enter manually (will create new product)'
+                            : 'Auto-filled from product or enter manually',
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      inputFormatters: [
-                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                      ],
-                      onChanged: (_) {
-                        // Listeners update calculated fields via _calculatedVersion
+                      onChanged: (value) {
+                        // Clear selected product if name is manually changed
+                        if (value.trim().toLowerCase() != _selectedProduct?.name.toLowerCase()) {
+                          setState(() {
+                            _selectedProduct = null;
+                            _currentProductStock = null;
+                            _dozenPriceController.clear();
+                            _bundlePriceController.clear();
+                            _bundleSizeController.clear();
+                            _minimumSalePriceController.clear();
+                          });
+                        }
                       },
                       validator: (value) {
-                        if (value != null && value.isNotEmpty) {
-                          if (double.tryParse(value) == null) {
-                            return 'Invalid';
-                          }
-                          final packSize = double.parse(value);
-                          if (packSize <= 0) {
-                            return 'Must be > 0';
-                          }
+                        if (value == null || value.trim().isEmpty) {
+                          return 'Please enter item name';
+                        }
+                        // If manually entering and category is selected, that's fine
+                        // If no category selected, warn user
+                        if (_selectedCategory == null && _selectedProduct == null) {
+                          return 'Please select a category first or select a product';
                         }
                         return null;
                       },
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: TextFormField(
-                      controller: _priceController,
-                      decoration: InputDecoration(
-                        labelText: (_selectedPackingType != null &&
-                                _selectedPackingType!.trim().isNotEmpty)
-                            ? 'Price per $_selectedPackingType (before tax) *'
-                            : 'Unit price (before tax) *',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.currency_rupee),
-                        prefixText: 'Rs. ',
-                        helperText: _showExtendedPricing
-                            ? (_selectedPackingType != null &&
-                                    _selectedPackingType!.trim().isNotEmpty)
-                                ? 'One pack cost before tax — or type Line total below'
-                                : 'Purchase price (use Sale/Wholesale above or tap buttons to fill)'
-                            : 'Before tax; Line total below includes tax',
-                        suffixIcon: _showExtendedPricing
-                            ? Row(
+                    const SizedBox(height: 16),
+                    // Stock Information Display (rebuilds only when _calculatedVersion changes)
+                    ValueListenableBuilder<int>(
+                      valueListenable: _calculatedVersion,
+                      builder: (context, _, __) {
+                        if (_selectedProduct == null || _currentProductStock == null) return const SizedBox.shrink();
+                        return
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            margin: const EdgeInsets.only(bottom: 16),
+                            decoration: BoxDecoration(
+                              color: _currentProductStock! > 0 ? Colors.green.shade50 : Colors.red.shade50,
+                              border: Border.all(
+                                color: _currentProductStock! > 0 ? Colors.green.shade200 : Colors.red.shade200,
+                              ),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _currentProductStock! > 0 ? Icons.inventory_2 : Icons.inventory_2_outlined,
+                                  color: _currentProductStock! > 0 ? Colors.green.shade700 : Colors.red.shade700,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Available Stock: ${_currentProductStock!.toStringAsFixed(2)} ${_selectedProduct!.unit}',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: _currentProductStock! > 0 ? Colors.green.shade700 : Colors.red.shade700,
+                                        ),
+                                      ),
+                                      if (_quantityController.text.isNotEmpty)
+                                        Builder(
+                                          builder: (context) {
+                                            final enteredQty = double.tryParse(_quantityController.text) ?? 0.0;
+                                            final enteredBasePrice =
+                                                double.tryParse(_priceController.text) ?? 0.0;
+                                            final enteredExpense = double.tryParse(_expenseController.text) ?? 0.0;
+                                            final enteredHidden =
+                                                double.tryParse(_hiddenExpenseController.text) ?? 0.0;
+                                            final distVis =
+                                                widget.item?.distributedVisibleExpense ?? 0.0;
+                                            final distHid =
+                                                widget.item?.distributedHiddenExpense ?? 0.0;
+                                            final buyerLineTotal =
+                                                double.tryParse(_totalPriceController.text) ?? 0.0;
+                                            final packSize = double.tryParse(_packSizeController.text) ?? 1.0;
+                                            final bonusQty = double.tryParse(_bonusQtyController.text) ?? 0.0;
+                                            final hasPacking = (_selectedPackingType != null && _selectedPackingType!.trim().isNotEmpty);
+                                            // Use same formula as _addItemStock so preview matches saved average
+                                            final baseUnits = (hasPacking && packSize > 0)
+                                                ? (enteredQty * packSize)
+                                                : enteredQty;
+                                            final totalUnitsBeingAdded = baseUnits + bonusQty;
+                                            final totalStock = _currentProductStock! + totalUnitsBeingAdded;
+                                            final oldStock = _currentProductStock!;
+                                            final oldPrice = _selectedProduct!.purchasePrice;
+                                            final oldTotalValue = oldStock * oldPrice;
+                                            final totalValue = buyerLineTotal +
+                                                enteredExpense +
+                                                enteredHidden +
+                                                distVis +
+                                                distHid;
+                                            final unitCost = baseUnits > 0
+                                                ? totalValue / baseUnits
+                                                : (hasPacking && packSize > 0
+                                                ? enteredBasePrice / packSize
+                                                : enteredBasePrice);
+                                            final valueAdded = totalUnitsBeingAdded * unitCost;
+                                            final totalValueAfter = oldTotalValue + valueAdded;
+                                            final averagePrice = totalStock > 0 ? totalValueAfter / totalStock : unitCost;
+                                            return Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  'After adding: ${totalStock.toStringAsFixed(2)} ${_selectedProduct!.unit} total',
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: Colors.green.shade700,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                                if (buyerLineTotal > 0 && enteredQty > 0) ...[
+                                                  Text(
+                                                    'Average purchase price: Rs. ${averagePrice.toStringAsFixed(2)} (saved when bill is saved)',
+                                                    style: TextStyle(
+                                                      fontSize: 11,
+                                                      color: Colors.blue.shade700,
+                                                      fontWeight: FontWeight.w500,
+                                                      fontStyle: FontStyle.italic,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    'If this product is in other lines, final average uses all lines in order.',
+                                                    style: TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.grey.shade600,
+                                                      fontStyle: FontStyle.italic,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ],
+                                            );
+                                          },
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                      },
+                    ),
+                    // Sale / wholesale / dozen / bundle: existing product or new manual item
+                    if (_showExtendedPricing)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _salePriceController,
+                              decoration: InputDecoration(
+                                labelText: 'Sale price',
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.sell, size: 20),
+                                prefixText: 'Rs. ',
+                                filled: true,
+                                fillColor: Colors.blue.shade50,
+                                helperText: 'Editable; tap "Use sale" on Price to apply',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                              ],
+                              onChanged: (_) => _calculatedVersion.value++,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _wholesalePriceController,
+                              decoration: InputDecoration(
+                                labelText: 'Wholesale price',
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.store, size: 20),
+                                prefixText: 'Rs. ',
+                                filled: true,
+                                fillColor: Colors.teal.shade50,
+                                helperText: 'Editable; tap "Use wholesale" on Price to apply',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                              ],
+                              onChanged: (_) => _calculatedVersion.value++,
+                            ),
+                          ),
+                        ],
+                      ),
+                    if (_showExtendedPricing) const SizedBox(height: 16),
+                    if (_showExtendedPricing)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _dozenPriceController,
+                              decoration: const InputDecoration(
+                                labelText: 'Dozen price',
+                                hintText: '12 pcs',
+                                border: OutlineInputBorder(),
+                                prefixIcon: Icon(Icons.inventory_2, size: 20),
+                                prefixText: 'Rs. ',
+                                helperText: 'Tap when empty to fill 12× wholesale',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                              ],
+                              onTap: _fillDozenFromWholesaleOnTap,
+                              onChanged: (_) => _calculatedVersion.value++,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _bundlePriceController,
+                              decoration: const InputDecoration(
+                                labelText: 'Bundle price',
+                                hintText: 'e.g. 10, 16, 20',
+                                border: OutlineInputBorder(),
+                                prefixIcon: Icon(Icons.layers, size: 20),
+                                prefixText: 'Rs. ',
+                                helperText: 'Price per bundle',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                              ],
+                              onChanged: (_) => _calculatedVersion.value++,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _bundleSizeController,
+                              decoration: const InputDecoration(
+                                labelText: 'Bundle size',
+                                hintText: 'e.g. 10, 24, 36, 48, 50',
+                                border: OutlineInputBorder(),
+                                prefixIcon: Icon(Icons.numbers, size: 20),
+                                helperText: 'Any number (pcs per bundle)',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              onChanged: (_) => _calculatedVersion.value++,
+                            ),
+                          ),
+                        ],
+                      ),
+                    if (_isNewItemMode) ...[
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _minimumSalePriceController,
+                        decoration: const InputDecoration(
+                          labelText: 'Minimum sale price',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.vertical_align_bottom, size: 20),
+                          prefixText: 'Rs. ',
+                          helperText:
+                          'Floor for POS sale price; optional (leave empty if none)',
+                        ),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                        ],
+                        onChanged: (_) => _calculatedVersion.value++,
+                      ),
+                    ],
+                    if (_showExtendedPricing) const SizedBox(height: 16),
+                    // Packing Type and Pack Size Row
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: DropdownButtonFormField<String>(
+                            value: _selectedPackingType,
+                            decoration: const InputDecoration(
+                              labelText: 'Packing Type',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.inventory_2),
+                              helperText: 'Select packing type',
+                            ),
+                            items: _packingTypes.map((type) {
+                              return DropdownMenuItem<String>(
+                                value: type,
+                                child: Text(type),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              setState(() {
+                                _selectedPackingType = value;
+                              });
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _packSizeController,
+                            decoration: const InputDecoration(
+                              labelText: 'Pack Size (no of qty)',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.numbers),
+                              helperText: 'Quantity per pack',
+                            ),
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                            ],
+                            onChanged: (_) {
+                              // Listeners update calculated fields via _calculatedVersion
+                            },
+                            validator: (value) {
+                              if (value != null && value.isNotEmpty) {
+                                if (double.tryParse(value) == null) {
+                                  return 'Invalid';
+                                }
+                                final packSize = double.parse(value);
+                                if (packSize <= 0) {
+                                  return 'Must be > 0';
+                                }
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: TextFormField(
+                            controller: _priceController,
+                            decoration: InputDecoration(
+                              labelText: (_selectedPackingType != null &&
+                                  _selectedPackingType!.trim().isNotEmpty)
+                                  ? 'Price per $_selectedPackingType (before tax) *'
+                                  : 'Unit price (before tax) *',
+                              border: const OutlineInputBorder(),
+                              prefixIcon: const Icon(Icons.currency_rupee),
+                              prefixText: 'Rs. ',
+                              helperText: _showExtendedPricing
+                                  ? (_selectedPackingType != null &&
+                                  _selectedPackingType!.trim().isNotEmpty)
+                                  ? 'One pack cost before tax — or type Line total below'
+                                  : 'Purchase price (use Sale/Wholesale above or tap buttons to fill)'
+                                  : 'Before tax; Line total below includes tax',
+                              suffixIcon: _showExtendedPricing
+                                  ? Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   IconButton(
@@ -2629,7 +2680,7 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                   ),
                                 ],
                               )
-                            : IconButton(
+                                  : IconButton(
                                 icon: const Icon(Icons.calculate),
                                 tooltip: 'Calculator',
                                 onPressed: () async {
@@ -2643,328 +2694,328 @@ class _AddItemDialogState extends State<_AddItemDialog> {
                                   }
                                 },
                               ),
-                      ),
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,6}')),
+                            ),
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,6}')),
+                            ],
+                            onChanged: (_) {
+                              // Listeners update calculated fields via _calculatedVersion
+                            },
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Enter price';
+                              }
+                              if (double.tryParse(value) == null) {
+                                return 'Invalid price';
+                              }
+                              if (double.parse(value) < 0) {
+                                return 'Cannot be negative';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _quantityController,
+                            decoration: InputDecoration(
+                              labelText: _selectedPackingType != null
+                                  ? '$_selectedPackingType count *'
+                                  : 'Qty *',
+                              border: const OutlineInputBorder(),
+                              prefixIcon: const Icon(Icons.numbers),
+                              helperText: _selectedPackingType != null
+                                  ? 'Number of $_selectedPackingType to add'
+                                  : 'Quantity to add to stock',
+                            ),
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                            ],
+                            onChanged: (_) {
+                              _updateTotalQty();
+                            },
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Enter quantity';
+                              }
+                              if (double.tryParse(value) == null) {
+                                return 'Invalid';
+                              }
+                              final qty = double.parse(value);
+                              if (qty <= 0) {
+                                return 'Must be > 0';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
                       ],
-                      onChanged: (_) {
-                        // Listeners update calculated fields via _calculatedVersion
-                      },
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Enter price';
-                        }
-                        if (double.tryParse(value) == null) {
-                          return 'Invalid price';
-                        }
-                        if (double.parse(value) < 0) {
-                          return 'Cannot be negative';
-                        }
-                        return null;
+                    ),
+                    const SizedBox(height: 16),
+                    ValueListenableBuilder<int>(
+                      valueListenable: _calculatedVersion,
+                      builder: (context, _, __) {
+                        final differs = _lineTotalDiffersFromPerPackCalc();
+                        return TextFormField(
+                          controller: _totalPriceController,
+                          decoration: InputDecoration(
+                            labelText: 'Line total (tax incl.) *',
+                            border: const OutlineInputBorder(),
+                            prefixIcon: const Icon(Icons.payments_outlined),
+                            prefixText: 'Rs. ',
+                            filled: true,
+                            fillColor: Colors.purple.shade50,
+                            suffixIcon: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.calculate_outlined, size: 22),
+                                  tooltip: 'Calculator',
+                                  onPressed: () async {
+                                    final v = await _CalculatorDialog.show(
+                                      context,
+                                      initialValue: _totalPriceController.text,
+                                    );
+                                    if (v != null && mounted) {
+                                      _totalPriceController.text = v.toStringAsFixed(2);
+                                      _calculatedVersion.value++;
+                                    }
+                                  },
+                                ),
+                                if (differs)
+                                  IconButton(
+                                    icon: const Icon(Icons.refresh, size: 20),
+                                    tooltip:
+                                    'Set line total from per-pack × qty × (1 + tax)',
+                                    onPressed: _resetToCalculated,
+                                    color: Colors.purple.shade700,
+                                  ),
+                              ],
+                            ),
+                            helperText: differs
+                                ? 'Differs from per-pack × qty — refresh to align, or keep your line total'
+                                : '(Per-pack before tax × Qty) × (1 + Tax%). Edit here to enter full line total — per-pack updates',
+                            helperMaxLines: 3,
+                          ),
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                          ],
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.purple.shade700,
+                            fontSize: 16,
+                          ),
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Enter line total';
+                            }
+                            if (double.tryParse(value) == null) {
+                              return 'Invalid price';
+                            }
+                            if (double.parse(value) < 0) {
+                              return 'Cannot be negative';
+                            }
+                            return null;
+                          },
+                        );
                       },
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _quantityController,
-                      decoration: InputDecoration(
-                        labelText: _selectedPackingType != null
-                            ? '$_selectedPackingType count *'
-                            : 'Qty *',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.numbers),
-                        helperText: _selectedPackingType != null
-                            ? 'Number of $_selectedPackingType to add'
-                            : 'Quantity to add to stock',
+                    const SizedBox(height: 16),
+                    // Tax % Field
+                    TextFormField(
+                      controller: _taxPercentController,
+                      decoration: const InputDecoration(
+                        labelText: 'Tax %',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.percent),
+                        helperText: 'e.g. 1 or 0.5 for 1% or 0.5% (applied to unit price and total price)',
                       ),
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                       ],
                       onChanged: (_) {
-                        _updateTotalQty();
+                        // _onTaxPercentChanged listener updates calculated fields
                       },
                       validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Enter quantity';
-                        }
-                        if (double.tryParse(value) == null) {
-                          return 'Invalid';
-                        }
-                        final qty = double.parse(value);
-                        if (qty <= 0) {
-                          return 'Must be > 0';
+                        if (value != null && value.isNotEmpty) {
+                          final v = double.tryParse(value);
+                          if (v == null || v < 0) return 'Invalid tax %';
                         }
                         return null;
                       },
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              ValueListenableBuilder<int>(
-                valueListenable: _calculatedVersion,
-                builder: (context, _, __) {
-                  final differs = _lineTotalDiffersFromPerPackCalc();
-                  return TextFormField(
-                    controller: _totalPriceController,
-                    decoration: InputDecoration(
-                      labelText: 'Line total (tax incl.) *',
-                      border: const OutlineInputBorder(),
-                      prefixIcon: const Icon(Icons.payments_outlined),
-                      prefixText: 'Rs. ',
-                      filled: true,
-                      fillColor: Colors.purple.shade50,
-                      suffixIcon: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.calculate_outlined, size: 22),
-                            tooltip: 'Calculator',
-                            onPressed: () async {
-                              final v = await _CalculatorDialog.show(
-                                context,
-                                initialValue: _totalPriceController.text,
-                              );
-                              if (v != null && mounted) {
-                                _totalPriceController.text = v.toStringAsFixed(2);
-                                _calculatedVersion.value++;
-                              }
-                            },
-                          ),
-                          if (differs)
-                            IconButton(
-                              icon: const Icon(Icons.refresh, size: 20),
-                              tooltip:
-                                  'Set line total from per-pack × qty × (1 + tax)',
-                              onPressed: _resetToCalculated,
-                              color: Colors.purple.shade700,
+                    const SizedBox(height: 16),
+                    // Bonus Qty Field
+                    TextFormField(
+                      controller: _bonusQtyController,
+                      decoration: const InputDecoration(
+                        labelText: 'Bonus Qty',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.add_circle_outline),
+                        helperText: 'Free quantity added to total (does not affect price)',
+                      ),
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                      ],
+                      onChanged: (_) {
+                        // _updateTotalQty listener runs via controller
+                      },
+                      validator: (value) {
+                        if (value != null && value.isNotEmpty) {
+                          if (double.tryParse(value) == null) {
+                            return 'Invalid';
+                          }
+                          if (double.parse(value) < 0) {
+                            return 'Cannot be negative';
+                          }
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    ValueListenableBuilder<int>(
+                      valueListenable: _calculatedVersion,
+                      builder: (context, _, __) {
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            TextFormField(
+                              controller: _singleUnitPriceController,
+                              readOnly: true,
+                              decoration: InputDecoration(
+                                labelText: 'Single Unit Price',
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.currency_rupee),
+                                prefixText: 'Rs. ',
+                                filled: true,
+                                fillColor: Colors.blue.shade50,
+                                helperText:
+                                '(Total Price + visible/hidden/distributed expenses) ÷ Total Qty',
+                                helperMaxLines: 2,
+                              ),
                             ),
-                        ],
+                            const SizedBox(height: 16),
+                            TextFormField(
+                              controller: _totalQtyController,
+                              readOnly: false,
+                              decoration: InputDecoration(
+                                labelText: 'Total Qty',
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.calculate_outlined),
+                                filled: true,
+                                fillColor: Colors.green.shade50,
+                                helperText: _selectedPackingType != null
+                                    ? 'Calculated: ($_selectedPackingType × Pack Size) + Bonus Qty'
+                                    : 'Calculated: (Qty × Pack Size) + Bonus Qty',
+                              ),
+                              keyboardType:
+                              const TextInputType.numberWithOptions(decimal: true),
+                              inputFormatters: [
+                                FilteringTextInputFormatter.allow(
+                                    RegExp(r'^\d+\.?\d{0,2}')),
+                              ],
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _unitController,
+                      decoration: const InputDecoration(
+                        labelText: 'Unit',
+                        hintText: 'e.g., kg, pcs, L',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.straighten),
                       ),
-                      helperText: differs
-                          ? 'Differs from per-pack × qty — refresh to align, or keep your line total'
-                          : '(Per-pack before tax × Qty) × (1 + Tax%). Edit here to enter full line total — per-pack updates',
-                      helperMaxLines: 3,
                     ),
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                    ],
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.purple.shade700,
-                      fontSize: 16,
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _expenseController,
+                      decoration: const InputDecoration(
+                        labelText: 'Expense (on bill)',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.money_off),
+                        prefixText: 'Rs. ',
+                        helperText:
+                        'Shown on bill; your cost, not added to buyer line total',
+                      ),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                      ],
+                      onChanged: (value) {
+                        // Trigger real-time update when expense changes
+                        _onExpenseChanged();
+                      },
                     ),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Enter line total';
-                      }
-                      if (double.tryParse(value) == null) {
-                        return 'Invalid price';
-                      }
-                      if (double.parse(value) < 0) {
-                        return 'Cannot be negative';
-                      }
-                      return null;
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              // Tax % Field
-              TextFormField(
-                controller: _taxPercentController,
-                decoration: const InputDecoration(
-                  labelText: 'Tax %',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.percent),
-                  helperText: 'e.g. 1 or 0.5 for 1% or 0.5% (applied to unit price and total price)',
-                ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                ],
-                onChanged: (_) {
-                  // _onTaxPercentChanged listener updates calculated fields
-                },
-                validator: (value) {
-                  if (value != null && value.isNotEmpty) {
-                    final v = double.tryParse(value);
-                    if (v == null || v < 0) return 'Invalid tax %';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              // Bonus Qty Field
-              TextFormField(
-                controller: _bonusQtyController,
-                decoration: const InputDecoration(
-                  labelText: 'Bonus Qty',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.add_circle_outline),
-                  helperText: 'Free quantity added to total (does not affect price)',
-                ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                ],
-                onChanged: (_) {
-                  // _updateTotalQty listener runs via controller
-                },
-                validator: (value) {
-                  if (value != null && value.isNotEmpty) {
-                    if (double.tryParse(value) == null) {
-                      return 'Invalid';
-                    }
-                    if (double.parse(value) < 0) {
-                      return 'Cannot be negative';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              ValueListenableBuilder<int>(
-                valueListenable: _calculatedVersion,
-                builder: (context, _, __) {
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      TextFormField(
-                        controller: _singleUnitPriceController,
-                        readOnly: true,
-                        decoration: InputDecoration(
-                          labelText: 'Single Unit Price',
-                          border: const OutlineInputBorder(),
-                          prefixIcon: const Icon(Icons.currency_rupee),
-                          prefixText: 'Rs. ',
-                          filled: true,
-                          fillColor: Colors.blue.shade50,
-                          helperText:
-                              '(Total Price + visible/hidden/distributed expenses) ÷ Total Qty',
-                          helperMaxLines: 2,
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _hiddenExpenseController,
+                      decoration: const InputDecoration(
+                        labelText: 'Internal expense (hidden)',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.visibility_off_outlined),
+                        prefixText: 'Rs. ',
+                        helperText:
+                        'Your cost only; affects stock/line total, not shown on bill',
+                      ),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                      ],
+                      onChanged: (value) {
+                        _onExpenseChanged();
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    InkWell(
+                      onTap: () => _selectDate(context),
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Date *',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.calendar_today),
+                          suffixIcon: Icon(Icons.arrow_drop_down),
+                        ),
+                        child: Text(
+                          _selectedDate != null
+                              ? _dateFormatter.format(_selectedDate!)
+                              : 'Select date',
+                          style: TextStyle(
+                            color: _selectedDate != null
+                                ? Colors.black
+                                : Colors.grey[600],
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _totalQtyController,
-                        readOnly: false,
-                        decoration: InputDecoration(
-                          labelText: 'Total Qty',
-                          border: const OutlineInputBorder(),
-                          prefixIcon: const Icon(Icons.calculate_outlined),
-                          filled: true,
-                          fillColor: Colors.green.shade50,
-                          helperText: _selectedPackingType != null
-                              ? 'Calculated: ($_selectedPackingType × Pack Size) + Bonus Qty'
-                              : 'Calculated: (Qty × Pack Size) + Bonus Qty',
-                        ),
-                        keyboardType:
-                            const TextInputType.numberWithOptions(decimal: true),
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(
-                              RegExp(r'^\d+\.?\d{0,2}')),
-                        ],
-                      ),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _unitController,
-                decoration: const InputDecoration(
-                  labelText: 'Unit',
-                  hintText: 'e.g., kg, pcs, L',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.straighten),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _expenseController,
-                decoration: const InputDecoration(
-                  labelText: 'Expense (on bill)',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.money_off),
-                  prefixText: 'Rs. ',
-                  helperText:
-                      'Shown on bill; your cost, not added to buyer line total',
-                ),
-                keyboardType: TextInputType.number,
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                ],
-                onChanged: (value) {
-                  // Trigger real-time update when expense changes
-                  _onExpenseChanged();
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _hiddenExpenseController,
-                decoration: const InputDecoration(
-                  labelText: 'Internal expense (hidden)',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.visibility_off_outlined),
-                  prefixText: 'Rs. ',
-                  helperText:
-                      'Your cost only; affects stock/line total, not shown on bill',
-                ),
-                keyboardType: TextInputType.number,
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
-                ],
-                onChanged: (value) {
-                  _onExpenseChanged();
-                },
-              ),
-              const SizedBox(height: 16),
-              InkWell(
-                onTap: () => _selectDate(context),
-                child: InputDecorator(
-                  decoration: const InputDecoration(
-                    labelText: 'Date *',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.calendar_today),
-                    suffixIcon: Icon(Icons.arrow_drop_down),
-                  ),
-                  child: Text(
-                    _selectedDate != null
-                        ? _dateFormatter.format(_selectedDate!)
-                        : 'Select date',
-                    style: TextStyle(
-                      color: _selectedDate != null
-                          ? Colors.black
-                          : Colors.grey[600],
                     ),
-                  ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
-        ),
-      ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel (Esc)'),
-        ),
-        ElevatedButton(
-          onPressed: _saveItem,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.purple,
-            foregroundColor: Colors.white,
-          ),
-          child: Text(widget.item == null ? 'Add (Enter)' : 'Update (Enter)'),
-        ),
-      ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel (Esc)'),
+            ),
+            ElevatedButton(
+              onPressed: _saveItem,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.purple,
+                foregroundColor: Colors.white,
+              ),
+              child: Text(widget.item == null ? 'Add (Enter)' : 'Update (Enter)'),
+            ),
+          ],
         ),
       ),
     );

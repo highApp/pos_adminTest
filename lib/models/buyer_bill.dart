@@ -18,9 +18,9 @@ class BuyerBill {
   final double? discountPercent;
   /// Applied fixed discount amount in Rs. (saved when "Apply discount to bill" used with fixed).
   final double? discountFixedAmount;
-  /// Total manual bill expense (visible), split evenly across lines when editing.
+  /// Total manual bill expense (visible), split by line total qty when editing.
   final double manualVisibleExpenseTotal;
-  /// Total manual bill expense (hidden), split evenly across lines when editing.
+  /// Total manual bill expense (hidden), split by line total qty when editing.
   final double manualHiddenExpenseTotal;
 
   BuyerBill({
@@ -71,8 +71,8 @@ class BuyerBill {
       buyerId: map['buyerId'] ?? '',
       buyerName: map['buyerName'] ?? '',
       items: (map['items'] as List<dynamic>?)
-              ?.map((item) => BuyerBillItem.fromMap(item as Map<String, dynamic>))
-              .toList() ??
+          ?.map((item) => BuyerBillItem.fromMap(item as Map<String, dynamic>))
+          .toList() ??
           [],
       total: (map['total'] ?? 0).toDouble(),
       totalExpense: (map['totalExpense'] ?? 0).toDouble(),
@@ -88,9 +88,9 @@ class BuyerBill {
       discountPercent: (map['discountPercent'] as num?)?.toDouble(),
       discountFixedAmount: (map['discountFixedAmount'] as num?)?.toDouble(),
       manualVisibleExpenseTotal:
-          (map['manualVisibleExpenseTotal'] as num?)?.toDouble() ?? 0,
+      (map['manualVisibleExpenseTotal'] as num?)?.toDouble() ?? 0,
       manualHiddenExpenseTotal:
-          (map['manualHiddenExpenseTotal'] as num?)?.toDouble() ?? 0,
+      (map['manualHiddenExpenseTotal'] as num?)?.toDouble() ?? 0,
     );
   }
 }

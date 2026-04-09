@@ -8,9 +8,9 @@ class BuyerBillItem {
   final double expense;
   /// Affects line total and stock cost but is not shown on the bill.
   final double hiddenItemExpense;
-  /// Per-line share of bill-level manual expense (visible).
+  /// Per-line share of bill-level manual expense (visible), by line total qty.
   final double distributedVisibleExpense;
-  /// Per-line share of bill-level manual expense (hidden).
+  /// Per-line share of bill-level manual expense (hidden), by line total qty.
   final double distributedHiddenExpense;
   final double subtotal;
   final DateTime? date;
@@ -57,9 +57,9 @@ class BuyerBillItem {
   /// All cost components layered on top of the buyer-facing line total.
   double get totalExpensesOnLine =>
       expense +
-      hiddenItemExpense +
-      distributedVisibleExpense +
-      distributedHiddenExpense;
+          hiddenItemExpense +
+          distributedVisibleExpense +
+          distributedHiddenExpense;
 
   /// Buyer-facing line total (tax-inclusive, before any expenses).
   double get buyerLineSubtotal => subtotal - totalExpensesOnLine;
@@ -99,9 +99,9 @@ class BuyerBillItem {
       expense: expense ?? this.expense,
       hiddenItemExpense: hiddenItemExpense ?? this.hiddenItemExpense,
       distributedVisibleExpense:
-          distributedVisibleExpense ?? this.distributedVisibleExpense,
+      distributedVisibleExpense ?? this.distributedVisibleExpense,
       distributedHiddenExpense:
-          distributedHiddenExpense ?? this.distributedHiddenExpense,
+      distributedHiddenExpense ?? this.distributedHiddenExpense,
       subtotal: subtotal ?? this.subtotal,
       date: date ?? this.date,
       bonusQty: bonusQty ?? this.bonusQty,
@@ -110,13 +110,13 @@ class BuyerBillItem {
       category: category ?? this.category,
       newProductSalePrice: newProductSalePrice ?? this.newProductSalePrice,
       newProductWholesalePrice:
-          newProductWholesalePrice ?? this.newProductWholesalePrice,
+      newProductWholesalePrice ?? this.newProductWholesalePrice,
       newProductDozenPrice: newProductDozenPrice ?? this.newProductDozenPrice,
       newProductBundlePrice:
-          newProductBundlePrice ?? this.newProductBundlePrice,
+      newProductBundlePrice ?? this.newProductBundlePrice,
       newProductBundleSize: newProductBundleSize ?? this.newProductBundleSize,
       newProductMinimumSalePrice:
-          newProductMinimumSalePrice ?? this.newProductMinimumSalePrice,
+      newProductMinimumSalePrice ?? this.newProductMinimumSalePrice,
     );
   }
 
@@ -156,9 +156,9 @@ class BuyerBillItem {
       expense: (map['expense'] ?? 0).toDouble(),
       hiddenItemExpense: (map['hiddenItemExpense'] ?? 0).toDouble(),
       distributedVisibleExpense:
-          (map['distributedVisibleExpense'] ?? 0).toDouble(),
+      (map['distributedVisibleExpense'] ?? 0).toDouble(),
       distributedHiddenExpense:
-          (map['distributedHiddenExpense'] ?? 0).toDouble(),
+      (map['distributedHiddenExpense'] ?? 0).toDouble(),
       subtotal: (map['subtotal'] ?? 0).toDouble(),
       date: map['date'] != null ? DateTime.parse(map['date']) : null,
       bonusQty: (map['bonusQty'] ?? 0).toDouble(),
@@ -167,13 +167,13 @@ class BuyerBillItem {
       category: map['category'] as String?,
       newProductSalePrice: (map['newProductSalePrice'] as num?)?.toDouble(),
       newProductWholesalePrice:
-          (map['newProductWholesalePrice'] as num?)?.toDouble(),
+      (map['newProductWholesalePrice'] as num?)?.toDouble(),
       newProductDozenPrice: (map['newProductDozenPrice'] as num?)?.toDouble(),
       newProductBundlePrice:
-          (map['newProductBundlePrice'] as num?)?.toDouble(),
+      (map['newProductBundlePrice'] as num?)?.toDouble(),
       newProductBundleSize: (map['newProductBundleSize'] as num?)?.toInt(),
       newProductMinimumSalePrice:
-          (map['newProductMinimumSalePrice'] as num?)?.toDouble(),
+      (map['newProductMinimumSalePrice'] as num?)?.toDouble(),
     );
   }
 }
