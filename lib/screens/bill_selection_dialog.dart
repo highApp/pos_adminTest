@@ -28,9 +28,11 @@ class _BillSelectionDialogState extends State<BillSelectionDialog> {
   }
 
   Future<void> _loadBalances() async {
-    final Map<String, double> balances = {};
-    for (var bill in widget.bills) {
-      final totalPaid = await _paymentService.getTotalPaidForBill(bill.id);
+    final billIds = widget.bills.map((b) => b.id).toList();
+    final paidByBill = await _paymentService.getTotalPaidByBillIds(billIds);
+    final balances = <String, double>{};
+    for (final bill in widget.bills) {
+      final totalPaid = paidByBill[bill.id] ?? 0.0;
       balances[bill.id] = bill.finalPrice - totalPaid;
     }
     if (mounted) {

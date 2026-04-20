@@ -45,7 +45,7 @@ List<double> _splitTotalByWeights(double total, List<double> weights) {
   final allocated = parts.fold(0, (a, b) => a + b);
   var remainder = cents - allocated;
   final fracs =
-  List<double>.generate(n, (i) => raw[i] - parts[i].toDouble());
+      List<double>.generate(n, (i) => raw[i] - parts[i].toDouble());
   final order = List<int>.generate(n, (i) => i)
     ..sort((a, b) => fracs[b].compareTo(fracs[a]));
   for (var k = 0; k < remainder; k++) {

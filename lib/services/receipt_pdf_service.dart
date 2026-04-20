@@ -31,6 +31,9 @@ class ReceiptPdfService {
       final pdf = pw.Document();
       final formatter = NumberFormat.currency(symbol: 'Rs. ', decimalDigits: 2);
       final dateFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
+      final printableItems = sale.items
+          .where((item) => item.remainingQuantity > 0)
+          .toList();
 
       final productNamesMap = await _getProductNames(sale, languageCode);
       // English names for fallback when Urdu image fails or for non-Urdu display.
@@ -39,7 +42,7 @@ class ReceiptPdfService {
       // For Urdu/Arabic product names, render as image so PDF shows them (Courier has no Urdu glyphs).
       // On Android, use widget-based render so the app font is used; otherwise ParagraphBuilder.
       final Map<String, Uint8List?> productNameImageBytes = {};
-      for (var item in sale.items) {
+      for (var item in printableItems) {
         final name = (productNamesMap[item.productId] ?? item.productName ?? '').trim();
         if (name.isNotEmpty && containsNonAscii(name)) {
           final Uint8List? pngBytes;
@@ -85,7 +88,17 @@ class ReceiptPdfService {
           ),
           build: (pw.Context context) {
             // Total owed = existing due + current sale (after credit). Then subtract amount paid.
-            final totalOwedBeforePayment = existingDueTotal + sale.total - sale.creditUsed;
+            double netCreditUsed = sale.creditUsed;
+            if (sale.returnedAmount > 0 && sale.total > 0 && sale.creditUsed > 0) {
+              final creditRestoreRatio =
+                  (sale.returnedAmount / sale.total).clamp(0.0, 1.0);
+              final creditRestored = sale.creditUsed * creditRestoreRatio;
+              netCreditUsed =
+                  (sale.creditUsed - creditRestored).clamp(0.0, sale.creditUsed);
+            }
+            final netSaleAmount =
+                (sale.netTotal - netCreditUsed).clamp(0.0, double.infinity);
+            final totalOwedBeforePayment = existingDueTotal + netSaleAmount;
             final totalDueBalance = (totalOwedBeforePayment - sale.amountPaid).clamp(0.0, double.infinity);
             return pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.center,
@@ -198,7 +211,7 @@ class ReceiptPdfService {
                 pw.SizedBox(height: 2),
                 pw.Divider(thickness: 0.5, color: PdfColors.grey700),
                 pw.SizedBox(height: 2),
-                ...sale.items.asMap().entries.map((entry) {
+                ...printableItems.asMap().entries.map((entry) {
                   final index = entry.key;
                   final item = entry.value;
                   final itemNumber = (index + 1).toString().padLeft(2, '0');
@@ -230,7 +243,7 @@ class ReceiptPdfService {
                             flex: 1,
                             child: pw.Text(
                               item.quantity.toStringAsFixed(
-                                  item.quantity % 1 == 0 ? 0 : 2),
+                                  item.remainingQuantity % 1 == 0 ? 0 : 2),
                               style: textStyle(fontSize: 6),
                               textAlign: pw.TextAlign.center,
                             ),
@@ -246,7 +259,7 @@ class ReceiptPdfService {
                           pw.Expanded(
                             flex: 2,
                             child: pw.Text(
-                              formatter.format(item.subtotal),
+                              formatter.format(item.remainingSubtotal),
                               style: textStyle(fontSize: 6),
                               textAlign: pw.TextAlign.right,
                             ),
@@ -263,12 +276,12 @@ class ReceiptPdfService {
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
                     pw.Text(
-                      'Total Items: ${sale.items.length}',
+                      'Total Items: ${printableItems.length}',
                       style: textStyle(
                           fontSize: 6, fontWeight: pw.FontWeight.bold),
                     ),
                     pw.Text(
-                      'Total Qty: ${sale.items.fold<double>(0, (sum, item) => sum + item.quantity).toStringAsFixed(sale.items.any((item) => item.quantity % 1 != 0) ? 2 : 0)}',
+                      'Total Qty: ${printableItems.fold<double>(0, (sum, item) => sum + item.remainingQuantity).toStringAsFixed(printableItems.any((item) => item.remainingQuantity % 1 != 0) ? 2 : 0)}',
                       style: textStyle(
                           fontSize: 6, fontWeight: pw.FontWeight.bold),
                     ),

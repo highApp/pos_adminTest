@@ -70,13 +70,13 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _searchController.text.isNotEmpty
                     ? IconButton(
-                  icon: const Icon(Icons.clear),
-                  onPressed: () {
-                    setState(() {
-                      _searchController.clear();
-                    });
-                  },
-                )
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          setState(() {
+                            _searchController.clear();
+                          });
+                        },
+                      )
                     : null,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -198,7 +198,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                             orders = orders.where((order) {
                               final orderDate = order.completedAt ?? order.createdAt;
                               return orderDate.isAfter(_startDate!.subtract(const Duration(seconds: 1))) &&
-                                  orderDate.isBefore(_endDate!.add(const Duration(days: 1)));
+                                     orderDate.isBefore(_endDate!.add(const Duration(days: 1)));
                             }).toList();
                           }
 
@@ -215,12 +215,12 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                             // First filter by fields we can check directly
                             sales = sales.where((sale) {
                               // Search in description
-                              if (sale.description != null &&
+                              if (sale.description != null && 
                                   sale.description!.toLowerCase().contains(searchQuery)) {
                                 return true;
                               }
                               // Search in customer name
-                              if (sale.customerName != null &&
+                              if (sale.customerName != null && 
                                   sale.customerName!.toLowerCase().contains(searchQuery)) {
                                 return true;
                               }
@@ -229,7 +229,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                                 return true;
                               }
                               // Search in item names
-                              if (sale.items.any((item) =>
+                              if (sale.items.any((item) => 
                                   item.productName.toLowerCase().contains(searchQuery))) {
                                 return true;
                               }
@@ -241,7 +241,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
 
                           // Create combined list
                           final combinedTransactions = <Map<String, dynamic>>[];
-
+                          
                           // Add sales
                           for (var sale in sales) {
                             combinedTransactions.add({
@@ -460,7 +460,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
   void _showReturnDialog(BuildContext context, Sale sale) {
     // Check if there are any items that can be returned
     final returnableItems = sale.items.where((item) => item.remainingQuantity > 0).toList();
-
+    
     if (returnableItems.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('All items have already been returned')),
@@ -659,13 +659,13 @@ class _SellerDayGroupTile extends StatelessWidget {
     final formatter = NumberFormat.currency(symbol: 'Rs. ');
     final dateStr = DateFormat('MMM dd, yyyy').format(date);
     final totalAmount =
-    sales.fold<double>(0.0, (sum, s) => sum + s.total);
+        sales.fold<double>(0.0, (sum, s) => sum + s.total);
     final future = sellerId != null
         ? Future.wait([
-      sellerService.getSellerById(sellerId!),
-      sellerService.getTotalDueAmountForSeller(sellerId!),
-      sellerService.getCreditBalance(sellerId!),
-    ])
+            sellerService.getSellerById(sellerId!),
+            sellerService.getTotalDueAmountForSeller(sellerId!),
+            sellerService.getCreditBalance(sellerId!),
+          ])
         : Future.value(<dynamic>[null, 0.0, 0.0]);
     return FutureBuilder<List<dynamic>>(
       future: future,
@@ -718,14 +718,14 @@ class _SellerDayGroupTile extends StatelessWidget {
               children: sales
                   .map(
                     (sale) => Padding(
-                  padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
-                  child: _SaleCard(
-                    sale: sale,
-                    showProfit: showProfit,
-                    onReturn: () => onReturn(sale),
-                  ),
-                ),
-              )
+                      padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+                      child: _SaleCard(
+                        sale: sale,
+                        showProfit: showProfit,
+                        onReturn: () => onReturn(sale),
+                      ),
+                    ),
+                  )
                   .toList(),
             ),
           ),
@@ -876,7 +876,7 @@ class _SaleCard extends StatelessWidget {
         if (kIsWeb &&
             connectionType == PrinterConnectionType.bluetooth) {
           errorMessage =
-          'Bluetooth printing from the browser often fails. Try WiFi printer or print from the mobile app.';
+              'Bluetooth printing from the browser often fails. Try WiFi printer or print from the mobile app.';
         }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -957,7 +957,7 @@ class _SaleCard extends StatelessWidget {
         leading: CircleAvatar(
           backgroundColor: hasReturns ? Colors.orange.shade100 : Colors.green.shade100,
           child: Icon(
-            hasReturns ? Icons.assignment_return : Icons.receipt,
+            hasReturns ? Icons.assignment_return : Icons.receipt, 
             color: hasReturns ? Colors.orange.shade700 : Colors.green.shade700,
           ),
         ),
@@ -966,7 +966,7 @@ class _SaleCard extends StatelessWidget {
             Text(
               formatter.format(sale.total),
               style: TextStyle(
-                fontWeight: FontWeight.bold,
+                fontWeight: FontWeight.bold, 
                 fontSize: 18,
                 decoration: hasReturns ? TextDecoration.lineThrough : null,
               ),
@@ -1294,7 +1294,7 @@ class _SaleCard extends StatelessWidget {
                             Text(
                               formatter.format(item.subtotal),
                               style:
-                              const TextStyle(fontWeight: FontWeight.bold),
+                                  const TextStyle(fontWeight: FontWeight.bold),
                             ),
                           ],
                         ),
@@ -1558,12 +1558,12 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
                               icon: const Icon(Icons.remove_circle_outline),
                               onPressed: returnQty > 0
                                   ? () {
-                                setState(() {
-                                  // Support fractional quantities for weight-based items
-                                  final decrement = returnQty % 1 == 0 ? 1.0 : 0.1;
-                                  _returnQuantities[item.productId] = (returnQty - decrement).clamp(0.0, item.remainingQuantity);
-                                });
-                              }
+                                      setState(() {
+                                        // Support fractional quantities for weight-based items
+                                        final decrement = returnQty % 1 == 0 ? 1.0 : 0.1;
+                                        _returnQuantities[item.productId] = (returnQty - decrement).clamp(0.0, item.remainingQuantity);
+                                      });
+                                    }
                                   : null,
                             ),
                             Container(
@@ -1584,12 +1584,12 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
                               icon: const Icon(Icons.add_circle_outline),
                               onPressed: returnQty < item.remainingQuantity
                                   ? () {
-                                setState(() {
-                                  // Support fractional quantities for weight-based items
-                                  final increment = returnQty % 1 == 0 ? 1.0 : 0.1;
-                                  _returnQuantities[item.productId] = (returnQty + increment).clamp(0.0, item.remainingQuantity);
-                                });
-                              }
+                                      setState(() {
+                                        // Support fractional quantities for weight-based items
+                                        final increment = returnQty % 1 == 0 ? 1.0 : 0.1;
+                                        _returnQuantities[item.productId] = (returnQty + increment).clamp(0.0, item.remainingQuantity);
+                                      });
+                                    }
                                   : null,
                             ),
                           ],
@@ -1660,17 +1660,17 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
                     ),
                     child: _isProcessing
                         ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
                         : const Text(
-                      'Process Return',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
+                            'Process Return',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                          ),
                   ),
                 ),
               ],
@@ -1749,7 +1749,7 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
 
       // Store previous returned amount before update
       final previousReturnedAmount = widget.sale.returnedAmount;
-
+      
       // Create updated sale - IMPORTANT: Preserve all original sale fields including creditUsed and recoveryBalance
       final updatedSale = Sale(
         id: widget.sale.id,
@@ -1781,7 +1781,7 @@ class _SaleReturnScreenState extends State<SaleReturnScreen> {
           SnackBar(
             content: Text(
               'Return processed: ${NumberFormat.currency(symbol: 'Rs. ').format(totalReturnAmount)} refunded\n'
-                  'Stock restored for ${stockUpdates.length} product(s)',
+              'Stock restored for ${stockUpdates.length} product(s)',
             ),
             backgroundColor: Colors.orange,
             duration: const Duration(seconds: 3),

@@ -179,7 +179,8 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
+                    onPressed:
+                        _isLoading ? null : () => Navigator.pop(context),
                   ),
                 ],
               ),
@@ -383,10 +384,13 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
                           ? const SizedBox(
                               width: 20,
                               height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
                             )
                           : const Icon(Icons.save),
-                      label: const Text('Add Payment'),
+                      label: Text(_isLoading ? 'Saving...' : 'Add Payment'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.purple,
                         foregroundColor: Colors.white,

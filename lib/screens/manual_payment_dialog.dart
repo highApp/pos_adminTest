@@ -96,73 +96,95 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
       });
 
       try {
-        // Get bills with their balances, sorted by oldest first
-        final List<Map<String, dynamic>> billsWithBalance = [];
-        for (var bill in widget.bills) {
-          final totalPaid = await widget.paymentService.getTotalPaidForBill(bill.id);
+        final billIds = widget.bills.map((b) => b.id).toList();
+        final paidByBill =
+            await widget.paymentService.getTotalPaidByBillIds(billIds);
+
+        final billsWithBalance = <Map<String, dynamic>>[];
+        for (final bill in widget.bills) {
+          final totalPaid = paidByBill[bill.id] ?? 0.0;
           final balance = bill.finalPrice - totalPaid;
           if (balance > 0) {
-            billsWithBalance.add({
-              'bill': bill,
-              'balance': balance,
-            });
+            billsWithBalance.add({'bill': bill, 'balance': balance});
           }
         }
-        
-        // Sort by date (oldest first)
+
         billsWithBalance.sort((a, b) {
           final aBill = a['bill'] as BuyerBill;
           final bBill = b['bill'] as BuyerBill;
           return aBill.createdAt.compareTo(bBill.createdAt);
         });
 
-        // Allocate payment to bills (oldest first)
-        // Use same batchId for all payments in this transaction (groups in payment history)
         final batchId = const Uuid().v4();
         final refText = _referenceController.text.trim();
-        double remainingAmount = amount;
-        final paymentIds = <String>[];
-        for (var billData in billsWithBalance) {
+        var remainingAmount = amount;
+        final allocations = <({BuyerBill bill, double amount})>[];
+        for (final billData in billsWithBalance) {
           if (remainingAmount <= 0) break;
-          
           final bill = billData['bill'] as BuyerBill;
           final balance = billData['balance'] as double;
-          final paymentAmount = remainingAmount > balance ? balance : remainingAmount;
-          
-          final paymentNumber = await widget.paymentService.getNextPaymentNumber();
-          paymentIds.add(paymentNumber);
-          final payment = BuyerPayment(
-            id: const Uuid().v4(),
-            billId: bill.id,
-            paymentDate: _paymentDate!,
-            paymentType: _paymentType,
-            amount: paymentAmount,
-            paymentNumber: paymentNumber,
-            batchId: batchId,
-            accountTitle: _paymentType == 'bank_transfer' && _accountTitleController.text.trim().isNotEmpty
-                ? _accountTitleController.text.trim()
-                : null,
-            bankName: _paymentType == 'bank_transfer' && _bankNameController.text.trim().isNotEmpty
-                ? _bankNameController.text.trim()
-                : null,
-            accountHolderName: _paymentType == 'bank_transfer' && _accountHolderNameController.text.trim().isNotEmpty
-                ? _accountHolderNameController.text.trim()
-                : null,
-            referenceNumber:
-                _paymentType == 'bank_transfer' && refText.isNotEmpty ? refText : null,
-            reference: refText.isNotEmpty ? refText : null,
-            createdAt: DateTime.now(),
-          );
-
-          await widget.paymentService.addPayment(payment);
+          final paymentAmount =
+              remainingAmount > balance ? balance : remainingAmount;
+          allocations.add((bill: bill, amount: paymentAmount));
           remainingAmount -= paymentAmount;
         }
 
+        if (allocations.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('No bill with an open balance to apply this payment to'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        }
+
+        final paymentNumbers = await widget.paymentService
+            .getNextPaymentNumbers(allocations.length);
+        final createdAt = DateTime.now();
+        final payments = <BuyerPayment>[];
+        for (var i = 0; i < allocations.length; i++) {
+          final a = allocations[i];
+          payments.add(
+            BuyerPayment(
+              id: const Uuid().v4(),
+              billId: a.bill.id,
+              paymentDate: _paymentDate!,
+              paymentType: _paymentType,
+              amount: a.amount,
+              paymentNumber: paymentNumbers[i],
+              batchId: batchId,
+              accountTitle: _paymentType == 'bank_transfer' &&
+                      _accountTitleController.text.trim().isNotEmpty
+                  ? _accountTitleController.text.trim()
+                  : null,
+              bankName: _paymentType == 'bank_transfer' &&
+                      _bankNameController.text.trim().isNotEmpty
+                  ? _bankNameController.text.trim()
+                  : null,
+              accountHolderName: _paymentType == 'bank_transfer' &&
+                      _accountHolderNameController.text.trim().isNotEmpty
+                  ? _accountHolderNameController.text.trim()
+                  : null,
+              referenceNumber: _paymentType == 'bank_transfer' &&
+                      refText.isNotEmpty
+                  ? refText
+                  : null,
+              reference: refText.isNotEmpty ? refText : null,
+              createdAt: createdAt,
+            ),
+          );
+        }
+
+        await widget.paymentService.addPaymentsBatch(payments);
+
         if (mounted) {
           Navigator.pop(context);
-          final idText = paymentIds.length == 1
-              ? 'ID: ${paymentIds.first}'
-              : 'IDs: ${paymentIds.join(", ")}';
+          final idText = paymentNumbers.length == 1
+              ? 'ID: ${paymentNumbers.first}'
+              : 'IDs: ${paymentNumbers.join(", ")}';
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Payment(s) added successfully. $idText'),
@@ -218,7 +240,8 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
+                    onPressed:
+                        _isLoading ? null : () => Navigator.pop(context),
                   ),
                 ],
               ),
@@ -424,10 +447,13 @@ class _ManualPaymentDialogState extends State<ManualPaymentDialog> {
                           ? const SizedBox(
                               width: 20,
                               height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
                             )
                           : const Icon(Icons.save),
-                      label: const Text('Add Payment'),
+                      label: Text(_isLoading ? 'Saving...' : 'Add Payment'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,

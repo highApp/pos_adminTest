@@ -1248,15 +1248,21 @@ class PrinterService {
       _addText(commands, '${_receiptLabel('manualSale', labelsLanguage)}\n');
     }
 
+    final printableItems = sale.items
+        .where((item) => item.remainingQuantity > 0)
+        .toList();
+
     int itemNumber = 1;
-    for (var item in sale.items) {
+    for (var item in printableItems) {
       String productName = (productNamesMap[item.productId] ?? item.productName ?? '').trim();
       if (productName.isEmpty) productName = 'Item'; // ensure name always prints
-      final qty = item.quantity % 1 == 0 
-          ? item.quantity.toStringAsFixed(0) 
-          : item.quantity.toStringAsFixed(3);
+      final lineQty = item.remainingQuantity;
+      final lineSubtotal = item.remainingSubtotal;
+      final qty = lineQty % 1 == 0
+          ? lineQty.toStringAsFixed(0)
+          : lineQty.toStringAsFixed(3);
       final price = item.price.toStringAsFixed(2);
-      final subtotal = item.subtotal.toStringAsFixed(2);
+      final subtotal = lineSubtotal.toStringAsFixed(2);
       if (containsNonAscii(productName)) {
         final raster = await textToEscPosRaster(productName, maxWidthPixels: 256, fontSize: 14);
         if (raster != null) {
@@ -1274,17 +1280,23 @@ class PrinterService {
     }
 
     _addText(commands, '${_repeatChar('-', 32)}\n');
-    if (sale.items.isNotEmpty) {
-      _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', sale.items.length.toString()));
+    if (printableItems.isNotEmpty) {
+      _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', printableItems.length.toString()));
     } else if (manualSaleNoItems) {
       _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', 'N/A'));
     }
     _addText(commands, '${_repeatChar('-', 32)}\n');
 
-    final saleAmount = sale.total - sale.creditUsed;
+    double netCreditUsed = sale.creditUsed;
+    if (sale.returnedAmount > 0 && sale.total > 0 && sale.creditUsed > 0) {
+      final creditRestoreRatio = (sale.returnedAmount / sale.total).clamp(0.0, 1.0);
+      final creditRestored = sale.creditUsed * creditRestoreRatio;
+      netCreditUsed = (sale.creditUsed - creditRestored).clamp(0.0, sale.creditUsed);
+    }
+    final saleAmount = (sale.netTotal - netCreditUsed).clamp(0.0, double.infinity);
     _addText(commands, _formatLine(_receiptLabel('saleAmount', labelsLanguage), saleAmount.toStringAsFixed(2)));
-    if (sale.creditUsed > 0) {
-      _addText(commands, _formatLine(_receiptLabel('creditUsed', labelsLanguage), sale.creditUsed.toStringAsFixed(2)));
+    if (netCreditUsed > 0) {
+      _addText(commands, _formatLine(_receiptLabel('creditUsed', labelsLanguage), netCreditUsed.toStringAsFixed(2)));
       if (seller != null) {
         try {
           final remainingCredit = await sellerService.getCreditBalance(seller.id);
@@ -1303,6 +1315,9 @@ class PrinterService {
     }
     _addText(commands, _formatLine(_receiptLabel('amountPaid', labelsLanguage), sale.amountPaid.toStringAsFixed(2)));
     _addText(commands, _formatLine(_receiptLabel('change', labelsLanguage), sale.change.toStringAsFixed(2)));
+    if (sale.returnedAmount > 0.01) {
+      _addText(commands, _formatLine('Returned', sale.returnedAmount.toStringAsFixed(2)));
+    }
     if (manualPaymentReceipt) {
       final creditAdded = sale.amountPaid - sale.recoveryBalance;
       if (creditAdded > 0.01) {

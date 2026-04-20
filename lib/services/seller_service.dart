@@ -109,6 +109,34 @@ class SellerService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final String _collection = 'sellers';
   static const _dashboardThrottle = Duration(seconds: 25);
+
+  /// Only [seller_history] rows with money still owed (small set vs full history).
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> fetchOpenDueHistoryDocs(
+    String sellerId,
+  ) async {
+    try {
+      final snapshot = await _firestore
+          .collection('seller_history')
+          .where('sellerId', isEqualTo: sellerId)
+          .where('duePayment', isGreaterThan: 0)
+          .orderBy('duePayment')
+          .get();
+      return snapshot.docs;
+    } catch (e) {
+      if (_sellerServiceDebug) {
+        debugPrint('fetchOpenDueHistoryDocs index/fallback: $e');
+      }
+      final snapshot = await _firestore
+          .collection('seller_history')
+          .where('sellerId', isEqualTo: sellerId)
+          .get();
+      return snapshot.docs
+          .where(
+            (d) => (d.data()['duePayment'] ?? 0).toDouble() > 0,
+          )
+          .toList();
+    }
+  }
   /// Profit cards: cheaper reads than before, so allow slightly fresher updates.
   static const _dashboardProfitThrottle = Duration(seconds: 10);
 
@@ -218,6 +246,8 @@ class SellerService {
     required DateTime saleDate,
     /// POS "Description (Optional)" / notes — shown on seller history.
     String? description,
+    String? referenceNumber,
+    bool isManual = false,
   }) async {
     final duePayment = saleAmount > amountPaid ? saleAmount - amountPaid : 0.0;
 
@@ -233,6 +263,13 @@ class SellerService {
     final note = description?.trim();
     if (note != null && note.isNotEmpty) {
       data['description'] = note;
+    }
+    final ref = referenceNumber?.trim();
+    if (ref != null && ref.isNotEmpty) {
+      data['referenceNumber'] = ref;
+    }
+    if (isManual) {
+      data['isManual'] = true;
     }
 
     await _firestore.collection('seller_history').add(data);
@@ -441,8 +478,12 @@ class SellerService {
   /// Dashboard **Unpaid sales** / **Total borrow** read sums of `duePayment` from `seller_history`,
   /// so a successful call here is what makes those numbers go down.
   ///
-  /// Returns cash **not** applied to any bill (becomes seller credit or change upstream).
-  Future<double> applyPaymentToDuePayments(
+  /// Same as [applyPaymentToDuePayments] but returns **total open due before** applying,
+  /// computed from the same snapshot (avoids a second full [seller_history] read).
+  ///
+  /// Due rows are updated with [WriteBatch] (one round trip per batch, max 500 ops).
+  Future<({double remainingPayment, double totalOpenDueBefore})>
+      applyPaymentToDuePaymentsWithMetrics(
     String sellerId,
     double paymentAmount, {
     DateTime? prioritizeBillsWithSaleDateSameDayAs,
@@ -450,12 +491,16 @@ class SellerService {
     if (_sellerServiceDebug) debugPrint('=== APPLYING PAYMENT TO DUE PAYMENTS ===');
     if (_sellerServiceDebug) debugPrint('Seller ID: $sellerId');
     if (_sellerServiceDebug) debugPrint('Payment Amount: $paymentAmount');
-    if (paymentAmount <= 0) return paymentAmount;
+    if (paymentAmount <= 0) {
+      return (remainingPayment: paymentAmount, totalOpenDueBefore: 0.0);
+    }
 
-    final snapshot = await _firestore
-        .collection('seller_history')
-        .where('sellerId', isEqualTo: sellerId)
-        .get();
+    final openDocs = await fetchOpenDueHistoryDocs(sellerId);
+
+    double totalOpenDueBefore = 0.0;
+    for (final doc in openDocs) {
+      totalOpenDueBefore += (doc.data()['duePayment'] ?? 0).toDouble();
+    }
 
     DateTime? priorityDay;
     final p = prioritizeBillsWithSaleDateSameDayAs;
@@ -463,9 +508,7 @@ class SellerService {
       priorityDay = DateTime(p.year, p.month, p.day);
     }
 
-    final candidates = snapshot.docs
-        .where((doc) => (doc.data()['duePayment'] ?? 0).toDouble() > 0)
-        .toList();
+    final candidates = openDocs.toList();
 
     candidates.sort((a, b) {
       final da = a.data();
@@ -487,6 +530,15 @@ class SellerService {
     }
 
     double remainingPayment = paymentAmount;
+    var batch = _firestore.batch();
+    var opsInBatch = 0;
+
+    Future<void> commitBatch() async {
+      if (opsInBatch == 0) return;
+      await batch.commit();
+      batch = _firestore.batch();
+      opsInBatch = 0;
+    }
 
     for (final doc in candidates) {
       if (remainingPayment <= 0) break;
@@ -505,18 +557,40 @@ class SellerService {
       if (_sellerServiceDebug) debugPrint('  - Payment Applied: $paymentApplied');
       if (_sellerServiceDebug) debugPrint('  - New Due: $newDue');
 
-      await _firestore.collection('seller_history').doc(doc.id).update({
+      batch.update(doc.reference, {
         'duePayment': newDue,
         'amountPaid': (data['amountPaid'] ?? 0).toDouble() + paymentApplied,
       });
+      opsInBatch++;
+      if (opsInBatch >= 500) {
+        await commitBatch();
+      }
     }
+    await commitBatch();
 
     if (_sellerServiceDebug) {
       debugPrint('Remaining payment after applying to dues: $remainingPayment');
       debugPrint('=== END APPLYING PAYMENT ===');
     }
 
-    return remainingPayment;
+    return (
+      remainingPayment: remainingPayment,
+      totalOpenDueBefore: totalOpenDueBefore,
+    );
+  }
+
+  /// Returns cash **not** applied to any bill (becomes seller credit or change upstream).
+  Future<double> applyPaymentToDuePayments(
+    String sellerId,
+    double paymentAmount, {
+    DateTime? prioritizeBillsWithSaleDateSameDayAs,
+  }) async {
+    final r = await applyPaymentToDuePaymentsWithMetrics(
+      sellerId,
+      paymentAmount,
+      prioritizeBillsWithSaleDateSameDayAs: prioritizeBillsWithSaleDateSameDayAs,
+    );
+    return r.remainingPayment;
   }
 
   // Add credit balance to seller (stored in sellers collection)
@@ -1020,30 +1094,46 @@ class SellerService {
   }
 
   /// Returns (totalDue, referenceNumber from seller_history).
-  /// Reference is taken from the most recent seller_history doc that has referenceNumber set (prefer one with duePayment > 0).
+  /// Total due uses **open-due rows only** (same as UI outstanding). Reference prefers recent docs (capped reads).
   Future<(double, String?)> getTotalDueAndReferenceForSeller(String sellerId) async {
     try {
-      final snapshot = await _firestore
-          .collection('seller_history')
-          .where('sellerId', isEqualTo: sellerId)
-          .get();
-
+      final openDocs = await fetchOpenDueHistoryDocs(sellerId);
       double totalDue = 0.0;
+      for (final doc in openDocs) {
+        totalDue += (doc.data()['duePayment'] ?? 0).toDouble();
+      }
+
       String? referenceNumber;
       DateTime? latestWithRef;
 
-      for (var doc in snapshot.docs) {
-        final data = doc.data();
-        final duePayment = (data['duePayment'] ?? 0).toDouble();
-        final ref = data['referenceNumber'] as String?;
-        final createdAt = _parseFirestoreDate(data['createdAt']);
-
-        if (duePayment > 0) totalDue += duePayment;
-
-        if (ref != null && ref.trim().isNotEmpty && createdAt != null) {
-          if (latestWithRef == null || createdAt.isAfter(latestWithRef)) {
-            latestWithRef = createdAt;
-            referenceNumber = ref.trim();
+      try {
+        final recent = await _firestore
+            .collection('seller_history')
+            .where('sellerId', isEqualTo: sellerId)
+            .orderBy('createdAt', descending: true)
+            .limit(50)
+            .get();
+        for (final doc in recent.docs) {
+          final data = doc.data();
+          final ref = data['referenceNumber'] as String?;
+          final createdAt = _parseFirestoreDate(data['createdAt']);
+          if (ref != null && ref.trim().isNotEmpty && createdAt != null) {
+            if (latestWithRef == null || createdAt.isAfter(latestWithRef)) {
+              latestWithRef = createdAt;
+              referenceNumber = ref.trim();
+            }
+          }
+        }
+      } catch (_) {
+        for (final doc in openDocs) {
+          final data = doc.data();
+          final ref = data['referenceNumber'] as String?;
+          final createdAt = _parseFirestoreDate(data['createdAt']);
+          if (ref != null && ref.trim().isNotEmpty && createdAt != null) {
+            if (latestWithRef == null || createdAt.isAfter(latestWithRef)) {
+              latestWithRef = createdAt;
+              referenceNumber = ref.trim();
+            }
           }
         }
       }
@@ -1139,32 +1229,34 @@ class SellerService {
     }
   }
 
-  /// Total sales amount for this seller (all time): sum of sale amounts from sale records only (excludes payment entries).
-  Future<double> getTotalSalesForSeller(String sellerId) async {
+  /// Net sales total from [sales] (not full [seller_history] scan). Excludes payment-stub docs (net 0).
+  Future<double> getNetSalesTotalForSeller(String sellerId) async {
     try {
       final snapshot = await _firestore
-          .collection('seller_history')
+          .collection('sales')
           .where('sellerId', isEqualTo: sellerId)
           .get();
-
-      double total = 0.0;
-      for (var doc in snapshot.docs) {
-        final data = doc.data();
-        final recordType = data['recordType'] as String?;
-        final isManual = data['isManual'] == true;
-        final duePayment = (data['duePayment'] ?? 0).toDouble();
-        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
-        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
-
-        final isPayment = recordType == 'payment' ||
-            (isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0);
-        if (!isPayment) total += saleAmount;
+      var total = 0.0;
+      for (final doc in snapshot.docs) {
+        try {
+          total += Sale.fromMap(doc.data()).netTotal;
+        } catch (_) {
+          final data = doc.data();
+          final t = (data['total'] ?? 0).toDouble();
+          final r = (data['returnedAmount'] ?? 0).toDouble();
+          total += t - r;
+        }
       }
       return total;
     } catch (e) {
-      if (_sellerServiceDebug) debugPrint('Error getTotalSalesForSeller: $e');
+      if (_sellerServiceDebug) debugPrint('Error getNetSalesTotalForSeller: $e');
       return 0.0;
     }
+  }
+
+  /// Total sales for this seller (all time), from [sales] documents.
+  Future<double> getTotalSalesForSeller(String sellerId) async {
+    return getNetSalesTotalForSeller(sellerId);
   }
 
   // Get total unpaid sales amount by date range from seller_history collection
@@ -1175,13 +1267,20 @@ class SellerService {
       if (_sellerServiceDebug) debugPrint('Start Date: $startDate');
       if (_sellerServiceDebug) debugPrint('End Date: $endDate');
       
-      // Get all seller_history records and filter by date range in memory
-      // This avoids needing a composite index and ensures we get accurate data
-      final snapshot = await _firestore
-          .collection('seller_history')
-          .get();
+      // Only rows with open due (far fewer than full history)
+      QuerySnapshot<Map<String, dynamic>> snapshot;
+      try {
+        snapshot = await _firestore
+            .collection('seller_history')
+            .where('duePayment', isGreaterThan: 0)
+            .orderBy('duePayment')
+            .get();
+      } catch (e) {
+        if (_sellerServiceDebug) debugPrint('getTotalUnpaidSalesByDateRange fallback: $e');
+        snapshot = await _firestore.collection('seller_history').get();
+      }
 
-      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} total seller_history records');
+      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} seller_history records (open-due or all)');
 
       double totalUnpaid = 0.0;
       for (var doc in snapshot.docs) {
@@ -1215,12 +1314,19 @@ class SellerService {
     try {
       if (_sellerServiceDebug) debugPrint('=== CALCULATING TOTAL UNPAID SALES (ALL) ===');
       
-      // Get all seller_history records
-      final snapshot = await _firestore
-          .collection('seller_history')
-          .get();
+      QuerySnapshot<Map<String, dynamic>> snapshot;
+      try {
+        snapshot = await _firestore
+            .collection('seller_history')
+            .where('duePayment', isGreaterThan: 0)
+            .orderBy('duePayment')
+            .get();
+      } catch (e) {
+        if (_sellerServiceDebug) debugPrint('getTotalUnpaidSales fallback: $e');
+        snapshot = await _firestore.collection('seller_history').get();
+      }
 
-      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} total seller_history records');
+      if (_sellerServiceDebug) debugPrint('Found ${snapshot.docs.length} seller_history records (open-due or all)');
 
       double totalUnpaid = 0.0;
       for (var doc in snapshot.docs) {

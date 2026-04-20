@@ -71,8 +71,8 @@ class Sale {
     return Sale(
       id: map['id'] ?? '',
       items: (map['items'] as List<dynamic>?)
-          ?.map((item) => SaleItem.fromMap(item as Map<String, dynamic>))
-          .toList() ??
+              ?.map((item) => SaleItem.fromMap(item as Map<String, dynamic>))
+              .toList() ??
           [],
       total: (map['total'] ?? 0).toDouble(),
       profit: (map['profit'] ?? 0).toDouble(),
@@ -94,7 +94,7 @@ class Sale {
       existingDueTotalAtSale: (map['existingDueTotalAtSale'] ?? 0).toDouble(),
     );
   }
-
+  
   // Get net total (total minus returned amount)
   double get netTotal => total - returnedAmount;
 
@@ -110,8 +110,8 @@ class Sale {
     if (_allItemsHavePurchasePrice) {
       final sum = items.fold<double>(
         0.0,
-            (s, i) =>
-        s + (i.price - (i.purchasePrice ?? 0)) * i.remainingQuantity,
+        (s, i) =>
+            s + (i.price - (i.purchasePrice ?? 0)) * i.remainingQuantity,
       );
       return sum < 0 ? 0.0 : sum;
     }

@@ -38,6 +38,13 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
   final SalesService _salesService = SalesService();
   DateTime? _startDate;
   DateTime? _endDate;
+  static const int _sellerHistoryPageSize = 40;
+  List<Map<String, dynamic>> _paginatedSellerHistory = [];
+  DocumentSnapshot<Map<String, dynamic>>? _paginatedSellerHistoryLastDoc;
+  bool _paginatedSellerHistoryHasMore = true;
+  bool _paginatedSellerHistoryInitialLoading = true;
+  bool _paginatedSellerHistoryLoadingMore = false;
+  String? _paginatedSellerHistoryError;
   final DateFormat _dateFormatter = DateFormat('MMM dd, yyyy');
   final DateFormat _dateTimeFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
@@ -58,6 +65,82 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             _showAddManualSaleDialog(context);
           }
         }
+      });
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _sellerHistoryIsAllTimeMode) {
+        _resetAndLoadSellerHistoryPage();
+      }
+    });
+  }
+
+  bool get _sellerHistoryIsAllTimeMode =>
+      _startDate == null && _endDate == null;
+
+  void _onSellerHistoryDateFilterChanged() {
+    if (_sellerHistoryIsAllTimeMode) {
+      _resetAndLoadSellerHistoryPage();
+    }
+  }
+
+  Future<void> _resetAndLoadSellerHistoryPage() async {
+    setState(() {
+      _paginatedSellerHistory = [];
+      _paginatedSellerHistoryLastDoc = null;
+      _paginatedSellerHistoryHasMore = true;
+      _paginatedSellerHistoryError = null;
+      _paginatedSellerHistoryInitialLoading = true;
+      _paginatedSellerHistoryLoadingMore = false;
+    });
+    await _fetchSellerHistoryPage(append: false);
+  }
+
+  Future<void> _fetchSellerHistoryPage({required bool append}) async {
+    if (!mounted) return;
+    if (append) {
+      if (!_paginatedSellerHistoryHasMore || _paginatedSellerHistoryLoadingMore) {
+        return;
+      }
+      setState(() => _paginatedSellerHistoryLoadingMore = true);
+    }
+    try {
+      Query<Map<String, dynamic>> q = FirebaseFirestore.instance
+          .collection('seller_history')
+          .where('sellerId', isEqualTo: widget.seller.id)
+          .orderBy('saleDate', descending: true)
+          .limit(_sellerHistoryPageSize);
+      if (append && _paginatedSellerHistoryLastDoc != null) {
+        q = q.startAfterDocument(_paginatedSellerHistoryLastDoc!);
+      }
+      final snap = await q.get();
+      if (!mounted) return;
+      final newRows = snap.docs
+          .map((doc) => <String, dynamic>{...doc.data(), 'id': doc.id})
+          .toList();
+      setState(() {
+        if (append) {
+          _paginatedSellerHistory = [
+            ..._paginatedSellerHistory,
+            ...newRows,
+          ];
+        } else {
+          _paginatedSellerHistory = newRows;
+        }
+        if (snap.docs.isNotEmpty) {
+          _paginatedSellerHistoryLastDoc = snap.docs.last;
+        }
+        _paginatedSellerHistoryHasMore =
+            snap.docs.length == _sellerHistoryPageSize;
+        _paginatedSellerHistoryInitialLoading = false;
+        _paginatedSellerHistoryLoadingMore = false;
+        _paginatedSellerHistoryError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _paginatedSellerHistoryError = e.toString();
+        _paginatedSellerHistoryInitialLoading = false;
+        _paginatedSellerHistoryLoadingMore = false;
       });
     }
   }
@@ -127,7 +210,8 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     );
   }
 
-  Widget _buildSummaryCards() {
+  /// Full seller_history stream (slow for large histories). Used if lean queries fail.
+  Widget _buildLegacySummaryCardsStream() {
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
           .collection('seller_history')
@@ -530,6 +614,501 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     );
   }
 
+  Stream<QuerySnapshot<Map<String, dynamic>>> _sellerHistoryOpenDueStream() {
+    return FirebaseFirestore.instance
+        .collection('seller_history')
+        .where('sellerId', isEqualTo: widget.seller.id)
+        .where('duePayment', isGreaterThan: 0)
+        .orderBy('duePayment')
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _sellerHistorySaleDateInRangeStream() {
+    final start = _startDate!;
+    final end = _endDate!;
+    final startStr =
+        DateTime(start.year, start.month, start.day).toIso8601String();
+    final endStr = DateTime(end.year, end.month, end.day, 23, 59, 59, 999)
+        .toIso8601String();
+    return FirebaseFirestore.instance
+        .collection('seller_history')
+        .where('sellerId', isEqualTo: widget.seller.id)
+        .where('saleDate', isGreaterThanOrEqualTo: startStr)
+        .where('saleDate', isLessThanOrEqualTo: endStr)
+        .orderBy('saleDate')
+        .snapshots();
+  }
+
+  Widget _summaryCardsLoadingPlaceholder() {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('sellers')
+          .doc(widget.seller.id)
+          .snapshots(),
+      builder: (context, sellerSnap) {
+        final creditBalance =
+            (sellerSnap.data?.data()?['creditBalance'] ?? 0).toDouble();
+        final creditWaiting =
+            sellerSnap.connectionState == ConnectionState.waiting;
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Card(
+                      color: Colors.orange.shade50,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.pending_actions,
+                                    color: Colors.orange.shade700),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Due Payment',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.orange.shade900,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            const SizedBox(
+                              height: 24,
+                              width: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Card(
+                      color: Colors.green.shade50,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.shopping_cart,
+                                    color: Colors.green.shade700),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Total Sale',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.green.shade900,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            const SizedBox(
+                              height: 24,
+                              width: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Card(
+                color: Colors.blue.shade50,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Icon(Icons.account_balance_wallet,
+                          color: Colors.blue.shade700),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Credit Balance',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.blue.shade900,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            creditWaiting
+                                ? const SizedBox(
+                                    height: 24,
+                                    width: 24,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : SelectableText(
+                                    _currencyFormatter.format(creditBalance),
+                                    style: TextStyle(
+                                      fontSize: 24,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.blue.shade700,
+                                    ),
+                                  ),
+                          ],
+                        ),
+                      ),
+                      if (creditBalance > 0)
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle,
+                              color: Colors.orange),
+                          onPressed: () => _showReduceCreditBalanceDialog(
+                              context, creditBalance),
+                          tooltip: 'Reduce Credit Balance',
+                        ),
+                      IconButton(
+                        icon: const Icon(Icons.edit, color: Colors.blue),
+                        onPressed: () =>
+                            _showEditCreditBalanceDialog(context, creditBalance),
+                        tooltip: 'Edit Credit Balance',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => _showDeleteCreditBalanceDialog(context),
+                        tooltip: 'Delete Credit Balance and History',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSummaryCards() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _sellerHistoryOpenDueStream(),
+      builder: (context, openDueSnap) {
+        if (openDueSnap.hasError) {
+          return _buildLegacySummaryCardsStream();
+        }
+        if (!openDueSnap.hasData) {
+          return _summaryCardsLoadingPlaceholder();
+        }
+
+        final allTimeOutstanding = openDueSnap.data!.docs.fold<double>(
+          0.0,
+          (s, d) => s + ((d.data())['duePayment'] ?? 0).toDouble(),
+        );
+
+        final hasDateRange = _startDate != null && _endDate != null;
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: hasDateRange
+              ? _sellerHistorySaleDateInRangeStream()
+              : FirebaseFirestore.instance
+                  .collection('sales')
+                  .where('sellerId', isEqualTo: widget.seller.id)
+                  .snapshots(),
+          builder: (context, innerSnap) {
+            if (innerSnap.hasError) {
+              return _buildLegacySummaryCardsStream();
+            }
+            if (!innerSnap.hasData) {
+              return _summaryCardsLoadingPlaceholder();
+            }
+
+            final periodDocs = hasDateRange
+                ? innerSnap.data!.docs
+                : const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+            final saleDocsInPeriod = hasDateRange
+                ? periodDocs
+                    .where((d) => !_isPaymentRecord(d.data()))
+                    .toList()
+                : <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+            final periodDuePaymentsReceived = hasDateRange
+                ? periodDocs.fold<double>(
+                    0.0,
+                    (sum, doc) {
+                      final data = doc.data();
+                      return sum +
+                          (_isPaymentRecord(data)
+                              ? (data['saleAmount'] ?? 0).toDouble()
+                              : 0);
+                    },
+                  )
+                : 0.0;
+
+            final totalSaleAllTime = !hasDateRange
+                ? innerSnap.data!.docs.fold<double>(
+                    0.0,
+                    (s, d) {
+                      try {
+                        return s + Sale.fromMap(d.data()).netTotal;
+                      } catch (_) {
+                        return s;
+                      }
+                    },
+                  )
+                : 0.0;
+
+            return FutureBuilder<double>(
+              future: hasDateRange
+                  ? _calculateTotalSaleFromActualSales(saleDocsInPeriod)
+                  : Future.value(0.0),
+              builder: (context, periodFut) {
+                final periodSales =
+                    hasDateRange ? (periodFut.data ?? 0.0) : 0.0;
+                final periodLabel = hasDateRange
+                    ? ' (${_dateFormatter.format(_startDate!)} - ${_dateFormatter.format(_endDate!)})'
+                    : '';
+                final saleWaiting = hasDateRange &&
+                    periodFut.connectionState == ConnectionState.waiting;
+                final totalSaleDisplay =
+                    hasDateRange ? periodSales : totalSaleAllTime;
+
+                return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                  stream: FirebaseFirestore.instance
+                      .collection('sellers')
+                      .doc(widget.seller.id)
+                      .snapshots(),
+                  builder: (context, sellerDocSnap) {
+                    final creditBalance =
+                        (sellerDocSnap.data?.data()?['creditBalance'] ?? 0)
+                            .toDouble();
+
+                    return Container(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => _showDuePaymentHistory(
+                                      context, allTimeOutstanding),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Card(
+                                    color: Colors.orange.shade50,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Icon(Icons.pending_actions,
+                                                  color:
+                                                      Colors.orange.shade700),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  hasDateRange
+                                                      ? 'Due payments received$periodLabel'
+                                                      : 'Due Payment',
+                                                  style: TextStyle(
+                                                    fontSize: 14,
+                                                    color:
+                                                        Colors.orange.shade900,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          SelectableText(
+                                            hasDateRange
+                                                ? _currencyFormatter.format(
+                                                    periodDuePaymentsReceived)
+                                                : _currencyFormatter.format(
+                                                    allTimeOutstanding),
+                                            style: TextStyle(
+                                              fontSize: 24,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.orange.shade700,
+                                            ),
+                                          ),
+                                          if (hasDateRange &&
+                                              allTimeOutstanding > 0)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                  top: 4),
+                                              child: Text(
+                                                'Outstanding: ${_currencyFormatter.format(allTimeOutstanding)}',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  color:
+                                                      Colors.orange.shade800,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Card(
+                                  color: Colors.green.shade50,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Icon(Icons.shopping_cart,
+                                                color: Colors.green.shade700),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                hasDateRange
+                                                    ? 'Sales$periodLabel'
+                                                    : 'Total Sale (net)',
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  color: Colors.green.shade900,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        saleWaiting
+                                            ? const SizedBox(
+                                                height: 24,
+                                                width: 24,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                        strokeWidth: 2),
+                                              )
+                                            : SelectableText(
+                                                _currencyFormatter
+                                                    .format(totalSaleDisplay),
+                                                style: TextStyle(
+                                                  fontSize: 24,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.green.shade700,
+                                                ),
+                                              ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Card(
+                            color: Colors.blue.shade50,
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.account_balance_wallet,
+                                      color: Colors.blue.shade700),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Credit Balance',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.blue.shade900,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        sellerDocSnap.connectionState ==
+                                                ConnectionState.waiting
+                                            ? const SizedBox(
+                                                height: 24,
+                                                width: 24,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                        strokeWidth: 2),
+                                              )
+                                            : SelectableText(
+                                                _currencyFormatter
+                                                    .format(creditBalance),
+                                                style: TextStyle(
+                                                  fontSize: 24,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.blue.shade700,
+                                                ),
+                                              ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (creditBalance > 0)
+                                    IconButton(
+                                      icon: const Icon(Icons.remove_circle,
+                                          color: Colors.orange),
+                                      onPressed: () =>
+                                          _showReduceCreditBalanceDialog(
+                                              context, creditBalance),
+                                      tooltip: 'Reduce Credit Balance',
+                                    ),
+                                  IconButton(
+                                    icon:
+                                        const Icon(Icons.edit, color: Colors.blue),
+                                    onPressed: () =>
+                                        _showEditCreditBalanceDialog(
+                                            context, creditBalance),
+                                    tooltip: 'Edit Credit Balance',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete,
+                                        color: Colors.red),
+                                    onPressed: () =>
+                                        _showDeleteCreditBalanceDialog(context),
+                                    tooltip: 'Delete Credit Balance and History',
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  DateTime _createdAtFromHistoryData(Map<String, dynamic> data) {
+    final c = data['createdAt'];
+    if (c is Timestamp) return c.toDate();
+    if (c is String) return DateTime.tryParse(c) ?? DateTime(1970);
+    return DateTime(1970);
+  }
+
   /// True if this seller_history record is a due payment (money received), not a sale.
   bool _isPaymentRecord(Map<String, dynamic> data) {
     if (data['recordType'] == 'payment') return true;
@@ -655,6 +1234,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                           setState(() {
                             _startDate = null;
                           });
+                          _onSellerHistoryDateFilterChanged();
                         },
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
@@ -698,6 +1278,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                           setState(() {
                             _endDate = null;
                           });
+                          _onSellerHistoryDateFilterChanged();
                         },
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
@@ -1471,6 +2052,100 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
   }
 
   Widget _buildHistoryList() {
+    if (_sellerHistoryIsAllTimeMode) {
+      return _buildHistoryListPaginated();
+    }
+    return _buildHistoryListStream();
+  }
+
+  Widget _buildHistoryListPaginated() {
+    if (_paginatedSellerHistoryError != null &&
+        _paginatedSellerHistory.isEmpty &&
+        !_paginatedSellerHistoryInitialLoading) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Error: ${_paginatedSellerHistoryError}',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: () => _resetAndLoadSellerHistoryPage(),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_paginatedSellerHistoryInitialLoading &&
+        _paginatedSellerHistory.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_paginatedSellerHistory.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.history, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            const Text(
+              'No history found',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'No transactions recorded yet',
+              style: TextStyle(color: Colors.grey),
+            ),
+          ],
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _paginatedSellerHistory.length + 1,
+      itemBuilder: (context, index) {
+        if (index == _paginatedSellerHistory.length) {
+          if (_paginatedSellerHistoryLoadingMore) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (_paginatedSellerHistoryHasMore) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 16, top: 8),
+              child: Center(
+                child: OutlinedButton.icon(
+                  onPressed: () => _fetchSellerHistoryPage(append: true),
+                  icon: const Icon(Icons.expand_more),
+                  label: const Text('Load more'),
+                ),
+              ),
+            );
+          }
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 24, top: 8),
+            child: Center(
+              child: Text(
+                'End of history',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ),
+          );
+        }
+        return _salesHistoryListCard(
+            context, _paginatedSellerHistory[index]);
+      },
+    );
+  }
+
+  Widget _buildHistoryListStream() {
     return StreamBuilder<List<Map<String, dynamic>>>(
       stream: _getHistoryStream(),
       builder: (context, snapshot) {
@@ -1483,6 +2158,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         }
 
         final history = snapshot.data ?? [];
+        final partialDateRange =
+            (_startDate != null) != (_endDate != null);
+        final showRecentCapHint = partialDateRange && history.length >= 500;
 
         if (history.isEmpty) {
           return Center(
@@ -1509,518 +2187,555 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
 
         return ListView.builder(
           padding: const EdgeInsets.all(16),
-          itemCount: history.length,
+          itemCount: history.length + (showRecentCapHint ? 1 : 0),
           itemBuilder: (context, index) {
-            final record = history[index];
-            final saleAmount = (record['saleAmount'] ?? 0).toDouble();
-            final amountPaid = (record['amountPaid'] ?? 0).toDouble();
-            final duePayment = (record['duePayment'] ?? 0).toDouble();
-            final saleDate = record['saleDate'] != null
-                ? DateTime.parse(record['saleDate'])
-                : null;
-            final saleId = record['saleId'] ?? '';
-            final referenceNumber = record['referenceNumber'] as String?;
-            final saleDescriptionNote = record['description'] as String?;
-            final isManual = record['isManual'] == true;
-            final isPaymentRecord = record['recordType'] == 'payment';
-
-            return Card(
-              margin: const EdgeInsets.only(bottom: 12),
-              child: ExpansionTile(
-                leading: CircleAvatar(
-                  backgroundColor: isPaymentRecord || duePayment <= 0
-                      ? Colors.green.shade100
-                      : Colors.orange.shade100,
-                  child: Icon(
-                    isPaymentRecord ? Icons.payment : (duePayment > 0 ? Icons.pending : Icons.check_circle),
-                    color: isPaymentRecord || duePayment <= 0
-                        ? Colors.green.shade700
-                        : Colors.orange.shade700,
-                  ),
-                ),
-                title: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            if (showRecentCapHint && index == 0) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Material(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        Icon(Icons.info_outline,
+                            color: Colors.amber.shade900, size: 22),
+                        const SizedBox(width: 10),
                         Expanded(
-                          child: SelectableText(
-                            isPaymentRecord
-                                ? 'Payment'
-                                : 'Sale #${saleId.substring(0, 8).toUpperCase()}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
+                          child: Text(
+                            'Showing the 500 most recent rows by sale date. '
+                            'Pick start and end dates above to load a specific period from the server.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.amber.shade900,
                             ),
                           ),
                         ),
-                        if (isManual && saleId.isNotEmpty)
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (!isPaymentRecord) ...[
-                                IconButton(
-                                  icon: const Icon(Icons.edit,
-                                      color: Colors.blue, size: 18),
-                                  onPressed: () => _showEditManualSaleDialog(
-                                    context,
-                                    saleId: saleId,
-                                    saleAmount: saleAmount,
-                                    amountPaid: amountPaid,
-                                    saleDate: saleDate,
-                                    referenceNumber: referenceNumber,
-                                  ),
-                                  tooltip: 'Edit Manual Sale',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete,
-                                      color: Colors.red, size: 18),
-                                  onPressed: () => _showDeleteManualSaleDialog(
-                                    context,
-                                    saleId,
-                                    saleAmount,
-                                    duePayment,
-                                  ),
-                                  tooltip: 'Delete Manual Sale',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                ),
-                              ],
-                              PopupMenuButton<String>(
-                                icon: const Icon(Icons.more_vert, size: 20),
-                                tooltip: 'Receipt options',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onSelected: (value) async {
-                                  if (value == 'print_receipt') {
-                                    await _handleManualHistoryReceiptPrint(
-                                        context, saleId);
-                                  } else if (value == 'view_pdf') {
-                                    await _handleManualHistoryReceiptViewPdf(
-                                        context, saleId);
-                                  } else if (value == 'download_pdf') {
-                                    await _handleManualHistoryReceiptDownloadPdf(
-                                        context, saleId);
-                                  }
-                                },
-                                itemBuilder: (ctx) => [
-                                  const PopupMenuItem(
-                                    value: 'print_receipt',
-                                    child: ListTile(
-                                      leading: Icon(Icons.print),
-                                      title: Text('Print receipt'),
-                                      contentPadding: EdgeInsets.zero,
-                                    ),
-                                  ),
-                                  const PopupMenuItem(
-                                    value: 'view_pdf',
-                                    child: ListTile(
-                                      leading: Icon(Icons.picture_as_pdf),
-                                      title: Text('View PDF'),
-                                      contentPadding: EdgeInsets.zero,
-                                    ),
-                                  ),
-                                  const PopupMenuItem(
-                                    value: 'download_pdf',
-                                    child: ListTile(
-                                      leading: Icon(Icons.download),
-                                      title: Text('Download PDF'),
-                                      contentPadding: EdgeInsets.zero,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        if (saleDate != null)
-                          Padding(
-                            padding: const EdgeInsets.only(left: 8),
-                            child: SelectableText(
-                              _dateTimeFormatter.format(saleDate),
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (isPaymentRecord)
-                              SelectableText(
-                                _currencyFormatter.format(amountPaid),
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              )
-                            else ...[
-                              SelectableText(
-                                'Sale Amount: ${_currencyFormatter.format(saleAmount)}',
-                                style: const TextStyle(fontSize: 14),
-                              ),
-                              SelectableText(
-                                'Amount Paid: ${_currencyFormatter.format(amountPaid)}',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.grey[700],
-                                ),
-                              ),
-                            ],
-                            if (referenceNumber != null && referenceNumber.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: SelectableText(
-                                  'Reference: $referenceNumber',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.blue[700],
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                              ),
-                            ),
-                            if (saleDescriptionNote != null &&
-                                saleDescriptionNote.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: SelectableText(
-                                  'Description: $saleDescriptionNote',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.blue.shade800,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                        if (duePayment > 0 && !isPaymentRecord)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: Colors.orange.shade50,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.orange.shade200!),
-                            ),
-                            child: SelectableText(
-                              'Due: ${_currencyFormatter.format(duePayment)}',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.orange.shade700,
-                              ),
-                            ),
-                          )
-                        else if (isPaymentRecord || duePayment <= 0)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade50,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.green.shade200!),
-                            ),
-                            child: Text(
-                              'Paid',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.green.shade700,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-                subtitle: Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    isPaymentRecord
-                        ? 'Payment applied to due sales'
-                        : 'Tap to view order details',
-                    style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
                   ),
                 ),
-                children: isPaymentRecord
-                    ? [
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Payment of ${_currencyFormatter.format(amountPaid)} applied to due sales.',
-                                style: const TextStyle(fontSize: 14),
-                              ),
-                              if (referenceNumber != null && referenceNumber.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Text(
-                                    'Reference: $referenceNumber',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.blue[700],
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ),
-                              if (saleDescriptionNote != null &&
-                                  saleDescriptionNote.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Text(
-                                    'Description: $saleDescriptionNote',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.blue.shade800,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ]
-                    : [
-                  FutureBuilder<DocumentSnapshot>(
-                    future: FirebaseFirestore.instance
-                        .collection('sales')
-                        .doc(saleId)
-                        .get(),
-                    builder: (context, saleSnapshot) {
-                      if (saleSnapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Center(child: CircularProgressIndicator()),
-                        );
-                      }
-
-                      if (!saleSnapshot.hasData || !saleSnapshot.data!.exists) {
-                        return const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Text(
-                            'Sale details not found',
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                        );
-                      }
-
-                      try {
-                        final saleData = saleSnapshot.data!.data()
-                            as Map<String, dynamic>;
-                        final sale = Sale.fromMap(saleData);
-
-                        if (sale.items.isEmpty) {
-                          return const Padding(
-                            padding: EdgeInsets.all(16),
-                            child: Text(
-                              'No items found',
-                              style: TextStyle(color: Colors.grey),
-                            ),
-                          );
-                        }
-
-                        return Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.green.shade50,
-                            border: Border(
-                              top: BorderSide(color: Colors.grey.shade300!),
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // Total Amount at Top
-                              Center(
-                                child: SelectableText(
-                                  _currencyFormatter.format(sale.total),
-                                  style: TextStyle(
-                                    fontSize: 28,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.green.shade700,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 16),
-                              
-                              // Date, Items, Payment Method, Profit
-                              Row(
-                                children: [
-                                  CircleAvatar(
-                                    backgroundColor: Colors.green.shade100,
-                                    radius: 20,
-                                    child: Icon(
-                                      Icons.receipt,
-                                      color: Colors.green.shade700,
-                                      size: 20,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        if (saleDate != null)
-                                          Text(
-                                            _dateTimeFormatter.format(saleDate),
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                          ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${sale.items.length} item(s) • ${sale.paymentMethod}',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.grey[700],
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        SelectableText(
-                                          'Profit: ${_currencyFormatter.format(sale.netProfit)}',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                            color: Colors.green.shade700,
-                                          ),
-                                        ),
-                                        if (sale.description != null &&
-                                            sale.description!.trim().isNotEmpty) ...[
-                                          const SizedBox(height: 8),
-                                          SelectableText(
-                                            'Description: ${sale.description}',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w500,
-                                              color: Colors.blue.shade800,
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              
-                              const Divider(height: 24),
-                              
-                              // Items Heading
-                              const Text(
-                                'Items:',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              
-                              // Items List
-                              ...sale.items.map((item) {
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Expanded(
-                                        child: SelectableText(
-                                          '${item.productName} x${item.quantity.toStringAsFixed(3)}',
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ),
-                                      SelectableText(
-                                        _currencyFormatter.format(item.subtotal),
-                                        style: const TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }).toList(),
-                              
-                              const Divider(height: 24),
-                              
-                              // Total
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text(
-                                    'Total:',
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  SelectableText(
-                                    _currencyFormatter.format(sale.total),
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              
-                              const SizedBox(height: 8),
-                              
-                              // Net Profit
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text(
-                                    'Net Profit:',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  SelectableText(
-                                    _currencyFormatter.format(sale.netProfit),
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.green.shade700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        );
-                      } catch (e) {
-                        return Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Text(
-                            'Error loading items: $e',
-                            style: const TextStyle(color: Colors.red),
-                          ),
-                        );
-                      }
-                    },
-                  ),
-                ],
-              ),
-            );
+              );
+            }
+            final record = history[showRecentCapHint ? index - 1 : index];
+            return _salesHistoryListCard(context, record);
           },
         );
       },
+    );
+  }
+
+  Widget _salesHistoryListCard(
+    BuildContext context,
+    Map<String, dynamic> record,
+  ) {
+    final saleAmount = (record['saleAmount'] ?? 0).toDouble();
+    final amountPaid = (record['amountPaid'] ?? 0).toDouble();
+    final duePayment = (record['duePayment'] ?? 0).toDouble();
+    final saleDate = record['saleDate'] != null
+        ? DateTime.parse(record['saleDate'])
+        : null;
+    final saleId = record['saleId'] ?? '';
+    final referenceNumber = record['referenceNumber'] as String?;
+    final saleDescriptionNote = record['description'] as String?;
+    final isManual = record['isManual'] == true;
+    final isPaymentRecord = record['recordType'] == 'payment';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: ExpansionTile(
+        leading: CircleAvatar(
+          backgroundColor: isPaymentRecord || duePayment <= 0
+              ? Colors.green.shade100
+              : Colors.orange.shade100,
+          child: Icon(
+            isPaymentRecord ? Icons.payment : (duePayment > 0 ? Icons.pending : Icons.check_circle),
+            color: isPaymentRecord || duePayment <= 0
+                ? Colors.green.shade700
+                : Colors.orange.shade700,
+          ),
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: SelectableText(
+                    isPaymentRecord
+                        ? 'Payment'
+                        : 'Sale #${saleId.substring(0, 8).toUpperCase()}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                if (isManual && saleId.isNotEmpty)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!isPaymentRecord) ...[
+                        IconButton(
+                          icon: const Icon(Icons.edit,
+                              color: Colors.blue, size: 18),
+                          onPressed: () => _showEditManualSaleDialog(
+                            context,
+                            saleId: saleId,
+                            saleAmount: saleAmount,
+                            amountPaid: amountPaid,
+                            saleDate: saleDate,
+                            referenceNumber: referenceNumber,
+                          ),
+                          tooltip: 'Edit Manual Sale',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete,
+                              color: Colors.red, size: 18),
+                          onPressed: () => _showDeleteManualSaleDialog(
+                            context,
+                            saleId,
+                            saleAmount,
+                            duePayment,
+                          ),
+                          tooltip: 'Delete Manual Sale',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_vert, size: 20),
+                        tooltip: 'Receipt options',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onSelected: (value) async {
+                          if (value == 'print_receipt') {
+                            await _handleManualHistoryReceiptPrint(
+                                context, saleId);
+                          } else if (value == 'view_pdf') {
+                            await _handleManualHistoryReceiptViewPdf(
+                                context, saleId);
+                          } else if (value == 'download_pdf') {
+                            await _handleManualHistoryReceiptDownloadPdf(
+                                context, saleId);
+                          }
+                        },
+                        itemBuilder: (ctx) => [
+                          const PopupMenuItem(
+                            value: 'print_receipt',
+                            child: ListTile(
+                              leading: Icon(Icons.print),
+                              title: Text('Print receipt'),
+                              contentPadding: EdgeInsets.zero,
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'view_pdf',
+                            child: ListTile(
+                              leading: Icon(Icons.picture_as_pdf),
+                              title: Text('View PDF'),
+                              contentPadding: EdgeInsets.zero,
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'download_pdf',
+                            child: ListTile(
+                              leading: Icon(Icons.download),
+                              title: Text('Download PDF'),
+                              contentPadding: EdgeInsets.zero,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                if (saleDate != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: SelectableText(
+                      _dateTimeFormatter.format(saleDate),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (isPaymentRecord)
+                      SelectableText(
+                        _currencyFormatter.format(amountPaid),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )
+                    else ...[
+                      SelectableText(
+                        'Sale Amount: ${_currencyFormatter.format(saleAmount)}',
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                      SelectableText(
+                        'Amount Paid: ${_currencyFormatter.format(amountPaid)}',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
+                    if (referenceNumber != null && referenceNumber.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: SelectableText(
+                          'Reference: $referenceNumber',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.blue[700],
+                            fontWeight: FontWeight.w500,
+                          ),
+                      ),
+                    ),
+                    if (saleDescriptionNote != null &&
+                        saleDescriptionNote.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: SelectableText(
+                          'Description: $saleDescriptionNote',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.blue.shade800,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                if (duePayment > 0 && !isPaymentRecord)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.shade200!),
+                    ),
+                    child: SelectableText(
+                      'Due: ${_currencyFormatter.format(duePayment)}',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange.shade700,
+                      ),
+                    ),
+                  )
+                else if (isPaymentRecord || duePayment <= 0)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.green.shade200!),
+                    ),
+                    child: Text(
+                      'Paid',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green.shade700,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            isPaymentRecord
+                ? 'Payment applied to due sales'
+                : 'Tap to view order details',
+            style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+          ),
+        ),
+        children: isPaymentRecord
+            ? [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Payment of ${_currencyFormatter.format(amountPaid)} applied to due sales.',
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                      if (referenceNumber != null && referenceNumber.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            'Reference: $referenceNumber',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.blue[700],
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      if (saleDescriptionNote != null &&
+                          saleDescriptionNote.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            'Description: $saleDescriptionNote',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.blue.shade800,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ]
+            : [
+          FutureBuilder<DocumentSnapshot>(
+            future: FirebaseFirestore.instance
+                .collection('sales')
+                .doc(saleId)
+                .get(),
+            builder: (context, saleSnapshot) {
+              if (saleSnapshot.connectionState ==
+                  ConnectionState.waiting) {
+                return const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+
+              if (!saleSnapshot.hasData || !saleSnapshot.data!.exists) {
+                return const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'Sale details not found',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                );
+              }
+
+              try {
+                final saleData = saleSnapshot.data!.data()
+                    as Map<String, dynamic>;
+                final sale = Sale.fromMap(saleData);
+
+                if (sale.items.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(
+                      'No items found',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  );
+                }
+
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    border: Border(
+                      top: BorderSide(color: Colors.grey.shade300!),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Total Amount at Top
+                      Center(
+                        child: SelectableText(
+                          _currencyFormatter.format(sale.total),
+                          style: TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green.shade700,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      
+                      // Date, Items, Payment Method, Profit
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: Colors.green.shade100,
+                            radius: 20,
+                            child: Icon(
+                              Icons.receipt,
+                              color: Colors.green.shade700,
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (saleDate != null)
+                                  Text(
+                                    _dateTimeFormatter.format(saleDate),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '${sale.items.length} item(s) • ${sale.paymentMethod}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[700],
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                SelectableText(
+                                  'Profit: ${_currencyFormatter.format(sale.netProfit)}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.green.shade700,
+                                  ),
+                                ),
+                                if (sale.description != null &&
+                                    sale.description!.trim().isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  SelectableText(
+                                    'Description: ${sale.description}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.blue.shade800,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      
+                      const Divider(height: 24),
+                      
+                      // Items Heading
+                      const Text(
+                        'Items:',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      // Items List
+                      ...sale.items.map((item) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: SelectableText(
+                                  '${item.productName} x${item.quantity.toStringAsFixed(3)}',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ),
+                              SelectableText(
+                                _currencyFormatter.format(item.subtotal),
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                      
+                      const Divider(height: 24),
+                      
+                      // Total
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Total:',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          SelectableText(
+                            _currencyFormatter.format(sale.total),
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      
+                      const SizedBox(height: 8),
+                      
+                      // Net Profit
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Net Profit:',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          SelectableText(
+                            _currencyFormatter.format(sale.netProfit),
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.green.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              } catch (e) {
+                return Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    'Error loading items: $e',
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                );
+              }
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -2226,11 +2941,22 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
   }
 
   Stream<List<Map<String, dynamic>>> _getHistoryStream() {
-    return FirebaseFirestore.instance
-        .collection('seller_history')
-        .where('sellerId', isEqualTo: widget.seller.id)
-        .snapshots()
-        .map((snapshot) {
+    final sellerId = widget.seller.id;
+    final hasFullRange = _startDate != null && _endDate != null;
+
+    final Stream<QuerySnapshot<Map<String, dynamic>>> snapStream;
+    if (hasFullRange) {
+      snapStream = _sellerHistorySaleDateInRangeStream();
+    } else {
+      snapStream = FirebaseFirestore.instance
+          .collection('seller_history')
+          .where('sellerId', isEqualTo: sellerId)
+          .orderBy('saleDate', descending: true)
+          .limit(500)
+          .snapshots();
+    }
+
+    return snapStream.map((snapshot) {
       var records = snapshot.docs.map((doc) {
         final data = doc.data();
         return {
@@ -2239,15 +2965,13 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         };
       }).toList();
 
-      // Apply date filter
-      if (_startDate != null || _endDate != null) {
+      if (!hasFullRange && (_startDate != null || _endDate != null)) {
         records = records.where((record) {
           final saleDateStr = record['saleDate'];
           if (saleDateStr == null) return false;
-          
           final saleDate = DateTime.parse(saleDateStr);
-          final saleDateOnly = DateTime(saleDate.year, saleDate.month, saleDate.day);
-          
+          final saleDateOnly =
+              DateTime(saleDate.year, saleDate.month, saleDate.day);
           if (_startDate != null) {
             final startDateOnly = DateTime(
               _startDate!.year,
@@ -2256,7 +2980,6 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             );
             if (saleDateOnly.isBefore(startDateOnly)) return false;
           }
-          
           if (_endDate != null) {
             final endDateOnly = DateTime(
               _endDate!.year,
@@ -2265,12 +2988,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             );
             if (saleDateOnly.isAfter(endDateOnly)) return false;
           }
-          
           return true;
         }).toList();
       }
 
-      // Sort by date descending (newest first)
       records.sort((a, b) {
         final aDate = a['saleDate'] != null
             ? DateTime.parse(a['saleDate'])
@@ -2300,6 +3021,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           _endDate = null;
         }
       });
+      _onSellerHistoryDateFilterChanged();
     }
   }
 
@@ -2314,6 +3036,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
       setState(() {
         _endDate = picked;
       });
+      _onSellerHistoryDateFilterChanged();
     }
   }
 
@@ -2400,11 +3123,8 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
               ),
               const SizedBox(height: 16),
               Expanded(
-                child: StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('seller_history')
-                      .where('sellerId', isEqualTo: widget.seller.id)
-                      .snapshots(),
+                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _sellerHistoryOpenDueStream(),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(child: CircularProgressIndicator());
@@ -2414,25 +3134,12 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       return Center(child: Text('Error: ${snapshot.error}'));
                     }
 
-                    // Filter and sort in memory to avoid composite index requirement
-                    final allDocs = snapshot.data?.docs ?? [];
-                    final duePayments = allDocs
-                        .where((doc) {
-                          final data = doc.data() as Map<String, dynamic>;
-                          final duePayment = (data['duePayment'] ?? 0).toDouble();
-                          return duePayment > 0;
-                        })
-                        .toList()
-                      ..sort((a, b) {
-                        final aData = a.data() as Map<String, dynamic>;
-                        final bData = b.data() as Map<String, dynamic>;
-                        final aDate = aData['createdAt'] != null
-                            ? DateTime.parse(aData['createdAt'])
-                            : DateTime(1970);
-                        final bDate = bData['createdAt'] != null
-                            ? DateTime.parse(bData['createdAt'])
-                            : DateTime(1970);
-                        return bDate.compareTo(aDate); // Descending
+                    final duePayments = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
+                      snapshot.data?.docs ?? [],
+                    )..sort((a, b) {
+                        final aDate = _createdAtFromHistoryData(a.data());
+                        final bDate = _createdAtFromHistoryData(b.data());
+                        return bDate.compareTo(aDate);
                       });
 
                     if (duePayments.isEmpty) {
@@ -2803,8 +3510,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
 
     showDialog(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+      builder: (dialogContext) {
+        bool isSaving = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: Row(
             children: [
@@ -2888,28 +3597,30 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
+              onPressed: isSaving ? null : () => Navigator.pop(dialogContext),
               child: const Text('Cancel'),
             ),
-            ElevatedButton.icon(
-              onPressed: () async {
+            ElevatedButton(
+              onPressed: isSaving
+                  ? null
+                  : () async {
                 if (formKey.currentState!.validate() && selectedDate != null) {
+                  setDialogState(() => isSaving = true);
                   try {
                     final amount = double.parse(amountController.text);
                     final referenceNumber = referenceController.text.trim();
                     final saleId = const Uuid().v4();
                     final paymentDate = selectedDate!;
 
-                    // Get total due amount first (snapshot for receipt / Firestore)
-                    final totalDue = await _sellerService.getTotalDueAmountForSeller(widget.seller.id);
-                    
-                    // Apply payment to existing due payments first
-                    final remainingPayment =
-                        await _sellerService.applyPaymentToDuePayments(
+                    // One seller_history read + batched due updates (avoids N sequential writes).
+                    final applyResult =
+                        await _sellerService.applyPaymentToDuePaymentsWithMetrics(
                       widget.seller.id,
                       amount,
                       prioritizeBillsWithSaleDateSameDayAs: paymentDate,
                     );
+                    final totalDue = applyResult.totalOpenDueBefore;
+                    final remainingPayment = applyResult.remainingPayment;
                     
                     // Calculate how much was applied to dues
                     final amountAppliedToDues = amount - remainingPayment;
@@ -3027,6 +3738,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                         ),
                       );
                     }
+                  } finally {
+                    if (dialogContext.mounted) {
+                      setDialogState(() => isSaving = false);
+                    }
                   }
                 } else if (selectedDate == null) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -3037,16 +3752,39 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                   );
                 }
               },
-              icon: const Icon(Icons.save),
-              label: const Text('Save'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.orange,
                 foregroundColor: Colors.white,
               ),
+              child: isSaving
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        const Text('Saving...'),
+                      ],
+                    )
+                  : const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.save, size: 20),
+                        SizedBox(width: 8),
+                        Text('Save'),
+                      ],
+                    ),
             ),
           ],
         ),
-      ),
+      );
+      },
     );
   }
 
@@ -3059,8 +3797,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
 
     showDialog(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+      builder: (dialogContext) {
+        bool isSaving = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: Row(
             children: [
@@ -3165,31 +3905,32 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
+              onPressed: isSaving ? null : () => Navigator.pop(dialogContext),
               child: const Text('Cancel'),
             ),
-            ElevatedButton.icon(
-              onPressed: () async {
+            ElevatedButton(
+              onPressed: isSaving
+                  ? null
+                  : () async {
                 if (formKey.currentState!.validate() && selectedDate != null) {
+                  final saleAmount = double.parse(saleAmountController.text);
+                  final amountPaid = double.parse(amountPaidController.text);
+                  if (amountPaid > saleAmount) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Amount paid cannot exceed sale amount'),
+                        backgroundColor: Colors.orange,
+                      ),
+                    );
+                    return;
+                  }
+                  setDialogState(() => isSaving = true);
                   try {
-                    final saleAmount = double.parse(saleAmountController.text);
-                    final amountPaid = double.parse(amountPaidController.text);
                     final referenceNumber = referenceController.text.trim();
                     final saleId = const Uuid().v4();
                     final saleDate = selectedDate!;
                     final existingDueBeforeSale = await _sellerService
                         .getTotalDueAmountForSeller(widget.seller.id);
-
-                    // Validate that amount paid doesn't exceed sale amount
-                    if (amountPaid > saleAmount) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Amount paid cannot exceed sale amount'),
-                          backgroundColor: Colors.orange,
-                        ),
-                      );
-                      return;
-                    }
                     
                     // Calculate profit (0 for manual sales, or you can add a profit field)
                     final profit = 0.0;
@@ -3215,42 +3956,16 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     // Save the sale
                     await _salesService.addSale(manualSale);
                     
-                    // Add seller history record
                     await _sellerService.addSellerHistory(
                       sellerId: widget.seller.id,
                       saleId: saleId,
                       saleAmount: saleAmount,
                       amountPaid: amountPaid,
                       saleDate: saleDate,
+                      referenceNumber:
+                          referenceNumber.isNotEmpty ? referenceNumber : null,
+                      isManual: true,
                     );
-                    
-                    // Add reference number if provided
-                    if (referenceNumber.isNotEmpty) {
-                      // Update seller_history with reference number
-                      final sellerHistorySnapshot = await FirebaseFirestore.instance
-                          .collection('seller_history')
-                          .where('saleId', isEqualTo: saleId)
-                          .get();
-                      
-                      if (sellerHistorySnapshot.docs.isNotEmpty) {
-                        await sellerHistorySnapshot.docs.first.reference.update({
-                          'referenceNumber': referenceNumber,
-                          'isManual': true,
-                        });
-                      }
-                    } else {
-                      // Mark as manual even without reference
-                      final sellerHistorySnapshot = await FirebaseFirestore.instance
-                          .collection('seller_history')
-                          .where('saleId', isEqualTo: saleId)
-                          .get();
-                      
-                      if (sellerHistorySnapshot.docs.isNotEmpty) {
-                        await sellerHistorySnapshot.docs.first.reference.update({
-                          'isManual': true,
-                        });
-                      }
-                    }
 
                     if (context.mounted) {
                       Navigator.pop(dialogContext);
@@ -3313,6 +4028,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                         ),
                       );
                     }
+                  } finally {
+                    if (dialogContext.mounted) {
+                      setDialogState(() => isSaving = false);
+                    }
                   }
                 } else if (selectedDate == null) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -3323,16 +4042,39 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                   );
                 }
               },
-              icon: const Icon(Icons.save),
-              label: const Text('Save'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green,
                 foregroundColor: Colors.white,
               ),
+              child: isSaving
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        const Text('Saving...'),
+                      ],
+                    )
+                  : const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.save, size: 20),
+                        SizedBox(width: 8),
+                        Text('Save'),
+                      ],
+                    ),
             ),
           ],
         ),
-      ),
+      );
+      },
     );
   }
 

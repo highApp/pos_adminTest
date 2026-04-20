@@ -59,13 +59,13 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     // Initialize name controllers from product names or fallback to old name field
     final productNames = widget.product?.names;
     _nameEnController = TextEditingController(
-      text: productNames?['en'] ?? widget.product?.name ?? ''
+        text: productNames?['en'] ?? widget.product?.name ?? ''
     );
     _nameUrController = TextEditingController(
-      text: productNames?['ur'] ?? ''
+        text: productNames?['ur'] ?? ''
     );
     _nameArController = TextEditingController(
-      text: productNames?['ar'] ?? ''
+        text: productNames?['ar'] ?? ''
     );
     _purchasePriceController =
         TextEditingController(text: widget.product?.purchasePrice.toString() ?? '');
@@ -98,11 +98,11 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _imageUrl = widget.product?.imageUrl;
     // Category field is disabled by default when editing a product
     _isCategoryFieldEnabled = widget.product == null;
-    
+
     foundation.debugPrint('=== Edit Product Screen Initialized ===');
     foundation.debugPrint('Product: ${widget.product?.displayName}');
     foundation.debugPrint('Image URL from database: $_imageUrl');
-    
+
     _nameUrFocusNode = FocusNode();
     _nameUrFocusNode.addListener(_onUrduFieldFocusChange);
 
@@ -111,7 +111,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     _percentageController.addListener(_updateSalePriceFromPercentage);
     // Add listener to update percentage when sale price is edited
     _salePriceController.addListener(_updatePercentageFromSalePrice);
-    
+
     // Add listeners to auto-update wholesale price
     _purchasePriceController.addListener(_updateWholesalePriceFromPercentage);
     _wholesalePercentageController.addListener(_updateWholesalePriceFromPercentage);
@@ -324,7 +324,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         setState(() {
           _selectedImage = image;
         });
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -358,7 +358,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
 
     try {
       foundation.debugPrint('Starting image upload for product: $productId');
-      
+
       final storageRef = FirebaseStorage.instance
           .ref()
           .child('product_images')
@@ -371,7 +371,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
       );
 
       UploadTask uploadTask;
-      
+
       if (foundation.kIsWeb) {
         foundation.debugPrint('Uploading image for web...');
         final bytes = await _selectedImage!.readAsBytes();
@@ -386,9 +386,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
       final snapshot = await uploadTask.whenComplete(() {
         foundation.debugPrint('Upload task completed');
       });
-      
+
       foundation.debugPrint('Upload state: ${snapshot.state}');
-      
+
       if (snapshot.state != TaskState.success) {
         throw Exception('Upload failed with state: ${snapshot.state}');
       }
@@ -396,10 +396,10 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
       // Get download URL
       final downloadUrl = await storageRef.getDownloadURL();
       foundation.debugPrint('Image uploaded successfully! URL: $downloadUrl');
-      
+
       // Verify the URL is accessible
       foundation.debugPrint('Verifying URL is accessible...');
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -417,12 +417,12 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
           ),
         );
       }
-      
+
       return downloadUrl;
     } catch (e, stackTrace) {
       foundation.debugPrint('Error uploading image: $e');
       foundation.debugPrint('Stack trace: $stackTrace');
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -439,7 +439,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
           ),
         );
       }
-      
+
       throw e; // Re-throw to prevent saving with broken URL
     }
   }
@@ -453,10 +453,10 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
 
   Future<bool> _showPasswordDialog(String fieldName) async {
     if (!mounted) return false;
-    
+
     final passwordController = TextEditingController();
     String? errorMessage;
-    
+
     final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -526,7 +526,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     // Wait a frame before disposing to ensure dialog is fully closed
     await Future.delayed(const Duration(milliseconds: 100));
     passwordController.dispose();
-    
+
     return result == true;
   }
 
@@ -549,10 +549,10 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
   }
 
   void _showCategorySearchSheet(
-    BuildContext context,
-    List<String> allCategoryNames,
-    List<String> categoryNames,
-  ) {
+      BuildContext context,
+      List<String> allCategoryNames,
+      List<String> categoryNames,
+      ) {
     final searchController = TextEditingController();
     String searchQuery = '';
 
@@ -566,9 +566,9 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
             final filtered = searchQuery.isEmpty
                 ? allCategoryNames
                 : allCategoryNames
-                    .where((c) =>
-                        c.toLowerCase().contains(searchQuery.toLowerCase()))
-                    .toList();
+                .where((c) =>
+                c.toLowerCase().contains(searchQuery.toLowerCase()))
+                .toList();
 
             return DraggableScrollableSheet(
               initialChildSize: 0.6,
@@ -609,31 +609,31 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                           controller: scrollController,
                           itemCount: filtered.length,
                           itemBuilder: (context, index) {
-                          final name = filtered[index];
-                          final isSelected = name == _selectedCategory;
-                          return ListTile(
-                            leading: Icon(
-                              isSelected ? Icons.check_circle : Icons.category_outlined,
-                              color: isSelected ? Theme.of(context).primaryColor : null,
-                            ),
-                            title: Text(name),
-                            onTap: () {
-                              // Update state BEFORE popping to avoid _dependents.isEmpty
-                              // assertion on Android (setState after pop causes the crash).
-                              if (mounted) {
-                                setState(() {
-                                  _selectedCategory = name;
-                                  _categoryController.text = name;
-                                });
-                              }
-                              Navigator.of(sheetContext).pop();
-                            },
-                          );
-                        },
+                            final name = filtered[index];
+                            final isSelected = name == _selectedCategory;
+                            return ListTile(
+                              leading: Icon(
+                                isSelected ? Icons.check_circle : Icons.category_outlined,
+                                color: isSelected ? Theme.of(context).primaryColor : null,
+                              ),
+                              title: Text(name),
+                              onTap: () {
+                                // Update state BEFORE popping to avoid _dependents.isEmpty
+                                // assertion on Android (setState after pop causes the crash).
+                                if (mounted) {
+                                  setState(() {
+                                    _selectedCategory = name;
+                                    _categoryController.text = name;
+                                  });
+                                }
+                                Navigator.of(sheetContext).pop();
+                              },
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
                 );
               },
             );
@@ -677,7 +677,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
       foundation.debugPrint('Is Edit Mode: ${widget.product != null}');
       foundation.debugPrint('Selected Image: ${_selectedImage != null ? "Yes" : "No"}');
       foundation.debugPrint('Existing Image URL: $_imageUrl');
-      
+
       // Upload image if selected
       String? uploadedImageUrl;
       try {
@@ -696,7 +696,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
         }
         return; // Don't save product if image upload fails
       }
-      
+
       // Build names map from the three language fields
       final Map<String, String> namesMap = {};
       if (_nameEnController.text.trim().isNotEmpty) {
@@ -708,7 +708,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
       if (_nameArController.text.trim().isNotEmpty) {
         namesMap['ar'] = _nameArController.text.trim();
       }
-      
+
       final product = Product(
         id: productId,
         names: namesMap.isNotEmpty ? namesMap : null,
@@ -732,8 +732,8 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
             ? null
             : int.tryParse(_bundleSizeController.text.trim()),
         stock: double.parse(_stockController.text),
-        unit: _unitController.text.trim().isEmpty 
-            ? 'pieces' 
+        unit: _unitController.text.trim().isEmpty
+            ? 'pieces'
             : _unitController.text.trim(),
         value: _valueController.text.trim().isEmpty
             ? null
@@ -900,7 +900,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  
+
                   // Show current or selected image
                   if (_selectedImage != null || _imageUrl != null)
                     Column(
@@ -916,51 +916,51 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                             borderRadius: BorderRadius.circular(8),
                             child: _selectedImage != null
                                 ? (foundation.kIsWeb
-                                    ? Image.network(
-                                        _selectedImage!.path,
-                                        fit: BoxFit.cover,
-                                      )
-                                    : Image.file(
-                                        File(_selectedImage!.path),
-                                        fit: BoxFit.cover,
-                                      ))
+                                ? Image.network(
+                              _selectedImage!.path,
+                              fit: BoxFit.cover,
+                            )
+                                : Image.file(
+                              File(_selectedImage!.path),
+                              fit: BoxFit.cover,
+                            ))
                                 : (_imageUrl != null
-                                    ? Image.network(
-                                        _imageUrl!,
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (context, error, stackTrace) {
-                                          foundation.debugPrint('=== IMAGE LOAD ERROR ===');
-                                          foundation.debugPrint('Image URL: $_imageUrl');
-                                          foundation.debugPrint('Error: $error');
-                                          foundation.debugPrint('StackTrace: $stackTrace');
-                                          return Column(
-                                            mainAxisAlignment: MainAxisAlignment.center,
-                                            children: [
-                                              const Icon(Icons.broken_image, size: 40, color: Colors.red),
-                                              const SizedBox(height: 8),
-                                              Text(
-                                                'Failed to load',
-                                                style: TextStyle(fontSize: 10, color: Colors.red[700]),
-                                              ),
-                                              Text(
-                                                'Check console',
-                                                style: TextStyle(fontSize: 8, color: Colors.grey[600]),
-                                              ),
-                                            ],
-                                          );
-                                        },
-                                        loadingBuilder: (context, child, loadingProgress) {
-                                          if (loadingProgress == null) {
-                                            foundation.debugPrint('Image loaded successfully: $_imageUrl');
-                                            return child;
-                                          }
-                                          foundation.debugPrint('Loading image: $_imageUrl');
-                                          return const Center(
-                                            child: CircularProgressIndicator(),
-                                          );
-                                        },
-                                      )
-                                    : const Center(child: Icon(Icons.image, size: 50))),
+                                ? Image.network(
+                              _imageUrl!,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                foundation.debugPrint('=== IMAGE LOAD ERROR ===');
+                                foundation.debugPrint('Image URL: $_imageUrl');
+                                foundation.debugPrint('Error: $error');
+                                foundation.debugPrint('StackTrace: $stackTrace');
+                                return Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.broken_image, size: 40, color: Colors.red),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Failed to load',
+                                      style: TextStyle(fontSize: 10, color: Colors.red[700]),
+                                    ),
+                                    Text(
+                                      'Check console',
+                                      style: TextStyle(fontSize: 8, color: Colors.grey[600]),
+                                    ),
+                                  ],
+                                );
+                              },
+                              loadingBuilder: (context, child, loadingProgress) {
+                                if (loadingProgress == null) {
+                                  foundation.debugPrint('Image loaded successfully: $_imageUrl');
+                                  return child;
+                                }
+                                foundation.debugPrint('Loading image: $_imageUrl');
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
+                              },
+                            )
+                                : const Center(child: Icon(Icons.image, size: 50))),
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -990,7 +990,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                       ],
                     )
                   else
-                    // Show upload button if no image
+                  // Show upload button if no image
                     Center(
                       child: ElevatedButton.icon(
                         onPressed: _pickImage,
@@ -1010,7 +1010,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            
+
             StreamBuilder(
               stream: _categoryService.getCategoriesStream(),
               builder: (context, snapshot) {
@@ -1048,8 +1048,8 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                             ),
                             onChanged: _isCategoryFieldEnabled
                                 ? (value) {
-                                    _selectedCategory = value.trim().isEmpty ? 'General' : value.trim();
-                                  }
+                              _selectedCategory = value.trim().isEmpty ? 'General' : value.trim();
+                            }
                                 : null,
                             validator: (value) {
                               if (value == null || value.trim().isEmpty) {
@@ -1078,7 +1078,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
 
                 final categories = snapshot.data ?? [];
                 final categoryNames = categories.map((c) => c.name).toList();
-                
+
                 // Preserve existing category even if not in list (for backward compatibility)
                 // Only set default if this is a new product and no categories exist
                 if (widget.product == null && categoryNames.isNotEmpty && !categoryNames.contains(_selectedCategory)) {
@@ -1125,8 +1125,8 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                             ),
                             onChanged: _isCategoryFieldEnabled
                                 ? (value) {
-                                    _selectedCategory = value.trim().isEmpty ? 'General' : value.trim();
-                                  }
+                              _selectedCategory = value.trim().isEmpty ? 'General' : value.trim();
+                            }
                                 : null,
                             validator: (value) {
                               if (value == null || value.trim().isEmpty) {
@@ -1186,11 +1186,11 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                           });
                         },
                         fieldViewBuilder: (
-                          context,
-                          controller,
-                          focusNode,
-                          onFieldSubmitted,
-                        ) {
+                            context,
+                            controller,
+                            focusNode,
+                            onFieldSubmitted,
+                            ) {
                           return TextFormField(
                             controller: controller,
                             focusNode: focusNode,
@@ -1648,7 +1648,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                         if (dozenPrice == null) return 'Invalid price';
                         if (dozenPrice <= 0) return 'Must be > 0';
                         final purchasePrice =
-                            double.tryParse(_purchasePriceController.text);
+                        double.tryParse(_purchasePriceController.text);
                         if (purchasePrice != null &&
                             purchasePrice > 0 &&
                             dozenPrice < (purchasePrice * 12)) {
@@ -1695,7 +1695,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                         final bundleSize = int.tryParse(sizeStr);
                         if (bundleSize == null || bundleSize < 1) return 'Size ≥ 1';
                         final purchasePrice =
-                            double.tryParse(_purchasePriceController.text);
+                        double.tryParse(_purchasePriceController.text);
                         if (purchasePrice != null &&
                             purchasePrice > 0 &&
                             bundlePrice < (purchasePrice * bundleSize)) {
@@ -1763,7 +1763,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
                 prefixIcon: Icon(Icons.vertical_align_bottom, size: 20),
                 prefixText: 'Rs. ',
                 helperText:
-                    'Floor for POS sale price; optional (empty = use purchase price as floor)',
+                'Floor for POS sale price; optional (empty = use purchase price as floor)',
               ),
               keyboardType: TextInputType.number,
               inputFormatters: [
@@ -1879,10 +1879,10 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               onPressed: _isLoading ? null : _saveProduct,
               icon: _isLoading
                   ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
                   : const Icon(Icons.save),
               label: Text(widget.product == null ? 'Add Product' : 'Update Product'),
               style: ElevatedButton.styleFrom(

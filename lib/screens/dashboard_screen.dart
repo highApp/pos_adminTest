@@ -17,6 +17,7 @@ import '../models/seller_reminder.dart';
 import '../services/seller_reminder_service.dart';
 import '../services/reset_data_service.dart';
 import '../services/balance_service.dart';
+import '../services/buyer_payment_service.dart';
 import '../models/balance_entry.dart';
 import 'seller_history_screen.dart';
 import '../widgets/dashboard_sync_strip.dart';
@@ -38,6 +39,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final sellerReminderService = SellerReminderService();
   final resetDataService = ResetDataService();
   final balanceService = BalanceService();
+  final buyerPaymentService = BuyerPaymentService();
   late final Future<DateTime?> _resetDateFuture;
   late Future<_AllTimeBorrowTotals> _allTimeBorrowTotalsFuture;
   int? _selectedDays = 0; // -1 = All, 0 = Today, 7/30/90 = Last N Days, null = custom date range
@@ -283,6 +285,232 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               style: TextStyle(
                                 fontWeight: FontWeight.w600,
                                 color: Colors.green.shade700,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showCreditDetailsDialog(
+    BuildContext context,
+    List<Map<String, dynamic>> creditDetails,
+    SellerService sellerService,
+    NumberFormat formatter,
+  ) {
+    if (creditDetails.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No credit applied in this period')),
+      );
+      return;
+    }
+    final sorted = List<Map<String, dynamic>>.from(creditDetails)
+      ..sort((a, b) => (b['createdAt'] as DateTime).compareTo(a['createdAt'] as DateTime));
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.account_balance_wallet_outlined, color: Colors.purple.shade700),
+            const SizedBox(width: 10),
+            const Text('Credit details'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: FutureBuilder<Map<String?, String>>(
+            future: () async {
+              final names = <String?, String>{};
+              for (var e in sorted) {
+                final id = e['sellerId'] as String?;
+                if (id == null || id.isEmpty || names.containsKey(id)) continue;
+                final seller = await sellerService.getSellerById(id);
+                names[id] = seller?.name ?? 'Unknown';
+              }
+              return names;
+            }(),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              final sellerNames = snapshot.data!;
+              return SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Seller credit balance applied at checkout (not cash received)',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ...sorted.map((e) {
+                      final sellerId = e['sellerId'] as String?;
+                      final amount = (e['amount'] as num).toDouble();
+                      final createdAt = e['createdAt'] as DateTime;
+                      final name = (sellerId != null && sellerId.isNotEmpty)
+                          ? (sellerNames[sellerId] ?? 'Unknown')
+                          : '—';
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w500,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    DateFormat('MMM d, h:mm a').format(createdAt),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey.shade600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              formatter.format(amount),
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: Colors.purple.shade700,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showBuyerPaidDetailsDialog(
+    BuildContext context,
+    DateTime startDate,
+    DateTime endDate,
+    NumberFormat formatter,
+  ) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.people_alt_outlined, color: Colors.blue.shade700),
+            const SizedBox(width: 10),
+            const Text('Buyer paid details'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: FutureBuilder<List<Map<String, dynamic>>>(
+            future: buyerPaymentService.getBuyerPaidSummaryByDateRange(
+              startDate,
+              endDate,
+            ),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              if (snapshot.hasError) {
+                return const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text('Could not load buyer payment details.'),
+                );
+              }
+              final rows = snapshot.data ?? const [];
+              if (rows.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text('No buyer payments in selected date range.'),
+                );
+              }
+              return SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Buyer-wise payments for ${_getDateRangeLabel()}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ...rows.map((row) {
+                      final buyerName =
+                          (row['buyerName'] as String?)?.trim().isNotEmpty == true
+                              ? row['buyerName'] as String
+                              : 'Unknown buyer';
+                      final amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                buyerName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w500,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              formatter.format(amount),
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: Colors.blue.shade700,
                                 fontSize: 14,
                               ),
                             ),
@@ -622,6 +850,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final salesMap = <String, Sale>{};
       // Recovery details for "tap to see breakdown" (seller, amount, date per sale)
       final recoveryDetails = <Map<String, dynamic>>[];
+      // Credit used details (seller credit applied at checkout), same period filter as dashboard
+      final creditDetails = <Map<String, dynamic>>[];
 
       final now = DateTime.now();
       final todayStart = DateTime(now.year, now.month, now.day);
@@ -726,6 +956,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
           // Track net credit balance used (after accounting for returns)
           totalCreditUsed += netCreditUsed;
+          if (netCreditUsed > 0) {
+            creditDetails.add({
+              'saleId': sale.id,
+              'sellerId': sale.sellerId,
+              'amount': netCreditUsed,
+              'createdAt': sale.createdAt,
+            });
+          }
 
           // POS shortfall in selected period (sales list is already filtered by dashboard dates).
           if (sale.change < 0) {
@@ -874,6 +1112,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'totalReturned': totalReturned, // Total amount returned (for display)
         'totalRecoveryBalance': totalRecoveryBalance, // Recovery balance from actual sales only
         'recoveryDetails': recoveryDetails, // Per-sale recovery for breakdown dialog (seller, amount, date)
+        'creditDetails': creditDetails, // Per-sale credit used for breakdown dialog
         'totalCreditUsed': totalCredit, // Credit = credit applied in sales (credit used from seller's balance)
         'totalBorrowed': totalBorrowed,
         'totalBorrowHeadline': totalBorrowHeadline,
@@ -908,6 +1147,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'totalReturned': 0.0,
         'totalRecoveryBalance': 0.0,
         'recoveryDetails': <Map<String, dynamic>>[],
+        'creditDetails': <Map<String, dynamic>>[],
         'totalCreditUsed': 0.0,
         'totalBorrowed': 0.0,
         'totalBorrowHeadline': 0.0,
@@ -1026,26 +1266,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           final resetDate = resetDateSnapshot.data;
                           final startDate = _getStartDate();
                           final endDate = _getEndDate();
-                          final effectiveStartDate = (resetDate != null && resetDate.isAfter(startDate))
-                              ? resetDate
-                              : startDate;
+                          final effectiveStartDate =
+                              (resetDate != null && resetDate.isAfter(startDate))
+                                  ? resetDate
+                                  : startDate;
                           final effectiveEndDate = endDate;
 
                           // Force new StreamBuilder state when the range changes (avoids stale borrow/revenue
-                          // snapshots after switching e.g. Last 7 Days → All).
+                          // snapshots after switching e.g. Last 7 Days -> All).
                           return StreamBuilder<List<Sale>>(
                             key: ValueKey<String>(
                               'dash_stats_${effectiveStartDate.toIso8601String()}_'
                               '${effectiveEndDate.toIso8601String()}_'
                               '${_selectedDays}_${resetDate?.toIso8601String() ?? 'no_reset'}',
                             ),
-                            stream: salesService.getSalesByDateRange(effectiveStartDate, effectiveEndDate),
+                            stream: salesService.getSalesByDateRange(
+                              effectiveStartDate,
+                              effectiveEndDate,
+                            ),
                             builder: (context, salesSnapshot) {
                               return StreamBuilder<List<Expense>>(
-                                stream: expenseService.getExpensesByDateRange(effectiveStartDate, effectiveEndDate),
+                                stream: expenseService.getExpensesByDateRange(
+                                  effectiveStartDate,
+                                  effectiveEndDate,
+                                ),
                                 builder: (context, expensesSnapshot) {
                                   return StreamBuilder<List<Borrow>>(
-                                    stream: borrowService.getBorrowsByDateRange(effectiveStartDate, effectiveEndDate),
+                                    stream: borrowService.getBorrowsByDateRange(
+                                      effectiveStartDate,
+                                      effectiveEndDate,
+                                    ),
                                     builder: (context, borrowsSnapshot) {
                                       return StreamBuilder<UnpaidSalesDashboardTotals>(
                                         stream: sellerService
@@ -1063,59 +1313,93 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                             builder: (context, profitTotalsSnapshot) {
                                               final profitTotals =
                                                   profitTotalsSnapshot.data ??
-                                                      DashboardSellerProfitTotals.zero;
+                                                      DashboardSellerProfitTotals
+                                                          .zero;
                                               final borrowProfit =
                                                   profitTotals.borrowProfit;
                                               final realProfit =
                                                   profitTotals.realProfit;
+
                                               return StreamBuilder<List<SellerOrder>>(
-                                                    stream: sellerOrderService.getAllOrders(),
-                                                    builder: (context, sellerOrdersSnapshot) {
-                                                      return StreamBuilder<List<BalanceEntry>>(
-                                                        stream: balanceService.getBalanceEntriesStream(),
-                                                        builder: (context, balanceSnapshot) {
-                                                          return StreamBuilder<double>(
-                                                        stream: sellerService.getTotalCreditBalanceStream(),
+                                                stream: sellerOrderService
+                                                    .getAllOrders(),
+                                                builder: (context, sellerOrdersSnapshot) {
+                                                  return StreamBuilder<List<BalanceEntry>>(
+                                                    stream: balanceService
+                                                        .getBalanceEntriesStream(),
+                                                    builder: (context, balanceSnapshot) {
+                                                      return StreamBuilder<double>(
+                                                        stream: sellerService
+                                                            .getTotalCreditBalanceStream(),
                                                         builder: (context, creditBalanceSnapshot) {
                                                           return StreamBuilder<double>(
-                                                            stream: sellerService.getTotalCreditReductionsStream(),
+                                                            stream: sellerService
+                                                                .getTotalCreditReductionsStream(),
                                                             builder: (context, creditReductionsSnapshot) {
-                                                          // Use stream data when available; defaults when waiting (live + real-time, no data deleted)
-                                                          final sales = salesSnapshot.data ?? [];
-                                                          final expenses = expensesSnapshot.data ?? [];
-                                                          final borrows = borrowsSnapshot.data ?? [];
-                                                          final unpaidTotals =
-                                                              unpaidSnapshot.data ??
-                                                                  UnpaidSalesDashboardTotals.empty;
-                                                          final sellerOrders = sellerOrdersSnapshot.data ?? [];
-                                                          final balanceEntries = balanceSnapshot.data ?? [];
-                                                          final creditBalance = creditBalanceSnapshot.data ?? 0.0;
-                                                          final creditReductions = creditReductionsSnapshot.data ?? 0.0;
+                                                              final sales = salesSnapshot.data ?? [];
+                                                              final expenses = expensesSnapshot.data ?? [];
+                                                              final borrows = borrowsSnapshot.data ?? [];
+                                                              final unpaidTotals =
+                                                                  unpaidSnapshot.data ??
+                                                                      UnpaidSalesDashboardTotals
+                                                                          .empty;
+                                                              final sellerOrders =
+                                                                  sellerOrdersSnapshot.data ??
+                                                                      [];
+                                                              final balanceEntries =
+                                                                  balanceSnapshot.data ?? [];
+                                                              final creditBalance =
+                                                                  creditBalanceSnapshot.data ??
+                                                                      0.0;
+                                                              final creditReductions =
+                                                                  creditReductionsSnapshot.data ??
+                                                                      0.0;
 
-                                                          return FutureBuilder<double>(
-                                                            future: sellerService.getTotalCreditReductionsByDateRange(effectiveStartDate, effectiveEndDate),
-                                                            builder: (context, periodCreditReductionsSnapshot) {
-                                                              final periodCreditReductions = periodCreditReductionsSnapshot.data ?? 0.0;
+                                                              return StreamBuilder<double>(
+                                                                stream: buyerPaymentService
+                                                                    .getTotalPaidByDateRangeStream(
+                                                                  effectiveStartDate,
+                                                                  effectiveEndDate,
+                                                                ),
+                                                                builder: (context, buyerPaidSnapshot) {
+                                                                  final buyerPaidTotal =
+                                                                      buyerPaidSnapshot.data ??
+                                                                          0.0;
+                                                                  return FutureBuilder<double>(
+                                                                    future: sellerService
+                                                                        .getTotalCreditReductionsByDateRange(
+                                                                      effectiveStartDate,
+                                                                      effectiveEndDate,
+                                                                    ),
+                                                                    builder: (context, periodCreditReductionsSnapshot) {
+                                                                      final periodCreditReductions =
+                                                                          periodCreditReductionsSnapshot.data ??
+                                                                              0.0;
 
-                                                              // Calculate stats from stream data (respects reset date for Revenue/Credit/Recovery)
-                                                              final stats = _calculateCombinedStats(
-                                                                sales,
-                                                                expenses,
-                                                                borrows,
-                                                                sellerOrders,
-                                                                balanceEntries,
-                                                                unpaidTotals
-                                                                    .periodOutstandingFromHistory,
-                                                                borrowProfit,
-                                                                realProfit,
-                                                                periodCreditReductions,
-                                                                resetDate,
-                                                              );
-                                                              final formatter = NumberFormat.currency(symbol: 'Rs. ');
+                                                                      // Calculate stats from stream data (respects reset date for Revenue/Credit/Recovery)
+                                                                      final stats = _calculateCombinedStats(
+                                                                        sales,
+                                                                        expenses,
+                                                                        borrows,
+                                                                        sellerOrders,
+                                                                        balanceEntries,
+                                                                        unpaidTotals
+                                                                            .periodOutstandingFromHistory,
+                                                                        borrowProfit,
+                                                                        realProfit,
+                                                                        periodCreditReductions,
+                                                                        resetDate,
+                                                                      );
+                                                                      final formatter =
+                                                                          NumberFormat.currency(
+                                                                        symbol: 'Rs. ',
+                                                                      );
 
-                                                          return Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                children: [
+                                                                      return Column(
+                                                                        crossAxisAlignment:
+                                                                            CrossAxisAlignment
+                                                                                .start,
+                                                                        children: [
                                                   Row(
                                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                                     children: [
@@ -1176,6 +1460,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                           revenue: stats['totalRevenue'], // Total revenue including recovery (credit is tracked separately, not included)
                                                           recoveryBalance: stats['totalRecoveryBalance'],
                                                           creditUsed: stats['totalCreditUsed'],
+                                                          buyerPaid: buyerPaidTotal,
                                                           todayRevenue: stats['todayRevenueForBreakdown'] ?? stats['todayRevenue'] ?? stats['salesRevenue'], // Today's revenue for breakdown (already includes credit reductions)
                                                           todayRecoveryBalance: stats['todayRecoveryBalance'] ?? stats['totalRecoveryBalance'], // Today's recovery for breakdown
                                                           todayCreditUsed: stats['todayCreditUsed'] ?? stats['totalCreditUsed'], // Today's credit used for breakdown
@@ -1184,6 +1469,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                           formatter: formatter,
                                                           recoveryDetails: stats['recoveryDetails'] ?? [],
                                                           onRecoveryTap: () => _showRecoveryDetailsDialog(context, stats['recoveryDetails'] ?? [], sellerService, formatter),
+                                                          creditDetails: stats['creditDetails'] ?? [],
+                                                          onCreditTap: () => _showCreditDetailsDialog(context, stats['creditDetails'] ?? [], sellerService, formatter),
+                                                          onBuyerPaidTap: () => _showBuyerPaidDetailsDialog(
+                                                            context,
+                                                            effectiveStartDate,
+                                                            effectiveEndDate,
+                                                            formatter,
+                                                          ),
                                                         ),
                                                       ),
                                                       const SizedBox(width: 16),
@@ -1316,11 +1609,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                     ],
                                                   ),
                                                 ],
-                                              );
+                                                                      );
+                                                                    },
+                                                                  );
+                                                                },
+                                                              );
                                                             },
                                                           );
-                                                          },
-                                                        );
                                                         },
                                                       );
                                                     },
@@ -2282,6 +2577,7 @@ class _RevenueCard extends StatelessWidget {
   final double revenue; // Total revenue including recovery balance (credit is tracked separately, not included)
   final double recoveryBalance;
   final double creditUsed; // Credit balance used from sellers
+  final double buyerPaid; // Buyer-side payments total for selected date range
   final double todayRevenue; // Today's revenue for breakdown (when "Today" is selected, cash sales only, excludes credit used)
   final double todayRecoveryBalance; // Today's recovery balance for breakdown (when "Today" is selected)
   final double todayCreditUsed; // Today's credit used for breakdown (when "Today" is selected)
@@ -2290,11 +2586,15 @@ class _RevenueCard extends StatelessWidget {
   final NumberFormat formatter;
   final List<Map<String, dynamic>> recoveryDetails; // Per-sale recovery for breakdown dialog
   final VoidCallback? onRecoveryTap; // When user taps Recovery to see details
+  final List<Map<String, dynamic>> creditDetails; // Per-sale credit used for breakdown dialog
+  final VoidCallback? onCreditTap; // When user taps Credit to see details
+  final VoidCallback? onBuyerPaidTap; // When user taps Buyer Paid to see buyer-wise list
 
   const _RevenueCard({
     required this.revenue, // This is totalRevenueWithRecovery
     required this.recoveryBalance,
     required this.creditUsed,
+    required this.buyerPaid,
     required this.todayRevenue,
     required this.todayRecoveryBalance,
     required this.todayCreditUsed,
@@ -2303,6 +2603,9 @@ class _RevenueCard extends StatelessWidget {
     required this.formatter,
     this.recoveryDetails = const [],
     this.onRecoveryTap,
+    this.creditDetails = const [],
+    this.onCreditTap,
+    this.onBuyerPaidTap,
   });
 
   @override
@@ -2394,31 +2697,63 @@ class _RevenueCard extends StatelessWidget {
                   ],
                 ),
               ),
-              // Middle - Credit Used
+              // Middle - Credit Used (tappable for per-sale list)
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    const Text(
-                      'Credit',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
+                child: InkWell(
+                  onTap: (creditUsed > 0 && creditDetails.isNotEmpty && onCreditTap != null)
+                      ? onCreditTap
+                      : null,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text(
+                              'Credit',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            if (creditUsed > 0 && onCreditTap != null) ...[
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.info_outline,
+                                size: 14,
+                                color: Colors.white.withOpacity(0.9),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          formatter.format(isTodaySelected
+                              ? todayCreditUsed
+                              : creditUsed),
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.9),
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (creditUsed > 0 && onCreditTap != null)
+                          Text(
+                            'Tap for details',
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.75),
+                              fontSize: 10,
+                            ),
+                          ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      formatter.format(isTodaySelected 
-                          ? todayCreditUsed  // Today's credit only
-                          : creditUsed), // Filtered credit for date range
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.9),
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
               // Right side - Recovery Balance (tappable for details)
@@ -2481,6 +2816,48 @@ class _RevenueCard extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 10),
+          InkWell(
+            onTap: (buyerPaid > 0 && onBuyerPaidTap != null)
+                ? onBuyerPaidTap
+                : null,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Text(
+                    'Buyer Paid',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (buyerPaid > 0 && onBuyerPaidTap != null) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.info_outline,
+                      size: 14,
+                      color: Colors.white.withOpacity(0.9),
+                    ),
+                  ],
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      formatter.format(buyerPaid),
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.95),
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),

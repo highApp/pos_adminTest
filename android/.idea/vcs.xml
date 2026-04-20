@@ -4,5 +4,6 @@
     <mapping directory="$USER_HOME$/Desktop/flutter3.29.3" vcs="Git" />
     <mapping directory="$USER_HOME$/Desktop/flutter3.38.7" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/.." vcs="Git" />
+    <mapping directory="$USER_HOME$/flutter" vcs="Git" />
   </component>
 </project>

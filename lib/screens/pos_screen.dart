@@ -780,28 +780,25 @@ class _POSScreenState extends State<POSScreen> {
         debugPrint('Credit Balance: $creditBalance');
         
         // Calculate how payment is applied:
-        // 1. Use credit balance first (if available) to pay current sale
-        // 2. Then use cash payment to pay current sale
-        // 3. Remaining cash goes to existing dues
+        // 1. Use cash first for current sale
+        // 2. Use seller credit only for any remaining shortfall
+        // 3. Remaining cash (if any) goes to existing dues
         
-        double creditUsed = 0.0;
-        double remainingSaleAmount = cart.totalAmount;
-        
-        // Use credit balance first
-        if (creditBalance > 0 && remainingSaleAmount > 0) {
-          creditUsed = await sellerService
-              .useCreditBalance(sellerId, remainingSaleAmount)
-              .timeout(_checkoutFirestoreTimeout, onTimeout: () => 0.0);
-          remainingSaleAmount -= creditUsed;
-          debugPrint('Credit Used: $creditUsed');
-          debugPrint('Remaining Sale Amount after credit: $remainingSaleAmount');
-        }
-        
-        // Now calculate cash payment allocation
-        double cashForCurrentSale = remainingSaleAmount > 0 && amountPaid > 0
-            ? (amountPaid < remainingSaleAmount ? amountPaid : remainingSaleAmount)
+        // Cash pays current sale first.
+        final cashForCurrentSale = amountPaid > 0
+            ? (amountPaid < cart.totalAmount ? amountPaid : cart.totalAmount)
             : 0.0;
-        double cashForExistingDues = amountPaid > cashForCurrentSale
+        final remainingSaleAfterCash =
+            (cart.totalAmount - cashForCurrentSale).clamp(0.0, cart.totalAmount);
+
+        double creditUsed = 0.0;
+        if (creditBalance > 0 && remainingSaleAfterCash > 0) {
+          creditUsed = await sellerService
+              .useCreditBalance(sellerId, remainingSaleAfterCash)
+              .timeout(_checkoutFirestoreTimeout, onTimeout: () => 0.0);
+        }
+
+        final cashForExistingDues = amountPaid > cashForCurrentSale
             ? amountPaid - cashForCurrentSale
             : 0.0;
         
@@ -809,7 +806,9 @@ class _POSScreenState extends State<POSScreen> {
         double totalAmountForCurrentSale = creditUsed + cashForCurrentSale;
         
         debugPrint('Cash for current sale: $cashForCurrentSale');
+        debugPrint('Remaining sale after cash: $remainingSaleAfterCash');
         debugPrint('Cash for existing dues: $cashForExistingDues');
+        debugPrint('Credit Used: $creditUsed');
         debugPrint('Total amount for current sale (credit + cash): $totalAmountForCurrentSale');
         
         // Update recovery balance and change based on actual cash allocation
@@ -4279,19 +4278,27 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                 ? double.tryParse(_amountController.text)!
                                 : 0.0;
                             
-                            // IMPORTANT: Credit balance is automatically applied to current sale
-                            // So the effective sale amount after credit = saleAmount - creditBalance
                             final currentSaleAmount = widget.cart.totalAmount;
-                            final saleAmountAfterCredit = (currentSaleAmount - creditBalance).clamp(0.0, currentSaleAmount);
-                            
-                            // Calculate how payment is applied:
-                            // 1. Credit balance is applied first (automatically)
-                            // 2. Then cash payment is applied to remaining sale amount
-                            // 3. Remaining cash goes to existing dues
-                            
-                            // Amount available after paying current sale (after credit is applied)
-                            final amountAfterCurrentSale = amountPaid > saleAmountAfterCredit
-                                ? amountPaid - saleAmountAfterCredit
+                            final cashForCurrentSale = hasAmountEntered
+                                ? (amountPaid < currentSaleAmount
+                                    ? amountPaid
+                                    : currentSaleAmount)
+                                : 0.0;
+                            final remainingSaleAfterCash =
+                                (currentSaleAmount - cashForCurrentSale)
+                                    .clamp(0.0, currentSaleAmount);
+                            final creditApplied =
+                                creditBalance < remainingSaleAfterCash
+                                    ? creditBalance
+                                    : remainingSaleAfterCash;
+                            final saleAmountAfterCredit =
+                                (remainingSaleAfterCash - creditApplied)
+                                    .clamp(0.0, currentSaleAmount);
+
+                            // Any cash beyond current sale goes to existing dues.
+                            final amountAfterCurrentSale = hasAmountEntered &&
+                                    amountPaid > cashForCurrentSale
+                                ? amountPaid - cashForCurrentSale
                                 : 0.0;
                             
                             // Calculate remaining due after payment
@@ -4299,11 +4306,8 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                 ? (totalExistingDue - amountAfterCurrentSale).clamp(0.0, totalExistingDue)
                                 : totalExistingDue;
                             
-                            // Calculate new due from current sale (if partial payment)
-                            // This is the remaining amount after credit and cash payment
-                            final newDueFromCurrentSale = amountPaid < saleAmountAfterCredit
-                                ? saleAmountAfterCredit - amountPaid
-                                : 0.0;
+                            // Remaining due from current sale after cash + credit.
+                            final newDueFromCurrentSale = saleAmountAfterCredit;
                             
                             // Total remaining due = remaining existing due + new due from current sale
                             final totalRemainingDue = remainingExistingDue + newDueFromCurrentSale;
@@ -4344,17 +4348,25 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                         ? 0.0
                         : _duePayments.fold(0.0, (sum, p) => sum + p.dueAmount);
                     
-                    // IMPORTANT: Credit balance is automatically applied to current sale
-                    // So the effective sale amount after credit = saleAmount - creditBalance
-                    final saleAmountAfterCredit = (widget.cart.totalAmount - creditBalance).clamp(0.0, widget.cart.totalAmount);
-                    
-                    // Only calculate new due if amount is entered AND it's less than sale amount after credit
-                    final newDueAmount = hasAmountEntered && amountPaid < saleAmountAfterCredit
-                        ? saleAmountAfterCredit - amountPaid
+                    final currentSaleAmount = widget.cart.totalAmount;
+                    final cashForCurrentSale = hasAmountEntered
+                        ? (amountPaid < currentSaleAmount
+                            ? amountPaid
+                            : currentSaleAmount)
                         : 0.0;
-                    
-                    // Subtotal = Current Sale (after credit) + Existing Due Payments
-                    // This shows what the customer actually needs to pay
+                    final remainingSaleAfterCash =
+                        (currentSaleAmount - cashForCurrentSale)
+                            .clamp(0.0, currentSaleAmount);
+                    final creditApplied = creditBalance < remainingSaleAfterCash
+                        ? creditBalance
+                        : remainingSaleAfterCash;
+                    final saleAmountAfterCredit =
+                        (remainingSaleAfterCash - creditApplied)
+                            .clamp(0.0, currentSaleAmount);
+
+                    final newDueAmount = saleAmountAfterCredit;
+
+                    // Subtotal = remaining current sale after cash+credit + existing dues.
                     final subtotal = saleAmountAfterCredit + existingDueTotal;
                     
                     // Total Due After Payment = Remaining Sale (after credit) + Existing Due + New Due (if partial payment)
