@@ -50,6 +50,121 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
   late TabController _tabController;
   bool _initialActionHandled = false;
+  /// Profit on expanded sale rows is hidden until password is entered (same as dashboard).
+  bool _showSellerHistoryProfit = false;
+
+  void _toggleSellerHistoryProfitVisibility() {
+    if (_showSellerHistoryProfit) {
+      setState(() => _showSellerHistoryProfit = false);
+    } else {
+      _showSellerHistoryProfitPasswordDialog();
+    }
+  }
+
+  void _showSellerHistoryProfitPasswordDialog() {
+    final passwordController = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.lock, color: Colors.teal.shade700),
+            const SizedBox(width: 12),
+            const Text('Enter Password'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter password to view profit on sales',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.password),
+              ),
+              onSubmitted: (value) {
+                _verifySellerHistoryProfitPassword(value, passwordController);
+                Navigator.pop(dialogContext);
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              _verifySellerHistoryProfitPassword(
+                passwordController.text,
+                passwordController,
+              );
+              Navigator.pop(dialogContext);
+            },
+            icon: const Icon(Icons.check),
+            label: const Text('Submit'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.teal,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _verifySellerHistoryProfitPassword(
+    String password,
+    TextEditingController controller,
+  ) {
+    const String correctPassword = '5202';
+    if (password == correctPassword) {
+      setState(() => _showSellerHistoryProfit = true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Text('Profit visible on sales'),
+              ],
+            ),
+            backgroundColor: Colors.teal,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Row(
+              children: [
+                Icon(Icons.error, color: Colors.white),
+                SizedBox(width: 8),
+                Text('Incorrect password'),
+              ],
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+    controller.clear();
+  }
 
   @override
   void initState() {
@@ -165,6 +280,14 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           ],
         ),
         actions: [
+          IconButton(
+            icon: Icon(
+              _showSellerHistoryProfit ? Icons.visibility : Icons.visibility_off,
+              color: _showSellerHistoryProfit ? Colors.teal : null,
+            ),
+            tooltip: _showSellerHistoryProfit ? 'Hide profit' : 'Show profit',
+            onPressed: _toggleSellerHistoryProfitVisibility,
+          ),
           IconButton(
             icon: const Icon(Icons.add_shopping_cart),
             tooltip: 'Add Manual Sale',
@@ -2609,14 +2732,15 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                SelectableText(
-                                  'Profit: ${_currencyFormatter.format(sale.netProfit)}',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: Colors.green.shade700,
+                                if (_showSellerHistoryProfit)
+                                  SelectableText(
+                                    'Profit: ${_currencyFormatter.format(sale.netProfit)}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.green.shade700,
+                                    ),
                                   ),
-                                ),
                                 if (sale.description != null &&
                                     sale.description!.trim().isNotEmpty) ...[
                                   const SizedBox(height: 8),
@@ -2697,29 +2821,29 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                         ],
                       ),
                       
-                      const SizedBox(height: 8),
-                      
-                      // Net Profit
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Net Profit:',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
+                      if (_showSellerHistoryProfit) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Net Profit:',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
-                          ),
-                          SelectableText(
-                            _currencyFormatter.format(sale.netProfit),
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.green.shade700,
+                            SelectableText(
+                              _currencyFormatter.format(sale.netProfit),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.green.shade700,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 );

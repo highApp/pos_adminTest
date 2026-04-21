@@ -897,17 +897,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ? sale.amountPaid - sale.recoveryBalance
               : 0.0;
 
-          double cashPaid = sale.amountPaid - sale.recoveryBalance;
-          double totalPaid = cashPaid + sale.creditUsed;
-          double cashPortionOfReturn = 0.0;
-          if (sale.returnedAmount > 0 && totalPaid > 0) {
-            // Calculate what portion of the return was originally paid with cash
-            cashPortionOfReturn = sale.returnedAmount * (cashPaid / totalPaid);
-          }
-          // For manual payment with overpayment: exclude credit portion from revenue (it goes to Credit column)
-          final saleRevenue = isManualPaymentSale
-              ? 0.0  // Manual payments: recovery goes to Recovery, excess goes to Credit - no revenue
-              : sale.amountPaid - sale.recoveryBalance - sale.change - cashPortionOfReturn;
+          final saleRevenue = sale.dashboardPosCashRevenue;
           totalRevenue += saleRevenue;
           
           // Calculate net credit used (original credit used minus restored credit from returns)
@@ -2997,15 +2987,7 @@ class _SalesChart extends StatelessWidget {
               
               final dateKey = DateFormat('MM/dd').format(sale.createdAt);
               if (dailySales.containsKey(dateKey)) {
-                // Use the same revenue calculation as main dashboard
-                // Revenue = cash payment only, minus cash portion of returns (credit portion doesn't affect revenue)
-                double cashPaid = sale.amountPaid - sale.recoveryBalance;
-                double totalPaid = cashPaid + sale.creditUsed;
-                double cashPortionOfReturn = 0.0;
-                if (sale.returnedAmount > 0 && totalPaid > 0) {
-                  cashPortionOfReturn = sale.returnedAmount * (cashPaid / totalPaid);
-                }
-                final saleRevenue = sale.amountPaid - sale.recoveryBalance - sale.change - cashPortionOfReturn;
+                final saleRevenue = sale.dashboardPosCashRevenue;
                 dailySales[dateKey] = (dailySales[dateKey] ?? 0) + saleRevenue;
                 dailyProfit[dateKey] = (dailyProfit[dateKey] ?? 0) + sale.netProfit; // Use net profit
               }

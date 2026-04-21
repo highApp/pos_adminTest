@@ -1,10 +1,16 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:intl/intl.dart';
 import '../models/product.dart';
+import '../models/sale.dart';
 import '../services/product_service.dart';
 import '../services/category_service.dart';
+import '../services/sales_service.dart';
 import 'add_edit_product_screen.dart';
+
+enum _CategorySalesPreset { today, yesterday, last7, custom }
 
 class ProductsScreen extends StatefulWidget {
   const ProductsScreen({super.key});
@@ -16,6 +22,7 @@ class ProductsScreen extends StatefulWidget {
 class _ProductsScreenState extends State<ProductsScreen> {
   final ProductService _productService = ProductService();
   final CategoryService _categoryService = CategoryService();
+  final SalesService _salesService = SalesService();
   final TextEditingController _searchController = TextEditingController();
   List<Product>? _searchResults;
   String _selectedCategory = 'All';
@@ -35,6 +42,161 @@ class _ProductsScreenState extends State<ProductsScreen> {
   double? _profitPerItem;
   double? _totalProfit;
   bool _showAverageCalculator = false;
+
+  _CategorySalesPreset _categorySalesPreset = _CategorySalesPreset.today;
+  DateTimeRange? _categorySalesCustomRange;
+
+  (DateTime, DateTime) _categorySalesDateBounds() {
+    final now = DateTime.now();
+    switch (_categorySalesPreset) {
+      case _CategorySalesPreset.today:
+        return (
+          DateTime(now.year, now.month, now.day),
+          DateTime(now.year, now.month, now.day, 23, 59, 59, 999),
+        );
+      case _CategorySalesPreset.yesterday:
+        final d = now.subtract(const Duration(days: 1));
+        return (
+          DateTime(d.year, d.month, d.day),
+          DateTime(d.year, d.month, d.day, 23, 59, 59, 999),
+        );
+      case _CategorySalesPreset.last7:
+        final start =
+            DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
+        return (
+          start,
+          DateTime(now.year, now.month, now.day, 23, 59, 59, 999),
+        );
+      case _CategorySalesPreset.custom:
+        final r = _categorySalesCustomRange;
+        if (r == null) {
+          return (
+            DateTime(now.year, now.month, now.day),
+            DateTime(now.year, now.month, now.day, 23, 59, 59, 999),
+          );
+        }
+        return (
+          DateTime(r.start.year, r.start.month, r.start.day),
+          DateTime(r.end.year, r.end.month, r.end.day, 23, 59, 59, 999),
+        );
+    }
+  }
+
+  String _categorySalesPeriodLabel() {
+    final bounds = _categorySalesDateBounds();
+    final start = bounds.$1;
+    final end = bounds.$2;
+    switch (_categorySalesPreset) {
+      case _CategorySalesPreset.today:
+        return 'Today';
+      case _CategorySalesPreset.yesterday:
+        return 'Yesterday';
+      case _CategorySalesPreset.last7:
+        return 'Last 7 days';
+      case _CategorySalesPreset.custom:
+        final f = DateFormat('MMM d, y');
+        return '${f.format(start)} – ${f.format(end)}';
+    }
+  }
+
+  double _saleAllLinesRemainingSubtotal(Sale sale) =>
+      sale.items.fold<double>(0.0, (s, i) => s + i.remainingSubtotal);
+
+  /// POS cash attributed to [productIds], matching dashboard [Sale.dashboardPosCashRevenue]
+  /// by splitting each sale’s cash revenue across lines using `remainingSubtotal` shares
+  /// (full-ticket denominator so lines not in the catalog still consume their share).
+  (double total, int orderCount) _totalsForCategorySales(
+    List<Sale> sales,
+    Set<String> productIds,
+  ) {
+    if (productIds.isEmpty) return (0.0, 0);
+    double total = 0;
+    final touchedOrders = <String>{};
+    for (final sale in sales) {
+      if (sale.isBorrowPayment) continue;
+      final allSum = _saleAllLinesRemainingSubtotal(sale);
+      if (allSum <= 0) continue;
+      var catSum = 0.0;
+      for (final item in sale.items) {
+        final pid = item.productId;
+        if (pid.isEmpty || !productIds.contains(pid)) continue;
+        catSum += item.remainingSubtotal;
+      }
+      if (catSum <= 0) continue;
+      final rev = sale.dashboardPosCashRevenue;
+      total += rev * (catSum / allSum);
+      touchedOrders.add(sale.id);
+    }
+    return (total, touchedOrders.length);
+  }
+
+  /// Per-product qty (remaining after returns) and dashboard-aligned cash amounts.
+  List<_CategoryProductSaleRow> _productBreakdownForCategorySales(
+    List<Sale> sales,
+    Set<String> productIds,
+    Map<String, String> productIdToName,
+  ) {
+    if (productIds.isEmpty) return [];
+    final accum = <String, _CategoryProductAgg>{};
+    for (final sale in sales) {
+      if (sale.isBorrowPayment) continue;
+      final allSum = _saleAllLinesRemainingSubtotal(sale);
+      if (allSum <= 0) continue;
+      final rev = sale.dashboardPosCashRevenue;
+      for (final item in sale.items) {
+        final pid = item.productId;
+        if (pid.isEmpty || !productIds.contains(pid)) continue;
+        if (item.remainingQuantity <= 0) continue;
+        final displayName = (productIdToName[pid] ?? item.productName).trim();
+        final row = accum.putIfAbsent(
+          pid,
+          () => _CategoryProductAgg(
+            displayName.isEmpty ? 'Item' : displayName,
+          ),
+        );
+        row.quantity += item.remainingQuantity;
+        row.amount += rev * (item.remainingSubtotal / allSum);
+      }
+    }
+    final list = accum.entries
+        .map(
+          (e) => _CategoryProductSaleRow(
+            productId: e.key,
+            name: e.value.name,
+            quantity: e.value.quantity,
+            amount: e.value.amount,
+          ),
+        )
+        .toList()
+      ..sort((a, b) => b.amount.compareTo(a.amount));
+    return list;
+  }
+
+  Future<void> _pickCategorySalesCustomRange() async {
+    final previousPreset = _categorySalesPreset;
+    final now = DateTime.now();
+    final initial = _categorySalesCustomRange ??
+        DateTimeRange(
+          start: now.subtract(const Duration(days: 7)),
+          end: now,
+        );
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(now.year + 1, 12, 31),
+      initialDateRange: initial,
+      helpText: 'POS sales date range',
+    );
+    if (!mounted) return;
+    if (picked != null) {
+      setState(() {
+        _categorySalesCustomRange = picked;
+        _categorySalesPreset = _CategorySalesPreset.custom;
+      });
+    } else if (previousPreset != _CategorySalesPreset.custom) {
+      setState(() => _categorySalesPreset = previousPreset);
+    }
+  }
 
   @override
   void dispose() {
@@ -166,6 +328,8 @@ class _ProductsScreenState extends State<ProductsScreen> {
               },
             ),
           ),
+          const Divider(height: 1),
+          _buildCategoryPosSalesCard(formatter),
           const Divider(height: 1),
           // Average Calculator Section
           Container(
@@ -851,6 +1015,329 @@ class _ProductsScreenState extends State<ProductsScreen> {
     );
   }
 
+  Widget _buildCategoryPosSalesCard(NumberFormat formatter) {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: StreamBuilder<List<Product>>(
+        stream: _productService.getProductsStream(),
+        builder: (context, prodSnap) {
+          final all = prodSnap.data ?? [];
+          final productIds = _selectedCategory == 'All'
+              ? all.map((p) => p.id).where((id) => id.isNotEmpty).toSet()
+              : all
+                  .where((p) => p.category == _selectedCategory)
+                  .map((p) => p.id)
+                  .where((id) => id.isNotEmpty)
+                  .toSet();
+
+          if (productIds.isEmpty) {
+            return const SizedBox.shrink();
+          }
+
+          final bounds = _categorySalesDateBounds();
+          final start = bounds.$1;
+          final end = bounds.$2;
+
+          return StreamBuilder<List<Sale>>(
+            key: ValueKey<String>(
+              'cat_pos_${start.toIso8601String()}_${end.toIso8601String()}_'
+              '$_categorySalesPreset',
+            ),
+            stream: _salesService.getSalesByDateRange(start, end),
+            builder: (context, saleSnap) {
+              if (saleSnap.connectionState == ConnectionState.waiting &&
+                  !saleSnap.hasData) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                );
+              }
+              final sales = saleSnap.data ?? [];
+              final agg = _totalsForCategorySales(sales, productIds);
+              final total = agg.$1;
+              final orders = agg.$2;
+              final idToName = {
+                for (final p in all)
+                  if (p.id.isNotEmpty) p.id: p.name,
+              };
+              final productRows =
+                  _productBreakdownForCategorySales(sales, productIds, idToName);
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.point_of_sale, color: Colors.teal.shade700, size: 22),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _selectedCategory == 'All'
+                              ? 'POS sales (all categories)'
+                              : 'POS sales — $_selectedCategory',
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Today'),
+                          selected: _categorySalesPreset == _CategorySalesPreset.today,
+                          onSelected: (v) {
+                            if (v) {
+                              setState(() => _categorySalesPreset = _CategorySalesPreset.today);
+                            }
+                          },
+                          selectedColor: Colors.teal,
+                          labelStyle: TextStyle(
+                            color: _categorySalesPreset == _CategorySalesPreset.today
+                                ? Colors.white
+                                : Colors.black87,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        ChoiceChip(
+                          label: const Text('Yesterday'),
+                          selected: _categorySalesPreset == _CategorySalesPreset.yesterday,
+                          onSelected: (v) {
+                            if (v) {
+                              setState(() => _categorySalesPreset = _CategorySalesPreset.yesterday);
+                            }
+                          },
+                          selectedColor: Colors.teal,
+                          labelStyle: TextStyle(
+                            color: _categorySalesPreset == _CategorySalesPreset.yesterday
+                                ? Colors.white
+                                : Colors.black87,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        ChoiceChip(
+                          label: const Text('Last 7 days'),
+                          selected: _categorySalesPreset == _CategorySalesPreset.last7,
+                          onSelected: (v) {
+                            if (v) {
+                              setState(() => _categorySalesPreset = _CategorySalesPreset.last7);
+                            }
+                          },
+                          selectedColor: Colors.teal,
+                          labelStyle: TextStyle(
+                            color: _categorySalesPreset == _CategorySalesPreset.last7
+                                ? Colors.white
+                                : Colors.black87,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        OutlinedButton.icon(
+                          onPressed: _pickCategorySalesCustomRange,
+                          icon: const Icon(Icons.date_range, size: 18),
+                          label: Text(
+                            _categorySalesPreset == _CategorySalesPreset.custom &&
+                                    _categorySalesCustomRange != null
+                                ? _categorySalesPeriodLabel()
+                                : 'Custom',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor:
+                                _categorySalesPreset == _CategorySalesPreset.custom
+                                    ? Colors.teal.shade800
+                                    : null,
+                            side: BorderSide(
+                              color: _categorySalesPreset == _CategorySalesPreset.custom
+                                  ? Colors.teal
+                                  : Colors.grey.shade400,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_categorySalesPreset != _CategorySalesPreset.custom)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        _categorySalesPeriodLabel(),
+                        style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.teal.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.teal.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Cash POS (category share, matches dashboard)',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[700],
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                formatter.format(total),
+                                style: TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.teal.shade900,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              'POS receipts',
+                              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                            ),
+                            Text(
+                              '$orders',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.teal.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (productRows.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      initiallyExpanded: true,
+                      title: Text(
+                        'By product (${productRows.length})',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[800],
+                        ),
+                      ),
+                      children: [
+                        SizedBox(
+                          height: math.min(productRows.length * 52.0, 280),
+                          child: ListView.separated(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            physics: const ClampingScrollPhysics(),
+                            itemCount: productRows.length,
+                            separatorBuilder: (_, __) => Divider(
+                              height: 1,
+                              color: Colors.grey.shade300,
+                            ),
+                            itemBuilder: (context, i) {
+                              final r = productRows[i];
+                              final qtyStr = r.quantity % 1 == 0
+                                  ? r.quantity.toStringAsFixed(0)
+                                  : r.quantity.toStringAsFixed(2);
+                              return Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 6),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            r.name,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            'Qty sold: $qtyStr',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.grey[600],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      formatter.format(r.amount),
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.teal.shade800,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else if (productRows.isEmpty && (total > 0.01 || orders > 0)) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Receipts in range have no remaining quantity for these products (e.g. fully returned), so there is no per-product breakdown.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  ],
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'Borrow-only payments are excluded. Totals use the same cash revenue rule as the dashboard '
+                      '(excludes seller credit, change, recovery, and the cash slice of returns), split across lines by remaining line value after returns.',
+                      style: TextStyle(fontSize: 10, color: Colors.grey[600], height: 1.25),
+                    ),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
   void _addStock(BuildContext context, Product product) {
     final TextEditingController quantityController = TextEditingController();
 
@@ -1003,6 +1490,28 @@ class _ProductsScreenState extends State<ProductsScreen> {
       ),
     );
   }
+}
+
+class _CategoryProductAgg {
+  final String name;
+  double quantity = 0;
+  double amount = 0;
+
+  _CategoryProductAgg(this.name);
+}
+
+class _CategoryProductSaleRow {
+  final String productId;
+  final String name;
+  final double quantity;
+  final double amount;
+
+  _CategoryProductSaleRow({
+    required this.productId,
+    required this.name,
+    required this.quantity,
+    required this.amount,
+  });
 }
 
 class _ActionButton extends StatelessWidget {

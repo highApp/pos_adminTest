@@ -118,6 +118,23 @@ class Sale {
     if (total == 0) return 0;
     return profit * (netTotal / total);
   }
+
+  /// Cash-like POS revenue used on the dashboard (excludes seller credit, change,
+  /// recovery, and the cash-valued slice of returns). Borrow payments: use 0.
+  /// Manual “Manual Payment” dues entries (total 0) are excluded from POS revenue.
+  double get dashboardPosCashRevenue {
+    if (isBorrowPayment) return 0.0;
+    final isManualPaymentSale =
+        total == 0 && (customerName?.startsWith('Manual Payment') ?? false);
+    if (isManualPaymentSale) return 0.0;
+    final cashPaid = amountPaid - recoveryBalance;
+    final totalPaid = cashPaid + creditUsed;
+    double cashPortionOfReturn = 0.0;
+    if (returnedAmount > 0 && totalPaid > 0) {
+      cashPortionOfReturn = returnedAmount * (cashPaid / totalPaid);
+    }
+    return amountPaid - recoveryBalance - change - cashPortionOfReturn;
+  }
 }
 
 extension SaleItemNetLineProfit on SaleItem {
