@@ -172,6 +172,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _repairRecoveryMismatch() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Repair Recovery Mismatch'),
+        content: const Text(
+          'This will safely repair manual payment sales where seller history payment exists but sale recovery is lower. '
+          'Only clear mismatches are updated. No records are deleted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('Run Repair'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Repairing recovery mismatches...'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    try {
+      final result = await _sellerService.repairManualPaymentRecoveryMismatches();
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Repair complete. Updated: ${result['updated']} · '
+              'Matched sales: ${result['salesMatched']} · '
+              'Missing sales: ${result['missingSales']}',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Repair failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _showResetConfirmationDialog() async {
     final passwordController = TextEditingController();
     String? errorText;
@@ -495,6 +568,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onPressed: _migrateOldSellerPaymentRecords,
                       icon: const Icon(Icons.update),
                       label: const Text('Migrate Old Seller Payment Records'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.orange[700],
+                        side: BorderSide(color: Colors.orange[300]!),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.build_circle, color: Colors.orange[700], size: 28),
+                      const SizedBox(width: 12),
+                      const Text(
+                        'Repair Recovery Mismatch',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Fix old manual-payment entries where payment exists in seller history but recovery is not reflected in sales.',
+                    style: TextStyle(
+                      color: Colors.grey[700],
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _repairRecoveryMismatch,
+                      icon: const Icon(Icons.healing),
+                      label: const Text('Run Recovery Repair'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: Colors.orange[700],
                         side: BorderSide(color: Colors.orange[300]!),

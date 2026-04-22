@@ -7,9 +7,9 @@
         <compositeConfiguration>
           <compositeBuild compositeDefinitionSource="SCRIPT">
             <builds>
-              <build path="$USER_HOME$/flutter/packages/flutter_tools/gradle" name="gradle">
+              <build path="$USER_HOME$/Desktop/flutter3.38.7/packages/flutter_tools/gradle" name="gradle">
                 <projects>
-                  <project path="$USER_HOME$/flutter/packages/flutter_tools/gradle" />
+                  <project path="$USER_HOME$/Desktop/flutter3.38.7/packages/flutter_tools/gradle" />
                 </projects>
               </build>
             </builds>
@@ -36,9 +36,9 @@
             <option value="$USER_HOME$/.pub-cache/hosted/pub.dev/sqlite3_flutter_libs-0.5.42/android" />
             <option value="$USER_HOME$/.pub-cache/hosted/pub.dev/url_launcher_android-6.3.28/android" />
             <option value="$USER_HOME$/.pub-cache/hosted/pub.dev/whatsapp_share2-2.1.1/android" />
+            <option value="$USER_HOME$/Desktop/flutter3.38.7/packages/flutter_tools/gradle" />
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/app" />
-            <option value="$USER_HOME$/flutter/packages/flutter_tools/gradle" />
           </set>
         </option>
       </GradleProjectSettings>

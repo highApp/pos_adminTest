@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
@@ -27,6 +29,32 @@ class DashboardScreen extends StatefulWidget {
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardLiveStatsData {
+  const _DashboardLiveStatsData({
+    required this.sales,
+    required this.expenses,
+    required this.borrows,
+    required this.sellerOrders,
+    required this.balanceEntries,
+    required this.unpaidTotals,
+    required this.profitTotals,
+    required this.creditBalance,
+    required this.buyerPaidTotal,
+    required this.periodCreditReductions,
+  });
+
+  final List<Sale> sales;
+  final List<Expense> expenses;
+  final List<Borrow> borrows;
+  final List<SellerOrder> sellerOrders;
+  final List<BalanceEntry> balanceEntries;
+  final UnpaidSalesDashboardTotals unpaidTotals;
+  final DashboardSellerProfitTotals profitTotals;
+  final double creditBalance;
+  final double buyerPaidTotal;
+  final double periodCreditReductions;
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
@@ -73,6 +101,112 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // If hidden, ask for password
       _showPasswordDialog();
     }
+  }
+
+  Stream<_DashboardLiveStatsData> _dashboardStatsStream(
+    DateTime effectiveStartDate,
+    DateTime effectiveEndDate,
+  ) {
+    final controller = StreamController<_DashboardLiveStatsData>.broadcast(
+      sync: true,
+    );
+
+    var sales = <Sale>[];
+    var expenses = <Expense>[];
+    var borrows = <Borrow>[];
+    var sellerOrders = <SellerOrder>[];
+    var balanceEntries = <BalanceEntry>[];
+    var unpaidTotals = UnpaidSalesDashboardTotals.empty;
+    var profitTotals = DashboardSellerProfitTotals.zero;
+    var creditBalance = 0.0;
+    var buyerPaidTotal = 0.0;
+    var periodCreditReductions = 0.0;
+
+    void emit() {
+      if (controller.isClosed) return;
+      controller.add(
+        _DashboardLiveStatsData(
+          sales: sales,
+          expenses: expenses,
+          borrows: borrows,
+          sellerOrders: sellerOrders,
+          balanceEntries: balanceEntries,
+          unpaidTotals: unpaidTotals,
+          profitTotals: profitTotals,
+          creditBalance: creditBalance,
+          buyerPaidTotal: buyerPaidTotal,
+          periodCreditReductions: periodCreditReductions,
+        ),
+      );
+    }
+
+    final subs = <StreamSubscription<dynamic>>[
+      salesService
+          .getSalesByDateRange(effectiveStartDate, effectiveEndDate)
+          .listen((value) {
+        sales = value;
+        emit();
+      }),
+      expenseService
+          .getExpensesByDateRange(effectiveStartDate, effectiveEndDate)
+          .listen((value) {
+        expenses = value;
+        emit();
+      }),
+      borrowService
+          .getBorrowsByDateRange(effectiveStartDate, effectiveEndDate)
+          .listen((value) {
+        borrows = value;
+        emit();
+      }),
+      sellerService
+          .getUnpaidSalesDashboardTotalsStream(effectiveStartDate, effectiveEndDate)
+          .listen((value) {
+        unpaidTotals = value;
+        emit();
+      }),
+      sellerService
+          .getDashboardSellerProfitTotalsStream(effectiveStartDate, effectiveEndDate)
+          .listen((value) {
+        profitTotals = value;
+        emit();
+      }),
+      sellerOrderService.getAllOrders().listen((value) {
+        sellerOrders = value;
+        emit();
+      }),
+      balanceService.getBalanceEntriesStream().listen((value) {
+        balanceEntries = value;
+        emit();
+      }),
+      sellerService.getTotalCreditBalanceStream().listen((value) {
+        creditBalance = value;
+        emit();
+      }),
+      buyerPaymentService
+          .getTotalPaidByDateRangeStream(effectiveStartDate, effectiveEndDate)
+          .listen((value) {
+        buyerPaidTotal = value;
+        emit();
+      }),
+    ];
+
+    sellerService
+        .getTotalCreditReductionsByDateRange(effectiveStartDate, effectiveEndDate)
+        .then((value) {
+      periodCreditReductions = value;
+      emit();
+    }).catchError((_) {});
+
+    emit();
+
+    controller.onCancel = () async {
+      for (final sub in subs) {
+        await sub.cancel();
+      }
+    };
+
+    return controller.stream;
   }
 
   void _showPasswordDialog() {
@@ -628,20 +762,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           r.sellerName,
                           style: theme.textTheme.bodyLarge,
                         ),
-                        subtitle: Text(
-                          r.sellerId,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey.shade600,
-                          ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              r.sellerId,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                            if (r.paidInPeriod > 0)
+                              Text(
+                                'Paid in period: ${fmt.format(r.paidInPeriod)}',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.green.shade700,
+                                ),
+                              ),
+                          ],
                         ),
-                        trailing: Text(
-                          fmt.format(r.remainingDue),
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
+                        trailing: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              fmt.format(r.remainingDue),
+                              style: theme.textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              'Remaining',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ],
                         ),
                         onTap: () async {
                           Navigator.pop(dialogContext);
@@ -1008,8 +1169,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
       final netBorrow = totalBorrowed - totalLent;
       // Seller unpaid + borrow book, both scoped to the dashboard date filter only.
-      final totalBorrowHeadline =
+      final grossBorrowHeadline =
           periodOutstandingFromSellerHistory + totalBorrowed;
+      // Net borrow for selected period: show borrow minus repayments received
+      // in the same selected period so users see borrow go down when recovery is paid.
+      final totalBorrowHeadline =
+          (grossBorrowHeadline - periodSellerDueRepayments).clamp(0.0, double.infinity);
 
       // Calculate net profit: Real profit (from paid portions including payments to cover dues) - Expenses + Wholesale profit
       // This explicitly subtracts expenses from profit and adds wholesale profit
@@ -1105,6 +1270,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'creditDetails': creditDetails, // Per-sale credit used for breakdown dialog
         'totalCreditUsed': totalCredit, // Credit = credit applied in sales (credit used from seller's balance)
         'totalBorrowed': totalBorrowed,
+        'grossBorrowHeadline': grossBorrowHeadline,
         'totalBorrowHeadline': totalBorrowHeadline,
         'totalLent': totalLent,
         'netBorrow': netBorrow,
@@ -1140,6 +1306,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'creditDetails': <Map<String, dynamic>>[],
         'totalCreditUsed': 0.0,
         'totalBorrowed': 0.0,
+        'grossBorrowHeadline': 0.0,
         'totalBorrowHeadline': 0.0,
         'totalLent': 0.0,
         'netBorrow': 0.0,
@@ -1262,130 +1429,51 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   : startDate;
                           final effectiveEndDate = endDate;
 
-                          // Force new StreamBuilder state when the range changes (avoids stale borrow/revenue
-                          // snapshots after switching e.g. Last 7 Days -> All).
-                          return StreamBuilder<List<Sale>>(
+                          // Force new StreamBuilder state when the range changes (avoids stale stats
+                          // after switching e.g. Last 7 Days -> All).
+                          return StreamBuilder<_DashboardLiveStatsData>(
                             key: ValueKey<String>(
                               'dash_stats_${effectiveStartDate.toIso8601String()}_'
                               '${effectiveEndDate.toIso8601String()}_'
                               '${_selectedDays}_${resetDate?.toIso8601String() ?? 'no_reset'}',
                             ),
-                            stream: salesService.getSalesByDateRange(
+                            stream: _dashboardStatsStream(
                               effectiveStartDate,
                               effectiveEndDate,
                             ),
-                            builder: (context, salesSnapshot) {
-                              return StreamBuilder<List<Expense>>(
-                                stream: expenseService.getExpensesByDateRange(
-                                  effectiveStartDate,
-                                  effectiveEndDate,
-                                ),
-                                builder: (context, expensesSnapshot) {
-                                  return StreamBuilder<List<Borrow>>(
-                                    stream: borrowService.getBorrowsByDateRange(
-                                      effectiveStartDate,
-                                      effectiveEndDate,
-                                    ),
-                                    builder: (context, borrowsSnapshot) {
-                                      return StreamBuilder<UnpaidSalesDashboardTotals>(
-                                        stream: sellerService
-                                            .getUnpaidSalesDashboardTotalsStream(
-                                          effectiveStartDate,
-                                          effectiveEndDate,
-                                        ),
-                                        builder: (context, unpaidSnapshot) {
-                                          return StreamBuilder<DashboardSellerProfitTotals>(
-                                            stream: sellerService
-                                                .getDashboardSellerProfitTotalsStream(
-                                              effectiveStartDate,
-                                              effectiveEndDate,
-                                            ),
-                                            builder: (context, profitTotalsSnapshot) {
-                                              final profitTotals =
-                                                  profitTotalsSnapshot.data ??
-                                                      DashboardSellerProfitTotals
-                                                          .zero;
-                                              final borrowProfit =
-                                                  profitTotals.borrowProfit;
-                                              final realProfit =
-                                                  profitTotals.realProfit;
+                            builder: (context, snapshot) {
+                              final data = snapshot.data;
+                              final sales = data?.sales ?? <Sale>[];
+                              final expenses = data?.expenses ?? <Expense>[];
+                              final borrows = data?.borrows ?? <Borrow>[];
+                              final unpaidTotals =
+                                  data?.unpaidTotals ?? UnpaidSalesDashboardTotals.empty;
+                              final sellerOrders = data?.sellerOrders ?? <SellerOrder>[];
+                              final balanceEntries =
+                                  data?.balanceEntries ?? <BalanceEntry>[];
+                              final creditBalance = data?.creditBalance ?? 0.0;
+                              final buyerPaidTotal = data?.buyerPaidTotal ?? 0.0;
+                              final periodCreditReductions =
+                                  data?.periodCreditReductions ?? 0.0;
 
-                                              return StreamBuilder<List<SellerOrder>>(
-                                                stream: sellerOrderService
-                                                    .getAllOrders(),
-                                                builder: (context, sellerOrdersSnapshot) {
-                                                  return StreamBuilder<List<BalanceEntry>>(
-                                                    stream: balanceService
-                                                        .getBalanceEntriesStream(),
-                                                    builder: (context, balanceSnapshot) {
-                                                      return StreamBuilder<double>(
-                                                        stream: sellerService
-                                                            .getTotalCreditBalanceStream(),
-                                                        builder: (context, creditBalanceSnapshot) {
-                                                          return StreamBuilder<double>(
-                                                            stream: sellerService
-                                                                .getTotalCreditReductionsStream(),
-                                                            builder: (context, creditReductionsSnapshot) {
-                                                              final sales = salesSnapshot.data ?? [];
-                                                              final expenses = expensesSnapshot.data ?? [];
-                                                              final borrows = borrowsSnapshot.data ?? [];
-                                                              final unpaidTotals =
-                                                                  unpaidSnapshot.data ??
-                                                                      UnpaidSalesDashboardTotals
-                                                                          .empty;
-                                                              final sellerOrders =
-                                                                  sellerOrdersSnapshot.data ??
-                                                                      [];
-                                                              final balanceEntries =
-                                                                  balanceSnapshot.data ?? [];
-                                                              final creditBalance =
-                                                                  creditBalanceSnapshot.data ??
-                                                                      0.0;
-                                                              final creditReductions =
-                                                                  creditReductionsSnapshot.data ??
-                                                                      0.0;
+                              // Calculate stats from live data (respects reset date for Revenue/Credit/Recovery)
+                              final stats = _calculateCombinedStats(
+                                sales,
+                                expenses,
+                                borrows,
+                                sellerOrders,
+                                balanceEntries,
+                                unpaidTotals.periodOutstandingFromHistory,
+                                data?.profitTotals.borrowProfit ?? 0.0,
+                                data?.profitTotals.realProfit ?? 0.0,
+                                periodCreditReductions,
+                                resetDate,
+                              );
+                              final formatter = NumberFormat.currency(
+                                symbol: 'Rs. ',
+                              );
 
-                                                              return StreamBuilder<double>(
-                                                                stream: buyerPaymentService
-                                                                    .getTotalPaidByDateRangeStream(
-                                                                  effectiveStartDate,
-                                                                  effectiveEndDate,
-                                                                ),
-                                                                builder: (context, buyerPaidSnapshot) {
-                                                                  final buyerPaidTotal =
-                                                                      buyerPaidSnapshot.data ??
-                                                                          0.0;
-                                                                  return FutureBuilder<double>(
-                                                                    future: sellerService
-                                                                        .getTotalCreditReductionsByDateRange(
-                                                                      effectiveStartDate,
-                                                                      effectiveEndDate,
-                                                                    ),
-                                                                    builder: (context, periodCreditReductionsSnapshot) {
-                                                                      final periodCreditReductions =
-                                                                          periodCreditReductionsSnapshot.data ??
-                                                                              0.0;
-
-                                                                      // Calculate stats from stream data (respects reset date for Revenue/Credit/Recovery)
-                                                                      final stats = _calculateCombinedStats(
-                                                                        sales,
-                                                                        expenses,
-                                                                        borrows,
-                                                                        sellerOrders,
-                                                                        balanceEntries,
-                                                                        unpaidTotals
-                                                                            .periodOutstandingFromHistory,
-                                                                        borrowProfit,
-                                                                        realProfit,
-                                                                        periodCreditReductions,
-                                                                        resetDate,
-                                                                      );
-                                                                      final formatter =
-                                                                          NumberFormat.currency(
-                                                                        symbol: 'Rs. ',
-                                                                      );
-
-                                                                      return Column(
+                              return Column(
                                                                         crossAxisAlignment:
                                                                             CrossAxisAlignment
                                                                                 .start,
@@ -1473,7 +1561,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                       Expanded(
                                                         child: _ModernStatCard(
                                                           title: 'Total Credit Balance',
-                                                          value: formatter.format(creditBalanceSnapshot.data ?? 0.0),
+                                                          value: formatter.format(creditBalance),
                                                           icon: Icons.account_balance_wallet,
                                                           color: Colors.purple,
                                                           gradient: LinearGradient(
@@ -1564,6 +1652,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                       const SizedBox(width: 16),
                                                       Expanded(
                                                         child: _BorrowCard(
+                                                          grossBorrowHeadline:
+                                                              stats['grossBorrowHeadline'],
                                                           totalBorrowHeadline:
                                                               stats['totalBorrowHeadline'],
                                                           totalBorrowed:
@@ -1600,26 +1690,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                   ),
                                                 ],
                                                                       );
-                                                                    },
-                                                                  );
-                                                                },
-                                                              );
-                                                            },
-                                                          );
-                                                        },
-                                                      );
-                                                    },
-                                                  );
-                                                },
-                                              );
-                                            },
-                                          );
-                                        },
-                                      );
-                                    },
-                                  );
-                                },
-                              );
                             },
                           );
                         },
@@ -2162,7 +2232,9 @@ class _AllTimeBorrowTotals {
 }
 
 class _BorrowCard extends StatelessWidget {
-  /// [totalBorrowHeadline] = period seller unpaid + period borrow-book "borrowed" (same date filter).
+  /// Gross borrow in selected period before subtracting recoveries.
+  final double grossBorrowHeadline;
+  /// Net borrow shown on card (gross borrow - seller dues recovered in same period).
   final double totalBorrowHeadline;
   final double totalBorrowed;
   final double totalLent;
@@ -2182,6 +2254,7 @@ class _BorrowCard extends StatelessWidget {
   final VoidCallback onTapUnpaidSalesRow;
 
   const _BorrowCard({
+    required this.grossBorrowHeadline,
     required this.totalBorrowHeadline,
     required this.totalBorrowed,
     required this.totalLent,
@@ -2228,13 +2301,26 @@ class _BorrowCard extends StatelessWidget {
             child: const Icon(Icons.account_balance, color: Colors.white, size: 24),
           ),
           const SizedBox(height: 16),
-          const Text(
-            'Total borrow',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-            ),
+          Row(
+            children: [
+              const Text(
+                'Total borrow',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Tooltip(
+                message: 'Net borrow after recoveries\nریکوری کے بعد باقی ادھار',
+                child: Icon(
+                  Icons.info_outline,
+                  size: 15,
+                  color: Colors.white.withOpacity(0.9),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 4),
           Text(
@@ -2257,11 +2343,21 @@ class _BorrowCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            'Not the same as all-time owed — see below. Tap row for seller list.',
+            'Net shown = gross borrow − recovered dues in this period.',
             style: TextStyle(
               color: Colors.white.withOpacity(0.72),
               fontSize: 10,
               fontWeight: FontWeight.w400,
+              height: 1.2,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Gross ${formatter.format(grossBorrowHeadline)} − recovered ${formatter.format(periodSellerDueRepayments)}',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.78),
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
               height: 1.2,
             ),
           ),
@@ -2933,6 +3029,59 @@ class _SalesChart extends StatelessWidget {
     required this.showProfit,
   });
 
+  Stream<({List<Sale> sales, List<Expense> expenses, double creditReductions})>
+      _chartDataStream(
+    SalesService salesService,
+    ExpenseService expenseService,
+    SellerService sellerService,
+  ) {
+    final controller = StreamController<
+        ({List<Sale> sales, List<Expense> expenses, double creditReductions})>.broadcast(
+      sync: true,
+    );
+
+    var sales = <Sale>[];
+    var expenses = <Expense>[];
+    var creditReductions = 0.0;
+
+    void emit() {
+      if (controller.isClosed) return;
+      controller.add((
+        sales: sales,
+        expenses: expenses,
+        creditReductions: creditReductions,
+      ));
+    }
+
+    final subs = <StreamSubscription<dynamic>>[
+      salesService.getSalesByDateRange(startDate, endDate).listen((value) {
+        sales = value;
+        emit();
+      }),
+      expenseService.getExpensesByDateRange(startDate, endDate).listen((value) {
+        expenses = value;
+        emit();
+      }),
+    ];
+
+    sellerService
+        .getTotalCreditReductionsByDateRange(startDate, endDate)
+        .then((value) {
+      creditReductions = value;
+      emit();
+    }).catchError((_) {});
+
+    emit();
+
+    controller.onCancel = () async {
+      for (final sub in subs) {
+        await sub.cancel();
+      }
+    };
+
+    return controller.stream;
+  }
+
   @override
   Widget build(BuildContext context) {
     final salesService = SalesService();
@@ -2941,18 +3090,12 @@ class _SalesChart extends StatelessWidget {
     final now = DateTime.now();
     final days = selectedDays ?? endDate.difference(startDate).inDays;
 
-    return StreamBuilder<List<Sale>>(
-      stream: salesService.getSalesByDateRange(startDate, endDate),
-      builder: (context, salesSnapshot) {
-        return StreamBuilder<List<Expense>>(
-          stream: expenseService.getExpensesByDateRange(startDate, endDate),
-          builder: (context, expensesSnapshot) {
-            return FutureBuilder<double>(
-              future: sellerService.getTotalCreditReductionsByDateRange(startDate, endDate),
-              builder: (context, creditReductionsSnapshot) {
-                final sales = salesSnapshot.data ?? [];
-                final expenses = expensesSnapshot.data ?? [];
-                final totalCreditReductions = creditReductionsSnapshot.data ?? 0.0;
+    return StreamBuilder<({List<Sale> sales, List<Expense> expenses, double creditReductions})>(
+      stream: _chartDataStream(salesService, expenseService, sellerService),
+      builder: (context, snapshot) {
+        final sales = snapshot.data?.sales ?? <Sale>[];
+        final expenses = snapshot.data?.expenses ?? <Expense>[];
+        final totalCreditReductions = snapshot.data?.creditReductions ?? 0.0;
             // Group sales by date
             Map<String, double> dailySales = {};
             Map<String, double> dailyProfit = {};
@@ -3123,10 +3266,6 @@ class _SalesChart extends StatelessWidget {
                 ],
               ),
             );
-              },
-            );
-          },
-        );
       },
     );
   }

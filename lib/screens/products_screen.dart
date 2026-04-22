@@ -23,6 +23,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
   final ProductService _productService = ProductService();
   final CategoryService _categoryService = CategoryService();
   final SalesService _salesService = SalesService();
+  static const String _allCategoryPosPassword = '5202';
   final TextEditingController _searchController = TextEditingController();
   List<Product>? _searchResults;
   String _selectedCategory = 'All';
@@ -42,6 +43,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
   double? _profitPerItem;
   double? _totalProfit;
   bool _showAverageCalculator = false;
+  bool _isAllCategoryPosEnabled = false;
 
   _CategorySalesPreset _categorySalesPreset = _CategorySalesPreset.today;
   DateTimeRange? _categorySalesCustomRange;
@@ -198,6 +200,71 @@ class _ProductsScreenState extends State<ProductsScreen> {
     }
   }
 
+  Future<void> _unlockAllCategoryPosCard() async {
+    final passwordController = TextEditingController();
+    String? errorText;
+
+    final unlocked = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('Unlock POS (All Categories)'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Enter password to enable this section'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: passwordController,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  autofocus: true,
+                  onSubmitted: (value) {
+                    if (value == _allCategoryPosPassword) {
+                      Navigator.pop(context, true);
+                    } else {
+                      setDialogState(() => errorText = 'Incorrect password');
+                    }
+                  },
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    errorText: errorText,
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.lock),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  if (passwordController.text != _allCategoryPosPassword) {
+                    setDialogState(() => errorText = 'Incorrect password');
+                    return;
+                  }
+                  Navigator.pop(context, true);
+                },
+                child: const Text('Unlock'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (!mounted || unlocked != true) return;
+
+    setState(() {
+      _isAllCategoryPosEnabled = true;
+    });
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
@@ -329,7 +396,37 @@ class _ProductsScreenState extends State<ProductsScreen> {
             ),
           ),
           const Divider(height: 1),
-          _buildCategoryPosSalesCard(formatter),
+          _selectedCategory == 'All' && !_isAllCategoryPosEnabled
+              ? Container(
+                  width: double.infinity,
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.lock_outline, color: Colors.grey),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            'POS sales (all categories) is disabled',
+                            style: TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _unlockAllCategoryPosCard,
+                          child: const Text('Enter Password'),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : _buildCategoryPosSalesCard(formatter),
           const Divider(height: 1),
           // Average Calculator Section
           Container(

@@ -366,7 +366,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                           color: Colors.orange.shade700),
                                       const SizedBox(width: 8),
                                       Text(
-                                        'Due Payment',
+                                        'Current Outstanding',
                                         style: TextStyle(
                                           fontSize: 14,
                                           color: Colors.orange.shade900,
@@ -404,7 +404,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                           color: Colors.green.shade700),
                                       const SizedBox(width: 8),
                                       Text(
-                                        'Total Sale',
+                                        'Total Sale (net)',
                                         style: TextStyle(
                                           fontSize: 14,
                                           color: Colors.green.shade900,
@@ -571,8 +571,8 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                       Expanded(
                                         child: Text(
                                           hasDateRange
-                                              ? 'Due payments received$periodLabel'
-                                              : 'Due Payment',
+                                              ? 'Paid in period$periodLabel'
+                                              : 'Current Outstanding',
                                           style: TextStyle(
                                             fontSize: 14,
                                             color: Colors.orange.shade900,
@@ -629,7 +629,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                       child: Text(
                                         hasDateRange
                                             ? 'Sales$periodLabel'
-                                            : 'Total Sale',
+                                            : 'Total Sale (net)',
                                         style: TextStyle(
                                           fontSize: 14,
                                           color: Colors.green.shade900,
@@ -793,7 +793,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                     color: Colors.orange.shade700),
                                 const SizedBox(width: 8),
                                 Text(
-                                  'Due Payment',
+                                  'Current Outstanding',
                                   style: TextStyle(
                                     fontSize: 14,
                                     color: Colors.orange.shade900,
@@ -828,7 +828,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                     color: Colors.green.shade700),
                                 const SizedBox(width: 8),
                                 Text(
-                                  'Total Sale',
+                                  'Total Sale (net)',
                                   style: TextStyle(
                                     fontSize: 14,
                                     color: Colors.green.shade900,
@@ -1040,8 +1040,8 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                               Expanded(
                                                 child: Text(
                                                   hasDateRange
-                                                      ? 'Due payments received$periodLabel'
-                                                      : 'Due Payment',
+                                                      ? 'Paid in period$periodLabel'
+                                                      : 'Current Outstanding',
                                                   style: TextStyle(
                                                     fontSize: 14,
                                                     color:
@@ -1572,32 +1572,32 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         decoration: const pw.BoxDecoration(color: PdfColors.grey300),
         children: [
           pw.Padding(
-            padding: const pw.EdgeInsets.all(6),
-            child: pw.Text('Date', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            padding: const pw.EdgeInsets.all(5),
+            child: pw.Text('Date/Time', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(6),
-            child: pw.Text('Type', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            padding: const pw.EdgeInsets.all(5),
+            child: pw.Text('Type', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(6),
-            child: pw.Text('Sale ID', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            padding: const pw.EdgeInsets.all(5),
+            child: pw.Text('ID', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(6),
-            child: pw.Text('Sale Amount', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            padding: const pw.EdgeInsets.all(5),
+            child: pw.Text('Sale', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(6),
-            child: pw.Text('Paid', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            padding: const pw.EdgeInsets.all(5),
+            child: pw.Text('Paid', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(6),
-            child: pw.Text('Due', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            padding: const pw.EdgeInsets.all(5),
+            child: pw.Text('Due', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(6),
-            child: pw.Text('Ref', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            padding: const pw.EdgeInsets.all(5),
+            child: pw.Text('Ref/Note', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
         ],
       ),
@@ -1636,32 +1636,32 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             decoration: const pw.BoxDecoration(color: PdfColors.green50),
             children: [
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text('Payment', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text('Payment', style: pw.TextStyle(fontSize: 8.5, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text('-', style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text('-', style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text('-', style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text('-', style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(_currencyFormatter.format(saleAmount), style: pw.TextStyle(fontSize: 9, color: PdfColors.green800)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(_currencyFormatter.format(saleAmount), style: pw.TextStyle(fontSize: 8.5, color: PdfColors.green800)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text('Applied to dues', style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text('Applied to dues', style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 8.5)),
               ),
             ],
           ),
@@ -1674,32 +1674,32 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           pw.TableRow(
             children: [
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text('Sale', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text('Sale', style: pw.TextStyle(fontSize: 8.5, fontWeight: pw.FontWeight.bold)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(saleId.length >= 8 ? saleId.substring(0, 8).toUpperCase() : saleId, style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(saleId.length >= 8 ? saleId.substring(0, 8).toUpperCase() : saleId, style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(_currencyFormatter.format(saleAmount), style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(_currencyFormatter.format(saleAmount), style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(_currencyFormatter.format(amountPaid), style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(_currencyFormatter.format(amountPaid), style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(_currencyFormatter.format(duePayment), style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(_currencyFormatter.format(duePayment), style: const pw.TextStyle(fontSize: 8.5)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(6),
-                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 9)),
+                padding: const pw.EdgeInsets.all(5),
+                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 8.5)),
               ),
             ],
           ),
@@ -1726,6 +1726,11 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                 pw.SizedBox(height: 6),
                 pw.Text(
                   'Sales and payments in chronological order. "Payment" = manual payment received (reduces due).',
+                  style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                ),
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  'Legend: Paid = paid toward this sale | Due = new due/pending | Payment row = due payment recovery',
                   style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
                 ),
               ],
@@ -2231,9 +2236,12 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     }
     return ListView.builder(
       padding: const EdgeInsets.all(16),
-      itemCount: _paginatedSellerHistory.length + 1,
+      itemCount: _paginatedSellerHistory.length + 2,
       itemBuilder: (context, index) {
-        if (index == _paginatedSellerHistory.length) {
+        if (index == 0) {
+          return _buildSalesHistoryLegendCard();
+        }
+        if (index == _paginatedSellerHistory.length + 1) {
           if (_paginatedSellerHistoryLoadingMore) {
             return const Padding(
               padding: EdgeInsets.symmetric(vertical: 16),
@@ -2263,7 +2271,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           );
         }
         return _salesHistoryListCard(
-            context, _paginatedSellerHistory[index]);
+            context, _paginatedSellerHistory[index - 1]);
       },
     );
   }
@@ -2310,9 +2318,12 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
 
         return ListView.builder(
           padding: const EdgeInsets.all(16),
-          itemCount: history.length + (showRecentCapHint ? 1 : 0),
+          itemCount: history.length + (showRecentCapHint ? 1 : 0) + 1,
           itemBuilder: (context, index) {
-            if (showRecentCapHint && index == 0) {
+            if (index == 0) {
+              return _buildSalesHistoryLegendCard();
+            }
+            if (showRecentCapHint && index == 1) {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: Material(
@@ -2342,11 +2353,86 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                 ),
               );
             }
-            final record = history[showRecentCapHint ? index - 1 : index];
+            final record = history[showRecentCapHint ? index - 2 : index - 1];
             return _salesHistoryListCard(context, record);
           },
         );
       },
+    );
+  }
+
+  Widget _buildSalesHistoryLegendCard() {
+    Widget legendItem({
+      required Color background,
+      required Color border,
+      required Color text,
+      required String label,
+    }) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: border),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: text,
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Material(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'History Legend',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue.shade900,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  legendItem(
+                    background: Colors.blue.shade100,
+                    border: Colors.blue.shade300,
+                    text: Colors.blue.shade900,
+                    label: 'Paid Toward This Sale',
+                  ),
+                  legendItem(
+                    background: Colors.orange.shade100,
+                    border: Colors.orange.shade300,
+                    text: Colors.orange.shade900,
+                    label: 'New Due / Pending',
+                  ),
+                  legendItem(
+                    background: Colors.green.shade100,
+                    border: Colors.green.shade300,
+                    text: Colors.green.shade900,
+                    label: 'Due Payment Recovery',
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -2511,12 +2597,21 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                         style: const TextStyle(fontSize: 14),
                       ),
                       SelectableText(
-                        'Amount Paid: ${_currencyFormatter.format(amountPaid)}',
+                        'Paid Toward This Sale: ${_currencyFormatter.format(amountPaid)}',
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.grey[700],
                         ),
                       ),
+                      if (duePayment > 0)
+                        SelectableText(
+                          'New Due From This Sale: ${_currencyFormatter.format(duePayment)}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.orange.shade700,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                     ],
                     if (referenceNumber != null && referenceNumber.isNotEmpty)
                       Padding(
@@ -2589,8 +2684,8 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           padding: const EdgeInsets.only(top: 8),
           child: Text(
             isPaymentRecord
-                ? 'Payment applied to due sales'
-                : 'Tap to view order details',
+                ? 'Due payment record (applies to older unpaid sales)'
+                : 'Sale record (shows this bill only)',
             style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
           ),
         ),
@@ -2602,7 +2697,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Payment of ${_currencyFormatter.format(amountPaid)} applied to due sales.',
+                        'Payment of ${_currencyFormatter.format(amountPaid)} applied to previous unpaid sales (oldest first).',
                         style: const TextStyle(fontSize: 14),
                       ),
                       if (referenceNumber != null && referenceNumber.isNotEmpty)
@@ -3631,11 +3726,14 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     final TextEditingController referenceController = TextEditingController();
     final formKey = GlobalKey<FormState>();
     DateTime? selectedDate = DateTime.now();
+    final openDueFuture = _sellerService.fetchOpenDueHistoryDocs(widget.seller.id);
 
     showDialog(
       context: context,
       builder: (dialogContext) {
         bool isSaving = false;
+        bool paySpecificInvoice = false;
+        String? selectedOpenDueDocId;
         return StatefulBuilder(
           builder: (context, setDialogState) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -3672,6 +3770,76 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       return null;
                     },
                   ),
+                  const SizedBox(height: 16),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Pay specific invoice'),
+                    subtitle: Text(
+                      paySpecificInvoice
+                          ? 'Payment will be applied only to selected sale'
+                          : 'Payment follows oldest-due-first allocation',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                    ),
+                    value: paySpecificInvoice,
+                    onChanged: (v) {
+                      setDialogState(() {
+                        paySpecificInvoice = v;
+                        if (!v) selectedOpenDueDocId = null;
+                      });
+                    },
+                  ),
+                  if (paySpecificInvoice) ...[
+                    const SizedBox(height: 8),
+                    FutureBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+                      future: openDueFuture,
+                      builder: (context, dueSnapshot) {
+                        if (dueSnapshot.connectionState != ConnectionState.done) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8),
+                            child: LinearProgressIndicator(minHeight: 2),
+                          );
+                        }
+                        final openRows = dueSnapshot.data ?? const [];
+                        if (openRows.isEmpty) {
+                          return Text(
+                            'No open due invoices found.',
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                          );
+                        }
+                        return DropdownButtonFormField<String>(
+                          value: selectedOpenDueDocId,
+                          decoration: const InputDecoration(
+                            labelText: 'Select invoice *',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.receipt_long),
+                          ),
+                          items: openRows.map((doc) {
+                            final data = doc.data();
+                            final saleId = (data['saleId'] as String?) ?? '';
+                            final due = (data['duePayment'] ?? 0).toDouble();
+                            final shortId = saleId.length >= 8
+                                ? saleId.substring(0, 8).toUpperCase()
+                                : saleId.toUpperCase();
+                            return DropdownMenuItem<String>(
+                              value: doc.id,
+                              child: Text('Sale #$shortId  •  Due ${_currencyFormatter.format(due)}'),
+                            );
+                          }).toList(),
+                          onChanged: (v) {
+                            setDialogState(() {
+                              selectedOpenDueDocId = v;
+                            });
+                          },
+                          validator: (v) {
+                            if (paySpecificInvoice && (v == null || v.isEmpty)) {
+                              return 'Please select an invoice';
+                            }
+                            return null;
+                          },
+                        );
+                      },
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   InkWell(
                     onTap: () async {
@@ -3735,19 +3903,51 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     final referenceNumber = referenceController.text.trim();
                     final saleId = const Uuid().v4();
                     final paymentDate = selectedDate!;
-
-                    // One seller_history read + batched due updates (avoids N sequential writes).
-                    final applyResult =
-                        await _sellerService.applyPaymentToDuePaymentsWithMetrics(
-                      widget.seller.id,
-                      amount,
-                      prioritizeBillsWithSaleDateSameDayAs: paymentDate,
+                    final openDueRows = await openDueFuture;
+                    final totalDue = openDueRows.fold<double>(
+                      0.0,
+                      (sum, d) => sum + (d.data()['duePayment'] ?? 0).toDouble(),
                     );
-                    final totalDue = applyResult.totalOpenDueBefore;
-                    final remainingPayment = applyResult.remainingPayment;
-                    
-                    // Calculate how much was applied to dues
-                    final amountAppliedToDues = amount - remainingPayment;
+
+                    double remainingPayment = amount;
+                    double amountAppliedToDues = 0.0;
+
+                    if (paySpecificInvoice && selectedOpenDueDocId != null) {
+                      final targetRef = FirebaseFirestore.instance
+                          .collection('seller_history')
+                          .doc(selectedOpenDueDocId);
+                      final targetSnap = await targetRef.get();
+                      if (!targetSnap.exists || targetSnap.data() == null) {
+                        throw Exception('Selected invoice not found');
+                      }
+                      final target = targetSnap.data()!;
+                      final targetSellerId = target['sellerId'] as String?;
+                      if (targetSellerId != widget.seller.id) {
+                        throw Exception('Selected invoice does not belong to this seller');
+                      }
+                      final currentDue = (target['duePayment'] ?? 0).toDouble();
+                      if (currentDue <= 0) {
+                        throw Exception('Selected invoice is already cleared');
+                      }
+                      amountAppliedToDues =
+                          amount < currentDue ? amount : currentDue;
+                      remainingPayment = amount - amountAppliedToDues;
+                      await targetRef.update({
+                        'duePayment': currentDue - amountAppliedToDues,
+                        'amountPaid':
+                            (target['amountPaid'] ?? 0).toDouble() + amountAppliedToDues,
+                      });
+                    } else {
+                      // One seller_history read + batched due updates (avoids N sequential writes).
+                      final applyResult = await _sellerService
+                          .applyPaymentToDuePaymentsWithMetrics(
+                        widget.seller.id,
+                        amount,
+                        prioritizeBillsWithSaleDateSameDayAs: paymentDate,
+                      );
+                      remainingPayment = applyResult.remainingPayment;
+                      amountAppliedToDues = amount - remainingPayment;
+                    }
                     
                     // If there's remaining payment after clearing all dues, it becomes credit
                     double creditAmount = 0.0;
@@ -3822,6 +4022,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                                 if (amountAppliedToDues > 0.001)
                                   Text(
                                     'Applied to dues: ${_currencyFormatter.format(amountAppliedToDues)}',
+                                  ),
+                                if (paySpecificInvoice)
+                                  const Text(
+                                    'Mode: Specific invoice payment',
                                   ),
                                 if (creditAmount > 0.001)
                                   Text(

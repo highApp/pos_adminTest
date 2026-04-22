@@ -58,11 +58,13 @@ class TodaySellerDueSummary {
     required this.sellerId,
     required this.sellerName,
     required this.remainingDue,
+    required this.paidInPeriod,
   });
 
   final String sellerId;
   final String sellerName;
   final double remainingDue;
+  final double paidInPeriod;
 }
 
 /// Borrow + real seller profit for the dashboard date filter, computed in one pass (one Firestore round-trip set).
@@ -89,6 +91,50 @@ Stream<Object?> _mergeStreams(Stream<QuerySnapshot> a, Stream<QuerySnapshot> b) 
   }
   a.listen(onData);
   b.listen(onData);
+  return controller.stream;
+}
+
+/// Combine latest values from two streams and emit only after both are available.
+Stream<R> _combineLatest2<A, B, R>(
+  Stream<A> a,
+  Stream<B> b,
+  R Function(A aValue, B bValue) combiner,
+) {
+  final controller = StreamController<R>.broadcast(sync: true);
+  A? latestA;
+  B? latestB;
+  var hasA = false;
+  var hasB = false;
+
+  void emitIfReady() {
+    if (!hasA || !hasB || controller.isClosed) return;
+    controller.add(combiner(latestA as A, latestB as B));
+  }
+
+  late final StreamSubscription<A> subA;
+  late final StreamSubscription<B> subB;
+
+  subA = a.listen(
+    (value) {
+      latestA = value;
+      hasA = true;
+      emitIfReady();
+    },
+    onError: controller.addError,
+  );
+  subB = b.listen(
+    (value) {
+      latestB = value;
+      hasB = true;
+      emitIfReady();
+    },
+    onError: controller.addError,
+  );
+
+  controller.onCancel = () async {
+    await subA.cancel();
+    await subB.cancel();
+  };
   return controller.stream;
 }
 
@@ -1087,6 +1133,92 @@ class SellerService {
     }
   }
 
+  /// Repairs clear recovery mismatches for manual payment sales.
+  ///
+  /// Safe scope only:
+  /// - Uses `seller_history` rows identified as payment records.
+  /// - Matches by `saleId` to `sales/{saleId}`.
+  /// - Updates only when sale looks like a manual payment (`total == 0`, no items),
+  ///   and `recoveryBalance` is lower than paid amount in history.
+  ///
+  /// Returns summary counters for admin UI.
+  Future<Map<String, int>> repairManualPaymentRecoveryMismatches() async {
+    int paymentRows = 0;
+    int salesMatched = 0;
+    int updated = 0;
+    int skipped = 0;
+    int missingSales = 0;
+
+    final paymentBySaleId = <String, double>{};
+    final history = await _firestore.collection('seller_history').get();
+    for (final doc in history.docs) {
+      final data = doc.data();
+      final saleId = data['saleId'] as String?;
+      if (saleId == null || saleId.isEmpty) continue;
+
+      final recordType = data['recordType'] as String?;
+      final isManual = data['isManual'] == true;
+      final duePayment = (data['duePayment'] ?? 0).toDouble();
+      final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+      final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+      final isPayment = recordType == 'payment' ||
+          (isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0);
+      if (!isPayment || amountPaid <= 0) continue;
+
+      paymentRows++;
+      paymentBySaleId[saleId] = (paymentBySaleId[saleId] ?? 0.0) + amountPaid;
+    }
+
+    final saleIds = paymentBySaleId.keys.toList();
+    const chunkSize = 30;
+    for (var i = 0; i < saleIds.length; i += chunkSize) {
+      final chunk = saleIds.sublist(
+        i,
+        i + chunkSize > saleIds.length ? saleIds.length : i + chunkSize,
+      );
+      final salesSnap = await _firestore
+          .collection('sales')
+          .where(FieldPath.documentId, whereIn: chunk)
+          .get();
+
+      final foundIds = <String>{};
+      for (final saleDoc in salesSnap.docs) {
+        foundIds.add(saleDoc.id);
+        salesMatched++;
+        final sale = saleDoc.data();
+        final total = (sale['total'] ?? 0).toDouble();
+        final items = sale['items'] as List<dynamic>?;
+        final currentRecovery = (sale['recoveryBalance'] ?? 0).toDouble();
+        final expectedRecovery = paymentBySaleId[saleDoc.id] ?? 0.0;
+
+        final looksManualPaymentSale = total == 0 && (items == null || items.isEmpty);
+        if (!looksManualPaymentSale) {
+          skipped++;
+          continue;
+        }
+        if (expectedRecovery <= currentRecovery) {
+          skipped++;
+          continue;
+        }
+
+        await saleDoc.reference.update({
+          'recoveryBalance': expectedRecovery,
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+        updated++;
+      }
+      missingSales += chunk.where((id) => !foundIds.contains(id)).length;
+    }
+
+    return {
+      'paymentRows': paymentRows,
+      'salesMatched': salesMatched,
+      'updated': updated,
+      'skipped': skipped,
+      'missingSales': missingSales,
+    };
+  }
+
   // Get total due amount for a seller from seller_history table
   Future<double> getTotalDueAmountForSeller(String sellerId) async {
     final result = await getTotalDueAndReferenceForSeller(sellerId);
@@ -1354,28 +1486,52 @@ class SellerService {
     final startDay =
         DateTime(rangeStart.year, rangeStart.month, rangeStart.day);
     final endDay = DateTime(rangeEnd.year, rangeEnd.month, rangeEnd.day);
-    final source =
-        _firestore.collection('seller_history').snapshots().map((snapshot) {
+    final startIso = startDay.toIso8601String();
+    final endIso = DateTime(
+      endDay.year,
+      endDay.month,
+      endDay.day,
+      23,
+      59,
+      59,
+      999,
+    ).toIso8601String();
+
+    final periodSource = _firestore
+        .collection('seller_history')
+        .where('saleDate', isGreaterThanOrEqualTo: startIso)
+        .where('saleDate', isLessThanOrEqualTo: endIso)
+        .snapshots()
+        .map((snapshot) {
       double periodOutstanding = 0.0;
-      double allTimeOutstanding = 0.0;
-      for (var doc in snapshot.docs) {
-        final data = doc.data();
-        final duePayment = (data['duePayment'] ?? 0).toDouble();
-        if (duePayment <= 0) continue;
-        allTimeOutstanding += duePayment;
-        final parsed = _parseFirestoreDate(data['saleDate']);
-        if (parsed == null) continue;
-        final saleDay = DateTime(parsed.year, parsed.month, parsed.day);
-        if (saleDay.isBefore(startDay) || saleDay.isAfter(endDay)) {
-          continue;
-        }
-        periodOutstanding += duePayment;
+      for (final doc in snapshot.docs) {
+        final duePayment = (doc.data()['duePayment'] ?? 0).toDouble();
+        if (duePayment > 0) periodOutstanding += duePayment;
       }
-      return UnpaidSalesDashboardTotals(
+      return periodOutstanding;
+    });
+
+    final allTimeSource = _firestore
+        .collection('seller_history')
+        .where('duePayment', isGreaterThan: 0)
+        .orderBy('duePayment')
+        .snapshots()
+        .map((snapshot) {
+      double allTimeOutstanding = 0.0;
+      for (final doc in snapshot.docs) {
+        allTimeOutstanding += (doc.data()['duePayment'] ?? 0).toDouble();
+      }
+      return allTimeOutstanding;
+    });
+
+    final source = _combineLatest2<double, double, UnpaidSalesDashboardTotals>(
+      periodSource,
+      allTimeSource,
+      (periodOutstanding, allTimeOutstanding) => UnpaidSalesDashboardTotals(
         periodOutstandingFromHistory: periodOutstanding,
         allTimeOutstandingFromHistory: allTimeOutstanding,
-      );
-    });
+      ),
+    );
     // Do not throttle: _throttleStream drops events within the window, so reduced `duePayment`
     // after a payment could be missed and "Total borrow" / unpaid would stay wrong until
     // another unrelated write (or a long wait). This map is cheap (one snapshot iteration).
@@ -1393,10 +1549,9 @@ class SellerService {
           DateTime(rangeStart.year, rangeStart.month, rangeStart.day);
       final endDay = DateTime(rangeEnd.year, rangeEnd.month, rangeEnd.day);
       final bySeller = <String, double>{};
+      final paidInPeriodBySeller = <String, double>{};
       for (final doc in snapshot.docs) {
         final data = doc.data();
-        final due = (data['duePayment'] ?? 0).toDouble();
-        if (due <= 0) continue;
         final parsed = _parseFirestoreDate(data['saleDate']);
         if (parsed == null) continue;
         final saleDay = DateTime(parsed.year, parsed.month, parsed.day);
@@ -1405,7 +1560,22 @@ class SellerService {
         }
         final sellerId = data['sellerId'] as String?;
         if (sellerId == null || sellerId.isEmpty) continue;
-        bySeller[sellerId] = (bySeller[sellerId] ?? 0) + due;
+
+        final due = (data['duePayment'] ?? 0).toDouble();
+        if (due > 0) {
+          bySeller[sellerId] = (bySeller[sellerId] ?? 0) + due;
+        }
+
+        final recordType = data['recordType'] as String?;
+        final isManual = data['isManual'] == true;
+        final amountPaid = (data['amountPaid'] ?? 0).toDouble();
+        final saleAmount = (data['saleAmount'] ?? 0).toDouble();
+        final isPaymentRecord = recordType == 'payment' ||
+            (isManual && due == 0 && amountPaid == saleAmount && saleAmount > 0);
+        if (isPaymentRecord && amountPaid > 0) {
+          paidInPeriodBySeller[sellerId] =
+              (paidInPeriodBySeller[sellerId] ?? 0) + amountPaid;
+        }
       }
       final sortedIds = bySeller.keys.toList()
         ..sort((a, b) => bySeller[b]!.compareTo(bySeller[a]!));
@@ -1416,6 +1586,7 @@ class SellerService {
           sellerId: id,
           sellerName: seller?.name ?? 'Unknown seller',
           remainingDue: bySeller[id]!,
+          paidInPeriod: paidInPeriodBySeller[id] ?? 0.0,
         ));
       }
       return out;
@@ -1607,9 +1778,22 @@ class SellerService {
     DateTime startDate,
     DateTime endDate,
   ) {
+    final startPad = startDate.subtract(const Duration(seconds: 1));
+    final endPad = endDate.add(const Duration(seconds: 1));
+    final loIso = startPad.toIso8601String();
+    final hiIso = endPad.toIso8601String();
+
     final source = _mergeStreams(
-      _firestore.collection('sales').snapshots(),
-      _firestore.collection('seller_history').snapshots(),
+      _firestore
+          .collection('sales')
+          .where('createdAt', isGreaterThan: loIso)
+          .where('createdAt', isLessThan: hiIso)
+          .snapshots(),
+      _firestore
+          .collection('seller_history')
+          .where('saleDate', isGreaterThan: loIso)
+          .where('saleDate', isLessThan: hiIso)
+          .snapshots(),
     ).asyncMap((_) => _computeDashboardSellerProfitsForRange(startDate, endDate));
     return _throttleStream(source, _dashboardProfitThrottle);
   }

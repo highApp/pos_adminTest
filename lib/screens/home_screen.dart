@@ -31,6 +31,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  int _productsScreenSession = 0;
   final _authService = AuthService();
   UserRole? _userRole;
   String? _userName;
@@ -180,6 +181,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _setSelectedIndex(int index) {
+    if (_selectedIndex == index) return;
+    setState(() {
+      // Recreate Products screen when user leaves it, so protected sections lock again.
+      if (_selectedIndex == 1 && index != 1) {
+        _productsScreenSession++;
+      }
+      _selectedIndex = index;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -297,7 +309,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }),
           SwitchTabIntent: CallbackAction<SwitchTabIntent>(onInvoke: (SwitchTabIntent intent) {
             if (intent.index >= 0 && intent.index <= maxTabIndex) {
-              setState(() => _selectedIndex = intent.index);
+              _setSelectedIndex(intent.index);
             }
             return null;
           }),
@@ -352,8 +364,8 @@ class _HomeScreenState extends State<HomeScreen> {
           const SyncStatusBanner(),
           Expanded(
             child: _selectedIndex == 0
-                ? ReminderAlertListener(child: _screens[_selectedIndex])
-                : _screens[_selectedIndex],
+                ? ReminderAlertListener(child: _buildScreen(_selectedIndex))
+                : _buildScreen(_selectedIndex),
           ),
         ],
       ),
@@ -821,9 +833,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         selected: isSelected,
         onTap: () {
-          setState(() {
-            _selectedIndex = item.index;
-          });
+          _setSelectedIndex(item.index);
           Navigator.pop(context);
         },
         shape: RoundedRectangleBorder(
@@ -835,6 +845,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _refreshUserRole() async {
     await _loadUserInfo();
+  }
+
+  Widget _buildScreen(int index) {
+    if (index == 1) {
+      return ProductsScreen(key: ValueKey('products_$_productsScreenSession'));
+    }
+    return _screens[index];
   }
 }
 

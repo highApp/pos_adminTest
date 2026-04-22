@@ -709,6 +709,24 @@ class _POSScreenState extends State<POSScreen> {
         // For seller cases, change/recovery will be calculated after credit is applied
       }
 
+      // Refresh seller open due at checkout time so stale dialog state does not
+      // misclassify extra cash as change instead of recovery.
+      double effectiveExistingDueTotal = existingDueTotal;
+      if (sellerId != null) {
+        try {
+          final openDueDocs = await SellerService()
+              .fetchOpenDueHistoryDocs(sellerId)
+              .timeout(_applySellerDuesTimeout);
+          final liveDue = openDueDocs.fold<double>(
+            0.0,
+            (sum, d) => sum + (d.data()['duePayment'] ?? 0).toDouble(),
+          );
+          effectiveExistingDueTotal = liveDue;
+        } catch (_) {
+          // Keep dialog-provided value as fallback.
+        }
+      }
+
       // Create sale (recoveryBalance and creditUsed will be updated after seller processing if needed)
       // amountPaid should only include cash (credit is handled separately in seller processing)
       Sale sale = Sale(
@@ -733,7 +751,7 @@ class _POSScreenState extends State<POSScreen> {
         creditUsed: 0.0, // Will be set during seller processing
         saleType: cart.saleType == SaleType.wholesale ? 'wholesale' : 'regular',
         description: description,
-        existingDueTotalAtSale: sellerId != null ? existingDueTotal : 0.0,
+        existingDueTotalAtSale: sellerId != null ? effectiveExistingDueTotal : 0.0,
       );
 
       // Save seller history and due payment if seller is selected
@@ -769,14 +787,14 @@ class _POSScreenState extends State<POSScreen> {
         debugPrint('Seller ID: $sellerId');
         debugPrint('Amount Paid (Cash): $amountPaid');
         debugPrint('Cart Total: ${cart.totalAmount}');
-        debugPrint('Existing Due Total: $existingDueTotal');
+        debugPrint('Existing Due Total (effective): $effectiveExistingDueTotal');
         
         final sellerService = SellerService();
         
         // Check for credit balance first
         double creditBalance = await sellerService
             .getCreditBalance(sellerId)
-            .timeout(_checkoutFirestoreTimeout, onTimeout: () => 0.0);
+            .timeout(_applySellerDuesTimeout);
         debugPrint('Credit Balance: $creditBalance');
         
         // Calculate how payment is applied:
@@ -795,7 +813,7 @@ class _POSScreenState extends State<POSScreen> {
         if (creditBalance > 0 && remainingSaleAfterCash > 0) {
           creditUsed = await sellerService
               .useCreditBalance(sellerId, remainingSaleAfterCash)
-              .timeout(_checkoutFirestoreTimeout, onTimeout: () => 0.0);
+              .timeout(_applySellerDuesTimeout);
         }
 
         final cashForExistingDues = amountPaid > cashForCurrentSale
@@ -816,7 +834,7 @@ class _POSScreenState extends State<POSScreen> {
         double actualChange = 0.0;
         
         // Apply cash payment to existing due payments (if any)
-        if (cashForExistingDues > 0 && existingDueTotal > 0) {
+        if (cashForExistingDues > 0 && effectiveExistingDueTotal > 0) {
           debugPrint('Applying $cashForExistingDues to existing due payments...');
           // Same Firestore updates as Seller history → Add manual due payment. On failure we abort
           // checkout so the sale is not saved while old dues are still wrong on the server.
@@ -875,54 +893,47 @@ class _POSScreenState extends State<POSScreen> {
           );
         }
         
-        // Save seller history for current sale (with total payment including credit)
-        try {
-          await sellerService
-              .addSellerHistory(
-            sellerId: sellerId,
-            saleId: sale.id,
-            saleAmount: sale.total,
-            amountPaid: totalAmountForCurrentSale,
-            saleDate: sale.createdAt,
-            description: description,
-          )
-              .timeout(_checkoutFirestoreTimeout);
-          debugPrint('✓ Seller history saved for seller: $sellerId');
-          debugPrint('  - Sale Amount: ${sale.total}');
-          debugPrint('  - Amount Paid (credit + cash): $totalAmountForCurrentSale');
-          debugPrint('  - Due Payment: ${sale.total > totalAmountForCurrentSale ? sale.total - totalAmountForCurrentSale : 0.0}');
-        } catch (e) {
-          debugPrint('✗ Error saving seller history: $e');
-        }
+        // Save seller history for current sale (with total payment including credit).
+        // Strict mode: do not continue checkout if this write fails.
+        await sellerService
+            .addSellerHistory(
+          sellerId: sellerId,
+          saleId: sale.id,
+          saleAmount: sale.total,
+          amountPaid: totalAmountForCurrentSale,
+          saleDate: sale.createdAt,
+          description: description,
+        )
+            .timeout(_applySellerDuesTimeout);
+        debugPrint('✓ Seller history saved for seller: $sellerId');
+        debugPrint('  - Sale Amount: ${sale.total}');
+        debugPrint('  - Amount Paid (credit + cash): $totalAmountForCurrentSale');
+        debugPrint('  - Due Payment: ${sale.total > totalAmountForCurrentSale ? sale.total - totalAmountForCurrentSale : 0.0}');
         
         // Check if current sale has remaining due (after credit and cash payment applied)
         if (totalAmountForCurrentSale < cart.totalAmount) {
           final dueAmount = cart.totalAmount - totalAmountForCurrentSale;
           debugPrint('Partial payment for current sale. Due amount: $dueAmount');
           
-          try {
-            final duePayment = DuePayment(
-              id: const Uuid().v4(),
-              sellerId: sellerId,
-              saleId: sale.id,
-              totalAmount: cart.totalAmount,
-              amountPaid: totalAmountForCurrentSale,
-              dueAmount: dueAmount,
-              createdAt: DateTime.now(),
-              isPaid: false,
-            );
-            
-            debugPrint('Creating due payment with ID: ${duePayment.id}');
-            debugPrint('Due payment data: ${duePayment.toMap()}');
-            
-            await sellerService
-                .addDuePayment(duePayment)
-                .timeout(_checkoutFirestoreTimeout);
-            debugPrint('✓ Due payment saved successfully: Rs. $dueAmount for seller: $sellerId');
-          } catch (e) {
-            debugPrint('✗ ERROR saving due payment: $e');
-            debugPrint('Error stack trace: ${StackTrace.current}');
-          }
+          final duePayment = DuePayment(
+            id: const Uuid().v4(),
+            sellerId: sellerId,
+            saleId: sale.id,
+            totalAmount: cart.totalAmount,
+            amountPaid: totalAmountForCurrentSale,
+            dueAmount: dueAmount,
+            createdAt: DateTime.now(),
+            isPaid: false,
+          );
+          
+          debugPrint('Creating due payment with ID: ${duePayment.id}');
+          debugPrint('Due payment data: ${duePayment.toMap()}');
+          
+          // Strict mode: do not continue checkout if this write fails.
+          await sellerService
+              .addDuePayment(duePayment)
+              .timeout(_applySellerDuesTimeout);
+          debugPrint('✓ Due payment saved successfully: Rs. $dueAmount for seller: $sellerId');
         } else {
           debugPrint('Current sale fully paid.');
         }
@@ -940,7 +951,7 @@ class _POSScreenState extends State<POSScreen> {
                     'sellerId': sellerId,
                     'amountPaid': amountPaid,
                     'cartTotal': cart.totalAmount,
-                    'existingDueTotal': existingDueTotal,
+                    'existingDueTotal': effectiveExistingDueTotal,
                     'description': description,
                     'saleDate': sale.createdAt.toIso8601String(),
                   }
@@ -970,7 +981,7 @@ class _POSScreenState extends State<POSScreen> {
             ),
           );
         }
-        _showReceiptDialog(context, sale, existingDueTotal);
+        _showReceiptDialog(context, sale, effectiveExistingDueTotal);
       }
     } catch (e) {
       if (context.mounted) {
@@ -988,7 +999,12 @@ class _POSScreenState extends State<POSScreen> {
     
     // Load current language preference
     final printerService = PrinterService();
-    String selectedLanguage = await printerService.getReceiptLanguage();
+    String selectedLanguage = 'en';
+    try {
+      selectedLanguage = await printerService.getReceiptLanguage();
+    } catch (e) {
+      debugPrint('Could not read receipt language, using default: $e');
+    }
 
     showDialog(
       context: context,
@@ -4300,11 +4316,16 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                     amountPaid > cashForCurrentSale
                                 ? amountPaid - cashForCurrentSale
                                 : 0.0;
-                            
-                            // Calculate remaining due after payment
-                            final remainingExistingDue = amountAfterCurrentSale > 0
-                                ? (totalExistingDue - amountAfterCurrentSale).clamp(0.0, totalExistingDue)
-                                : totalExistingDue;
+                            final cashAppliedToExistingDue = amountAfterCurrentSale > 0
+                                ? (amountAfterCurrentSale < totalExistingDue
+                                    ? amountAfterCurrentSale
+                                    : totalExistingDue)
+                                : 0.0;
+                            final changeAfterDues = amountAfterCurrentSale > cashAppliedToExistingDue
+                                ? amountAfterCurrentSale - cashAppliedToExistingDue
+                                : 0.0;
+                            final remainingExistingDue = (totalExistingDue - cashAppliedToExistingDue)
+                                .clamp(0.0, totalExistingDue);
                             
                             // Remaining due from current sale after cash + credit.
                             final newDueFromCurrentSale = saleAmountAfterCredit;
@@ -4366,11 +4387,25 @@ class _PaymentDialogState extends State<_PaymentDialog> {
 
                     final newDueAmount = saleAmountAfterCredit;
 
-                    // Subtotal = remaining current sale after cash+credit + existing dues.
+                    // Subtotal = current sale + existing dues before applying payment.
                     final subtotal = saleAmountAfterCredit + existingDueTotal;
-                    
-                    // Total Due After Payment = Remaining Sale (after credit) + Existing Due + New Due (if partial payment)
-                    final totalDueAfterPayment = saleAmountAfterCredit + existingDueTotal + newDueAmount;
+                    final amountAfterCurrentSale = hasAmountEntered &&
+                            amountPaid > cashForCurrentSale
+                        ? amountPaid - cashForCurrentSale
+                        : 0.0;
+                    final cashAppliedToExistingDue = amountAfterCurrentSale > 0
+                        ? (amountAfterCurrentSale < existingDueTotal
+                            ? amountAfterCurrentSale
+                            : existingDueTotal)
+                        : 0.0;
+                    final changeAfterDues = amountAfterCurrentSale > cashAppliedToExistingDue
+                        ? amountAfterCurrentSale - cashAppliedToExistingDue
+                        : 0.0;
+                    final remainingExistingDue = (existingDueTotal - cashAppliedToExistingDue)
+                        .clamp(0.0, existingDueTotal);
+
+                    // Total due after payment = remaining previous due + new due from this sale.
+                    final totalDueAfterPayment = remainingExistingDue + newDueAmount;
                     
                     return Container(
                       padding: const EdgeInsets.all(16),
@@ -4407,6 +4442,88 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                               ),
                             ],
                           ),
+                          if (hasAmountEntered) ...[
+                            const SizedBox(height: 8),
+                            const Divider(height: 16),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    'Payment to Current Sale:',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.blue.shade900,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  formatter.format(cashForCurrentSale + creditApplied),
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (cashAppliedToExistingDue > 0) ...[
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      'Applied to Previous Due:',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.orange.shade900,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    formatter.format(cashAppliedToExistingDue),
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.orange.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                            if (changeAfterDues > 0) ...[
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      'Change Returned:',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.green.shade900,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    formatter.format(changeAfterDues),
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.green.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
                           // Only show "Total Due After This Payment" if amount is entered
                           if (hasAmountEntered && newDueAmount > 0) ...[
                             const SizedBox(height: 8),
@@ -4808,24 +4925,44 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                         ? 0.0
                         : _duePayments.fold(0.0, (sum, p) => sum + p.dueAmount);
                     
-                    // IMPORTANT: Credit balance is automatically applied to current sale
-                    // So the effective sale amount after credit = saleAmount - creditBalance
-                    final saleAmountAfterCredit = _selectedSeller != null
-                        ? (widget.cart.totalAmount - creditBalance).clamp(0.0, widget.cart.totalAmount)
-                        : widget.cart.totalAmount;
-                    
-                    // If seller is selected, calculate change based on subtotal (current sale after credit + existing due)
-                    // Otherwise, calculate change based on current sale only
-                    final totalToPay = _selectedSeller != null
-                        ? saleAmountAfterCredit + existingDueTotal
-                        : widget.cart.totalAmount;
-                    
-                    final change = amountPaid - totalToPay;
-                    
-                    // New due amount only applies to current sale (after credit), not existing dues
-                    final newDueAmount = _selectedSeller != null && amountPaid < saleAmountAfterCredit
-                        ? saleAmountAfterCredit - amountPaid
+                    final cashForCurrentSale = hasAmountEntered
+                        ? (amountPaid < widget.cart.totalAmount
+                            ? amountPaid
+                            : widget.cart.totalAmount)
                         : 0.0;
+                    final remainingSaleAfterCash =
+                        (widget.cart.totalAmount - cashForCurrentSale)
+                            .clamp(0.0, widget.cart.totalAmount);
+                    final creditApplied = _selectedSeller != null
+                        ? (creditBalance < remainingSaleAfterCash
+                            ? creditBalance
+                            : remainingSaleAfterCash)
+                        : 0.0;
+                    final newDueAmount = _selectedSeller != null
+                        ? (remainingSaleAfterCash - creditApplied).clamp(
+                            0.0,
+                            widget.cart.totalAmount,
+                          )
+                        : (widget.cart.totalAmount - amountPaid)
+                            .clamp(0.0, widget.cart.totalAmount);
+
+                    final cashForExistingDues =
+                        _selectedSeller != null && amountPaid > cashForCurrentSale
+                            ? amountPaid - cashForCurrentSale
+                            : 0.0;
+                    final willGoToRecovery = cashForExistingDues > 0
+                        ? (cashForExistingDues < existingDueTotal
+                            ? cashForExistingDues
+                            : existingDueTotal)
+                        : 0.0;
+                    final change = _selectedSeller != null
+                        ? (cashForExistingDues - willGoToRecovery).clamp(
+                            0.0,
+                            cashForExistingDues,
+                          )
+                        : (amountPaid - widget.cart.totalAmount)
+                            .clamp(0.0, amountPaid);
+                    final borrow = newDueAmount;
                     
                     return Column(
                       children: [
@@ -4833,11 +4970,13 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                     Container(
                           padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                            color: change >= 0 ? Colors.blue.shade50 : Colors.orange.shade50,
+                            color: borrow > 0
+                                ? Colors.orange.shade50
+                                : Colors.blue.shade50,
                             borderRadius: BorderRadius.circular(12),
-                            border: change >= 0 
-                                ? Border.all(color: Colors.blue.shade200!)
-                                : Border.all(color: Colors.orange.shade200!),
+                            border: borrow > 0
+                                ? Border.all(color: Colors.orange.shade200!)
+                                : Border.all(color: Colors.blue.shade200!),
                       ),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -4845,32 +4984,80 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                               Row(
                                 children: [
                                   Icon(
-                                    change >= 0 ? Icons.money_off : Icons.account_balance_wallet,
-                                    color: change >= 0 ? Colors.blue.shade700 : Colors.orange.shade700,
+                                    borrow > 0
+                                        ? Icons.account_balance_wallet
+                                        : Icons.money_off,
+                                    color: borrow > 0
+                                        ? Colors.orange.shade700
+                                        : Colors.blue.shade700,
                                     size: 20,
                                   ),
                                   const SizedBox(width: 8),
                                   Text(
-                                    change >= 0 ? 'Change' : 'Borrow',
+                                    borrow > 0 ? 'Borrow' : 'Change',
                                     style: TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.w600,
-                                      color: change >= 0 ? Colors.blue.shade900 : Colors.orange.shade900,
+                                      color: borrow > 0
+                                          ? Colors.orange.shade900
+                                          : Colors.blue.shade900,
                                     ),
                                   ),
                                 ],
                               ),
                               Text(
-                                formatter.format(change.abs()),
+                                formatter.format(
+                                  borrow > 0 ? borrow : change,
+                                ),
                                 style: TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.bold,
-                                  color: change >= 0 ? Colors.blue.shade700 : Colors.orange.shade700,
+                                  color: borrow > 0
+                                      ? Colors.orange.shade700
+                                      : Colors.blue.shade700,
                                 ),
                               ),
                             ],
                           ),
                         ),
+                        if (_selectedSeller != null && existingDueTotal > 0 && hasAmountEntered) ...[
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.green.shade200!),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(Icons.trending_up, color: Colors.green.shade700, size: 18),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Will go to recovery:',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.green.shade900,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Text(
+                                  formatter.format(willGoToRecovery),
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                         // New due payment preview (if seller selected and partial payment on current sale)
                         if (_selectedSeller != null && newDueAmount > 0) ...[
                           const SizedBox(height: 12),
@@ -4958,6 +5145,16 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text('Insufficient amount. Select a seller to allow partial payment.'),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                          return;
+                        }
+
+                        if (_selectedSeller != null && _isLoadingDuePayments) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please wait, seller due is still loading...'),
                               behavior: SnackBarBehavior.floating,
                             ),
                           );
