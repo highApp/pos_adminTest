@@ -22,6 +22,45 @@ import '../services/receipt_pdf_service.dart';
 import '../utils/pdf_download_stub.dart' if (dart.library.html) '../utils/pdf_download_web.dart' as pdf_download;
 import '../widgets/sync_status_banner.dart';
 
+/// Cash kept by shop + wallet credit (POS); excludes change returned. Fallback: seller_history row.
+double _ledgerTotalCreditForSalePdf(
+  Map<String, dynamic>? saleData,
+  double historyRowAmountPaid,
+) {
+  if (saleData == null) return historyRowAmountPaid;
+  final cash = (saleData['amountPaid'] as num?)?.toDouble() ?? 0.0;
+  final change = (saleData['change'] as num?)?.toDouble() ?? 0.0;
+  final creditUsed = (saleData['creditUsed'] as num?)?.toDouble() ?? 0.0;
+  // Sale doc: amountPaid = physical cash; change = returned; creditUsed = seller wallet
+  return (cash - change + creditUsed) > 0 ? (cash - change + creditUsed) : historyRowAmountPaid;
+}
+
+/// Loads `sales/{id}` for ledger PDF (full cash, recovery, change). Chunked for Firestore limits.
+Future<Map<String, Map<String, dynamic>>> _loadSalesMapForPdf(
+  Set<String> saleIds,
+) async {
+  final map = <String, Map<String, dynamic>>{};
+  final ids = saleIds.toList();
+  const batch = 30;
+  for (var i = 0; i < ids.length; i += batch) {
+    final end = (i + batch) > ids.length ? ids.length : i + batch;
+    final chunk = ids.sublist(i, end);
+    if (chunk.isEmpty) break;
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('sales')
+          .where(FieldPath.documentId, whereIn: chunk)
+          .get();
+      for (final d in snap.docs) {
+        map[d.id] = d.data();
+      }
+    } catch (_) {
+      // batch failed — PDF falls back to seller_history amounts
+    }
+  }
+  return map;
+}
+
 class SellerHistoryScreen extends StatefulWidget {
   final Seller seller;
   /// If set, open this dialog after the screen loads. 'due_payment' | 'manual_sale'
@@ -1242,6 +1281,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     return isManual && duePayment == 0 && amountPaid == saleAmount && saleAmount > 0;
   }
 
+  bool _isRecoveryReversalRecord(Map<String, dynamic> data) {
+    return data['recordType'] == 'recovery_reversal';
+  }
+
   /// Filter seller_history docs to those whose saleDate is within [startDate, endDate].
   List<QueryDocumentSnapshot> _filterRecordsByDateRange(
     List<QueryDocumentSnapshot> docs,
@@ -1528,16 +1571,28 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
   Future<Uint8List> _generateSellerHistoryPdf(List<Map<String, dynamic>> history) async {
     final pdf = pw.Document();
     final dateRangeStr = '${_dateFormatter.format(_startDate!)} - ${_dateFormatter.format(_endDate!)}';
+    final generatedAt = DateTime.now();
 
-    // Overall (all time) for this seller
-    final overallSales = await _sellerService.getTotalSalesForSeller(widget.seller.id);
-    final overallOutstandingDue = await _sellerService.getTotalDueAmountForSeller(widget.seller.id);
-    final overallTotalPaymentsReceived = await _sellerService.getTotalPaymentsReceivedForSeller(widget.seller.id);
+    // Live total due — same as "Current Outstanding" on the seller screen.
+    final currentTotalDue =
+        await _sellerService.getTotalDueAmountForSeller(widget.seller.id);
 
-    // Resolve record types for existing data: isManual=true can be Sale (manual sale) or Payment (manual due payment)
-    final resolvedTypes = <int, bool>{}; // index -> isPayment (true = payment, false = sale)
+    // Resolve record type for existing data:
+    // - payment: manual due payment recovery
+    // - recovery_reversal: due re-opened after return refund
+    // - sale: normal sale/manual sale
+    final resolvedTypes = <int, String>{}; // index -> 'payment' | 'recovery_reversal' | 'sale'
     for (int i = 0; i < history.length; i++) {
       final record = history[i];
+      final recordType = (record['recordType'] as String?)?.trim();
+      if (recordType == 'recovery_reversal') {
+        resolvedTypes[i] = 'recovery_reversal';
+        continue;
+      }
+      if (recordType == 'payment') {
+        resolvedTypes[i] = 'payment';
+        continue;
+      }
       final isManual = record['isManual'] == true;
       final duePayment = (record['duePayment'] ?? 0).toDouble();
       final saleAmount = (record['saleAmount'] ?? 0).toDouble();
@@ -1560,48 +1615,149 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         }
       }
 
-      resolvedTypes[i] = isPayment;
+      resolvedTypes[i] = isPayment ? 'payment' : 'sale';
     }
+
+    // POS stores full cash + recovery on [sales/]; seller_history [amountPaid] is only to this bill.
+    final saleIdsForPdf = <String>{};
+    for (int i = 0; i < history.length; i++) {
+      final rt = resolvedTypes[i] ?? 'sale';
+      if (rt == 'payment' || rt == 'recovery_reversal') continue;
+      final sid = history[i]['saleId'] as String? ?? '';
+      if (sid.isNotEmpty) saleIdsForPdf.add(sid);
+    }
+    final salesByIdForPdf = await _loadSalesMapForPdf(saleIdsForPdf);
+
+    // Unclamped net of all rows in this PDF (Debit − Credit) so that:
+    // opening + net = current total due (same as app Current Outstanding).
+    double netFromRangeRows = 0.0;
+    for (int i = 0; i < history.length; i++) {
+      final record = history[i];
+      final saleAmount = (record['saleAmount'] ?? 0).toDouble();
+      final amountPaid = (record['amountPaid'] ?? 0).toDouble();
+      final duePayment = (record['duePayment'] ?? 0).toDouble();
+      final saleIdRow = record['saleId'] as String? ?? '';
+      final rowType = resolvedTypes[i] ?? 'sale';
+      final isPaymentRecord = rowType == 'payment';
+      final isRecoveryReversal = rowType == 'recovery_reversal';
+      if (isPaymentRecord || isRecoveryReversal) {
+        final debitAmount = isRecoveryReversal ? duePayment : 0.0;
+        final creditAmount = isRecoveryReversal ? 0.0 : saleAmount;
+        netFromRangeRows += debitAmount - creditAmount;
+      } else {
+        final sd = saleIdRow.isNotEmpty ? salesByIdForPdf[saleIdRow] : null;
+        final credit = _ledgerTotalCreditForSalePdf(sd, amountPaid);
+        netFromRangeRows += saleAmount - credit;
+      }
+    }
+    final correctOpening = currentTotalDue - netFromRangeRows;
 
     double totalSalesAmount = 0;
     double totalPaymentsReceived = 0;
     double totalDueOutstanding = 0;
+    double totalLedgerDebit = 0;
+    double totalLedgerCredit = 0;
+
+    double runningDueBalance = correctOpening;
 
     final tableRows = <pw.TableRow>[
       pw.TableRow(
         decoration: const pw.BoxDecoration(color: PdfColors.grey300),
         children: [
           pw.Padding(
-            padding: const pw.EdgeInsets.all(5),
+            padding: const pw.EdgeInsets.all(4),
             child: pw.Text('Date/Time', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(5),
-            child: pw.Text('Type', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text('V.Type', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(5),
+            padding: const pw.EdgeInsets.all(4),
             child: pw.Text('ID', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(5),
-            child: pw.Text('Sale', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text('Description', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(5),
-            child: pw.Text('Paid', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text('Debit', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(5),
-            child: pw.Text('Due', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text('Credit', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
-            padding: const pw.EdgeInsets.all(5),
-            child: pw.Text('Ref/Note', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text('Balance', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
         ],
       ),
     ];
+
+    // Opening balance row (previous dues before selected range)
+    tableRows.add(
+      pw.TableRow(
+        decoration: const pw.BoxDecoration(color: PdfColors.grey100),
+        children: [
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              _dateFormatter.format(_startDate!),
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              'OB',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text('-', style: const pw.TextStyle(fontSize: 8)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              'Opening balance',
+              style: const pw.TextStyle(fontSize: 8),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: correctOpening > 0
+                ? pw.Text(
+                    _currencyFormatter.format(correctOpening),
+                    style: const pw.TextStyle(fontSize: 8),
+                  )
+                : pw.Text('-', style: const pw.TextStyle(fontSize: 8)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text('-', style: const pw.TextStyle(fontSize: 8)),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              '${_currencyFormatter.format(runningDueBalance)} DR',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
 
     for (int i = 0; i < history.length; i++) {
       final record = history[i];
@@ -1622,90 +1778,316 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           parts.add(saleDescriptionPdf.trim());
         }
         if (parts.isEmpty) return '-';
-        return parts.join(' · ');
+        // ASCII separator: PDF built-in fonts often fail on middle-dot / em-dash.
+        return parts.join(' | ');
       }
 
       final refCellText = pdfRefCell();
-      final isPaymentRecord = resolvedTypes[i] ?? false;
+      final rowType = resolvedTypes[i] ?? 'sale';
+      final isPaymentRecord = rowType == 'payment';
+      final isRecoveryReversal = rowType == 'recovery_reversal';
+      final shortSaleId = saleId.length >= 8 ? saleId.substring(0, 8).toUpperCase() : saleId;
 
-      if (isPaymentRecord) {
-        // Manual payment (money received to reduce dues)
-        totalPaymentsReceived += saleAmount;
+      if (isPaymentRecord || isRecoveryReversal) {
+        // Ledger style:
+        // - Payment: credit (reduces due)
+        // - Recovery reversal: debit (re-opens due after return)
+        final debitAmount = isRecoveryReversal ? duePayment : 0.0;
+        final creditAmount = isRecoveryReversal ? 0.0 : saleAmount;
+        totalLedgerDebit += debitAmount;
+        totalLedgerCredit += creditAmount;
+        runningDueBalance += debitAmount;
+        runningDueBalance -= creditAmount;
+
+        if (isPaymentRecord) totalPaymentsReceived += saleAmount;
+
         tableRows.add(
           pw.TableRow(
-            decoration: const pw.BoxDecoration(color: PdfColors.green50),
+            decoration: pw.BoxDecoration(
+              color: isRecoveryReversal ? PdfColors.orange50 : PdfColors.green50,
+            ),
             children: [
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 8)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text('Payment', style: pw.TextStyle(fontSize: 8.5, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  isRecoveryReversal ? 'RV' : 'CR',
+                  style: pw.TextStyle(
+                    fontSize: 8,
+                    fontWeight: pw.FontWeight.bold,
+                    color: isRecoveryReversal ? PdfColors.orange800 : PdfColors.green800,
+                  ),
+                ),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text('-', style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(isRecoveryReversal ? shortSaleId : '-', style: const pw.TextStyle(fontSize: 8)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text('-', style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  isRecoveryReversal ? 'Recovery reversed due to return' : 'Applied to dues',
+                  style: const pw.TextStyle(fontSize: 8),
+                ),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(_currencyFormatter.format(saleAmount), style: pw.TextStyle(fontSize: 8.5, color: PdfColors.green800)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  debitAmount > 0 ? _currencyFormatter.format(debitAmount) : '-',
+                  style: pw.TextStyle(
+                    fontSize: 8,
+                    color: isRecoveryReversal ? PdfColors.orange800 : PdfColors.green800,
+                  ),
+                ),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text('Applied to dues', style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  creditAmount > 0 ? _currencyFormatter.format(creditAmount) : '-',
+                  style: const pw.TextStyle(fontSize: 8),
+                ),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  '${_currencyFormatter.format(runningDueBalance)} DR',
+                  style: const pw.TextStyle(fontSize: 8),
+                ),
               ),
             ],
           ),
         );
       } else {
-        // SALE record
+        // Sale ledger model:
+        // - Debit = full sale amount (new charge)
+        // - Credit = full amount paid in this sale entry
+        //   (if paid > sale, extra payment naturally reduces old dues here).
+        final balanceBeforeSale = runningDueBalance;
+        final debitAmount = saleAmount;
+        final saleDoc = saleId.isNotEmpty ? salesByIdForPdf[saleId] : null;
+        // Full payment reducing due: cash (minus change) + wallet; matches POS receipt.
+        final creditOnCurrentSale = _ledgerTotalCreditForSalePdf(saleDoc, amountPaid);
+        final totalOwedBeforeCash = balanceBeforeSale + saleAmount;
+        // "This bill" / old split: from sales doc when POS (accurate for pay 20 on bill 5).
+        final fullCashIn = (saleDoc?['amountPaid'] as num?)?.toDouble() ?? 0.0;
+        final changeOut = (saleDoc?['change'] as num?)?.toDouble() ?? 0.0;
+        final creditWallet = (saleDoc?['creditUsed'] as num?)?.toDouble() ?? 0.0;
+        final recoveryToOld = (saleDoc?['recoveryBalance'] as num?)?.toDouble() ?? 0.0;
+        // seller_history [amountPaid] = total applied to *this* sale line (cash + credit to bill).
+        final toThisBill = amountPaid;
+        final returnedAmt = (saleDoc?['returnedAmount'] as num?)?.toDouble() ?? 0.0;
+        final grossBill = (saleDoc?['total'] as num?)?.toDouble() ?? 0.0;
+        final descChildren = <pw.Widget>[];
+        if (refCellText == '-') {
+          final line1 =
+              'Prev ${balanceBeforeSale < 0 ? _currencyFormatter.format(0) : _currencyFormatter.format(balanceBeforeSale)} + Bill ${_currencyFormatter.format(saleAmount)} = Total ${_currencyFormatter.format(totalOwedBeforeCash)}';
+          descChildren.add(pw.Text(line1, style: const pw.TextStyle(fontSize: 7)));
+          if (creditOnCurrentSale > 0 || fullCashIn > 0 || creditWallet > 0) {
+            final parts = <String>[];
+            if (fullCashIn > 0) {
+              parts.add(
+                changeOut > 0
+                    ? 'Cash in ${_currencyFormatter.format(fullCashIn)} (back ${_currencyFormatter.format(changeOut)})'
+                    : 'Cash in ${_currencyFormatter.format(fullCashIn)}',
+              );
+            }
+            if (creditWallet > 0) {
+              parts.add('Wallet ${_currencyFormatter.format(creditWallet)}');
+            }
+            if (parts.isEmpty && toThisBill > 0) {
+              parts.add('To this bill ${_currencyFormatter.format(toThisBill)}');
+            }
+            final head = parts.isNotEmpty ? parts.join(' | ') : '';
+            final split = recoveryToOld > 0
+                ? 'This bill: ${_currencyFormatter.format(toThisBill)} | Old dues: ${_currencyFormatter.format(recoveryToOld)}'
+                : 'This bill: ${_currencyFormatter.format(toThisBill)}';
+            descChildren.add(
+              pw.Text(
+                head.isNotEmpty ? '$head - $split' : split,
+                style: const pw.TextStyle(fontSize: 6),
+              ),
+            );
+          }
+        } else {
+          final extra = creditOnCurrentSale > 0
+              ? (fullCashIn > 0
+                  ? 'Cash ${_currencyFormatter.format(fullCashIn)} (this bill ${_currencyFormatter.format(toThisBill)}'
+                      '${recoveryToOld > 0 ? ' | old ${_currencyFormatter.format(recoveryToOld)}' : ''})'
+                  : 'This bill ${_currencyFormatter.format(toThisBill)}'
+                      '${recoveryToOld > 0 ? ' | old ${_currencyFormatter.format(recoveryToOld)}' : ''}')
+              : '';
+          descChildren.add(pw.Text(refCellText, style: const pw.TextStyle(fontSize: 7)));
+          if (creditOnCurrentSale > 0) {
+            descChildren.add(
+              pw.Text(
+                'Prev+Bill Total ${_currencyFormatter.format(totalOwedBeforeCash)}. $extra',
+                style: const pw.TextStyle(fontSize: 6),
+              ),
+            );
+          } else {
+            descChildren.add(
+              pw.Text(
+                'Prev+Bill Total ${_currencyFormatter.format(totalOwedBeforeCash)}',
+                style: const pw.TextStyle(fontSize: 6),
+              ),
+            );
+          }
+        }
+        if (returnedAmt > 0.001) {
+          final retNote = grossBill > 0
+              ? 'Item return: ${_currencyFormatter.format(returnedAmt)} (gross was ${_currencyFormatter.format(grossBill)}; Debit column is net after return)'
+              : 'Item return: ${_currencyFormatter.format(returnedAmt)} (Debit column is net after return)';
+          descChildren.add(
+            pw.Text(
+              retNote,
+              style: const pw.TextStyle(fontSize: 6),
+            ),
+          );
+        }
+        final saleDescCell = pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          mainAxisSize: pw.MainAxisSize.min,
+          children: descChildren,
+        );
+        totalLedgerDebit += debitAmount;
+        totalLedgerCredit += creditOnCurrentSale;
+        runningDueBalance += debitAmount;
+        runningDueBalance -= creditOnCurrentSale;
+
         totalSalesAmount += saleAmount;
         totalDueOutstanding += duePayment;
         tableRows.add(
           pw.TableRow(
             children: [
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(saleDate != null ? _dateTimeFormatter.format(saleDate) : '-', style: const pw.TextStyle(fontSize: 8)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text('Sale', style: pw.TextStyle(fontSize: 8.5, fontWeight: pw.FontWeight.bold)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text('SV', style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(saleId.length >= 8 ? saleId.substring(0, 8).toUpperCase() : saleId, style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(shortSaleId, style: const pw.TextStyle(fontSize: 8)),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(_currencyFormatter.format(saleAmount), style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: saleDescCell,
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(_currencyFormatter.format(amountPaid), style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  debitAmount > 0 ? _currencyFormatter.format(debitAmount) : '-',
+                  style: const pw.TextStyle(fontSize: 8),
+                ),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(_currencyFormatter.format(duePayment), style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  creditOnCurrentSale > 0
+                      ? _currencyFormatter.format(creditOnCurrentSale)
+                      : '-',
+                  style: const pw.TextStyle(fontSize: 8),
+                ),
               ),
               pw.Padding(
-                padding: const pw.EdgeInsets.all(5),
-                child: pw.Text(refCellText, style: const pw.TextStyle(fontSize: 8.5)),
+                padding: const pw.EdgeInsets.all(4),
+                child: pw.Text(
+                  '${_currencyFormatter.format(runningDueBalance)} DR',
+                  style: const pw.TextStyle(fontSize: 8),
+                ),
               ),
             ],
           ),
         );
       }
     }
+
+    // Must match app "Current Outstanding" (same source as [currentTotalDue]).
+    final closingDueFromLedger = currentTotalDue;
+
+    // Explicit final balance row at end of ledger entries.
+    tableRows.add(
+      pw.TableRow(
+        decoration: pw.BoxDecoration(color: PdfColors.grey300),
+        children: [
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              _dateTimeFormatter.format(DateTime.now()),
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              'FB',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              '-',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              'Final Balance',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              '-',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+              '-',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+          pw.Padding(
+            padding: const pw.EdgeInsets.all(4),
+            child: pw.Text(
+                  '${_currencyFormatter.format(closingDueFromLedger)} DR',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
 
     pdf.addPage(
       pw.MultiPage(
@@ -1717,20 +2099,21 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                pw.Text('Seller History Report (Date-wise)', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
-                pw.SizedBox(height: 4),
-                pw.Text(widget.seller.name, style: const pw.TextStyle(fontSize: 14)),
-                pw.Text('Date Range: $dateRangeStr', style: const pw.TextStyle(fontSize: 10)),
+                pw.Text('Seller Ledger History', style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 2),
+                pw.Text('Party: ${widget.seller.name}', style: const pw.TextStyle(fontSize: 11)),
                 if (widget.seller.phone != null && widget.seller.phone!.isNotEmpty)
                   pw.Text('Phone: ${widget.seller.phone}', style: const pw.TextStyle(fontSize: 10)),
-                pw.SizedBox(height: 6),
+                pw.Text('From: ${_dateFormatter.format(_startDate!)}    To: ${_dateFormatter.format(_endDate!)}', style: const pw.TextStyle(fontSize: 10)),
+                pw.Text('Generated: ${_dateTimeFormatter.format(generatedAt)}', style: const pw.TextStyle(fontSize: 9)),
+                pw.SizedBox(height: 4),
                 pw.Text(
-                  'Sales and payments in chronological order. "Payment" = manual payment received (reduces due).',
+                  'Ledger: Debit +, Credit -. Opening = Current Outstanding − net of rows below, so the last row matches the app total due.',
                   style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
                 ),
                 pw.SizedBox(height: 4),
                 pw.Text(
-                  'Legend: Paid = paid toward this sale | Due = new due/pending | Payment row = due payment recovery',
+                  'Legend: OB = Opening | SV = Sale (Debit = net bill after any item return) | CR = Payment | RV = Recovery reversed if return refund re-opened old due',
                   style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
                 ),
               ],
@@ -1741,59 +2124,18 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             border: pw.TableBorder.all(color: PdfColors.grey400),
             columnWidths: {
               0: const pw.FlexColumnWidth(1.8),
-              1: const pw.FlexColumnWidth(1),
+              1: const pw.FlexColumnWidth(0.8),
               2: const pw.FlexColumnWidth(1.1),
-              3: const pw.FlexColumnWidth(1.2),
+              3: const pw.FlexColumnWidth(2.1),
               4: const pw.FlexColumnWidth(1.2),
               5: const pw.FlexColumnWidth(1.2),
-              6: const pw.FlexColumnWidth(1),
+              6: const pw.FlexColumnWidth(1.2),
             },
             children: tableRows,
           ),
-          pw.SizedBox(height: 16),
-          pw.Container(
-            padding: const pw.EdgeInsets.all(12),
-            decoration: pw.BoxDecoration(
-              color: PdfColors.grey200,
-              borderRadius: pw.BorderRadius.circular(4),
-            ),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text('Summary (Filtered Period)', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)),
-                pw.SizedBox(height: 8),
-                pw.Text('Total Sales: ${_currencyFormatter.format(totalSalesAmount)}', style: const pw.TextStyle(fontSize: 11)),
-                pw.Text('Total Payments Received: ${_currencyFormatter.format(totalPaymentsReceived)}', style: const pw.TextStyle(fontSize: 11)),
-                pw.Text('Outstanding Due: ${_currencyFormatter.format(totalDueOutstanding)}', style: const pw.TextStyle(fontSize: 11)),
-                pw.SizedBox(height: 4),
-                pw.Text(
-                  'Note: Sales show current Paid/Due. Payments are separate entries when you add manual payment.',
-                  style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
-                ),
-              ],
-            ),
-          ),
-          pw.SizedBox(height: 12),
-          pw.Container(
-            padding: const pw.EdgeInsets.all(12),
-            decoration: pw.BoxDecoration(
-              color: PdfColors.blue50,
-              borderRadius: pw.BorderRadius.circular(4),
-            ),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text('Overall (All time)', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)),
-                pw.SizedBox(height: 8),
-                pw.Text('Overall Sales: ${_currencyFormatter.format(overallSales)}', style: const pw.TextStyle(fontSize: 11)),
-                pw.Text('Overall Outstanding Due: ${_currencyFormatter.format(overallOutstandingDue)}', style: const pw.TextStyle(fontSize: 11)),
-                pw.Text('Overall Total Payments Received: ${_currencyFormatter.format(overallTotalPaymentsReceived)}', style: const pw.TextStyle(fontSize: 11)),
-              ],
-            ),
-          ),
           pw.SizedBox(height: 20),
           pw.Text(
-            'Generated on ${_dateTimeFormatter.format(DateTime.now())} | ARS Traders',
+            'Date Range: $dateRangeStr | ARS Traders',
             style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
           ),
         ],
@@ -2450,20 +2792,30 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
     final referenceNumber = record['referenceNumber'] as String?;
     final saleDescriptionNote = record['description'] as String?;
     final isManual = record['isManual'] == true;
-    final isPaymentRecord = record['recordType'] == 'payment';
+    final isRecoveryReversalRecord = _isRecoveryReversalRecord(record);
+    final isPaymentRecord = _isPaymentRecord(record);
+    final isPaymentLikeRecord = isPaymentRecord || isRecoveryReversalRecord;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: ExpansionTile(
         leading: CircleAvatar(
-          backgroundColor: isPaymentRecord || duePayment <= 0
-              ? Colors.green.shade100
-              : Colors.orange.shade100,
+          backgroundColor: isRecoveryReversalRecord
+              ? Colors.deepOrange.shade100
+              : (isPaymentLikeRecord || duePayment <= 0
+                  ? Colors.green.shade100
+                  : Colors.orange.shade100),
           child: Icon(
-            isPaymentRecord ? Icons.payment : (duePayment > 0 ? Icons.pending : Icons.check_circle),
-            color: isPaymentRecord || duePayment <= 0
-                ? Colors.green.shade700
-                : Colors.orange.shade700,
+            isRecoveryReversalRecord
+                ? Icons.assignment_return
+                : (isPaymentLikeRecord
+                    ? Icons.payment
+                    : (duePayment > 0 ? Icons.pending : Icons.check_circle)),
+            color: isRecoveryReversalRecord
+                ? Colors.deepOrange.shade700
+                : (isPaymentLikeRecord || duePayment <= 0
+                    ? Colors.green.shade700
+                    : Colors.orange.shade700),
           ),
         ),
         title: Column(
@@ -2474,8 +2826,10 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
               children: [
                 Expanded(
                   child: SelectableText(
-                    isPaymentRecord
-                        ? 'Payment'
+                    isPaymentLikeRecord
+                        ? (isRecoveryReversalRecord
+                            ? 'Recovery Reversal'
+                            : 'Payment')
                         : 'Sale #${saleId.substring(0, 8).toUpperCase()}',
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
@@ -2487,7 +2841,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (!isPaymentRecord) ...[
+                      if (!isPaymentLikeRecord) ...[
                         IconButton(
                           icon: const Icon(Icons.edit,
                               color: Colors.blue, size: 18),
@@ -2583,9 +2937,11 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (isPaymentRecord)
+                    if (isPaymentLikeRecord)
                       SelectableText(
-                        _currencyFormatter.format(amountPaid),
+                        _currencyFormatter.format(
+                          isRecoveryReversalRecord ? duePayment : amountPaid,
+                        ),
                         style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -2640,7 +2996,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       ),
                   ],
                 ),
-                if (duePayment > 0 && !isPaymentRecord)
+                if (duePayment > 0 && !isPaymentLikeRecord)
                   Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 6),
@@ -2658,21 +3014,29 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       ),
                     ),
                   )
-                else if (isPaymentRecord || duePayment <= 0)
+                else if (isPaymentLikeRecord || duePayment <= 0)
                   Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.green.shade50,
+                      color: isRecoveryReversalRecord
+                          ? Colors.deepOrange.shade50
+                          : Colors.green.shade50,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.green.shade200!),
+                      border: Border.all(
+                        color: isRecoveryReversalRecord
+                            ? Colors.deepOrange.shade200
+                            : Colors.green.shade200!,
+                      ),
                     ),
                     child: Text(
-                      'Paid',
+                      isRecoveryReversalRecord ? 'Re-opened Due' : 'Paid',
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
-                        color: Colors.green.shade700,
+                        color: isRecoveryReversalRecord
+                            ? Colors.deepOrange.shade700
+                            : Colors.green.shade700,
                       ),
                     ),
                   ),
@@ -2683,13 +3047,15 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 8),
           child: Text(
-            isPaymentRecord
-                ? 'Due payment record (applies to older unpaid sales)'
+            isPaymentLikeRecord
+                ? (isRecoveryReversalRecord
+                    ? 'Recovery reversal from item return (due re-opened)'
+                    : 'Due payment record (applies to older unpaid sales)')
                 : 'Sale record (shows this bill only)',
             style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
           ),
         ),
-        children: isPaymentRecord
+        children: isPaymentLikeRecord
             ? [
                 Padding(
                   padding: const EdgeInsets.all(16),
@@ -2697,7 +3063,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Payment of ${_currencyFormatter.format(amountPaid)} applied to previous unpaid sales (oldest first).',
+                        isRecoveryReversalRecord
+                            ? 'Return refund reversed recovered cash: ${_currencyFormatter.format(duePayment)} re-opened in outstanding due.'
+                            : 'Payment of ${_currencyFormatter.format(amountPaid)} applied to previous unpaid sales (oldest first).',
                         style: const TextStyle(fontSize: 14),
                       ),
                       if (referenceNumber != null && referenceNumber.isNotEmpty)

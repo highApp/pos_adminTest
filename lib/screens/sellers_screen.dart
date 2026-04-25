@@ -866,6 +866,21 @@ class _SellersScreenState extends State<SellersScreen> {
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.fingerprint, size: 14, color: Colors.grey),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: SelectableText(
+                              'Seller ID: ${seller.id}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                       if (seller.code != null)
                         Row(
                           children: [

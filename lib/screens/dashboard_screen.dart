@@ -1077,12 +1077,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // Track credit added from manual overpayments (when payment > due, excess becomes credit)
           totalCreditAdded += creditAddedFromOverpayment;
 
+          // Net recovery after returns:
+          // When items are returned and cash is handed back, recovery should not stay inflated.
+          // Reverse recovery by returned amount (capped at original recovery).
+          final netRecoveryAfterReturns =
+              (sale.recoveryBalance - sale.returnedAmount).clamp(0.0, double.infinity);
+
           // If "Today" is selected, also calculate today's revenue separately for breakdown
           if (_selectedDays == 0 && 
               sale.createdAt.isAfter(todayStart.subtract(const Duration(seconds: 1))) &&
               sale.createdAt.isBefore(todayEnd.add(const Duration(seconds: 1)))) {
             todayRevenue += saleRevenue;
-            todayRecoveryBalance += sale.recoveryBalance;
+            todayRecoveryBalance += netRecoveryAfterReturns;
             todayCreditUsed += netCreditUsed; // Use net credit used (after returns)
             todayCreditAdded += creditAddedFromOverpayment;
           }
@@ -1094,16 +1100,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // Only include recovery balance from actual sales (not borrow payments)
           // Recovery balance from sales represents money received from paying off due payments
           // This excludes borrow payments which have isBorrowPayment = true
-          totalRecoveryBalance += sale.recoveryBalance;
-          if (sale.recoveryBalance > 0) {
+          totalRecoveryBalance += netRecoveryAfterReturns;
+          if (netRecoveryAfterReturns > 0) {
             recoveryDetails.add({
               'saleId': sale.id,
               'sellerId': sale.sellerId,
-              'amount': sale.recoveryBalance,
+              'amount': netRecoveryAfterReturns,
               'createdAt': sale.createdAt,
             });
             // Repayment toward seller dues (manual payment or POS cash allocated to old bills).
-            periodSellerDueRepayments += sale.recoveryBalance;
+            periodSellerDueRepayments += netRecoveryAfterReturns;
           }
           // Track net credit balance used (after accounting for returns)
           totalCreditUsed += netCreditUsed;

@@ -217,7 +217,9 @@ class SalesService {
         totalProfit += sale.netProfit; // Use net profit (after returns)
         totalTransactions++; // Count only actual sales transactions
       }
-      totalRecoveryBalance += sale.recoveryBalance; // Track recovery balance separately (includes borrow payments)
+      final netRecoveryAfterReturns =
+          (sale.recoveryBalance - sale.returnedAmount).clamp(0.0, double.infinity);
+      totalRecoveryBalance += netRecoveryAfterReturns; // Net recovery after reversing cash-backed returns
     }
 
     // Calculate net revenue: Gross Revenue - Returns
@@ -292,6 +294,31 @@ class SalesService {
         // Update seller history (reduces due payment)
         await sellerService.updateSellerHistoryForReturn(sale.id, returnAmount);
         debugPrint('✓ Seller history updated for return: Rs. $returnAmount');
+
+        // If this sale had recovery toward old dues, and we refunded cash,
+        // re-open due so outstanding remains financially correct.
+        if (sale.recoveryBalance > 0) {
+          final returnedBeforeThisAction = (sale.returnedAmount - returnAmount).clamp(0.0, double.infinity);
+          final alreadyReversedRecovery =
+              returnedBeforeThisAction > sale.recoveryBalance
+                  ? sale.recoveryBalance
+                  : returnedBeforeThisAction;
+          final remainingRecoverableForReversal =
+              (sale.recoveryBalance - alreadyReversedRecovery).clamp(0.0, double.infinity);
+          final recoveryToReopen =
+              returnAmount > remainingRecoverableForReversal
+                  ? remainingRecoverableForReversal
+                  : returnAmount;
+          if (recoveryToReopen > 0) {
+            await sellerService.addRecoveryReversalDueEntry(
+              sellerId: sale.sellerId!,
+              saleId: sale.id,
+              amount: recoveryToReopen,
+              date: DateTime.now(),
+            );
+            debugPrint('✓ Re-opened seller due from recovery reversal: Rs. $recoveryToReopen');
+          }
+        }
         
         // Restore credit balance if credit was used in the original sale
         if (originalCreditUsed > 0 && sale.total > 0) {

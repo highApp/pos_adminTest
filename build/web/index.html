@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="ARS Traders - Web Admin Dashboard">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ARS Traders">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>ARS Traders - Web Admin</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/12.6.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.6.0/firebase-analytics-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.6.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.6.0/firebase-storage-compat.js"></script>
+  
+  <script>
+    // Sellers quick access: Cmd+Option+S / Ctrl+Alt+S — capture phase so Flutter can open dialog
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === 's' || e.key === 'S') && (e.metaKey || e.ctrlKey) && e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('sellers-quick-access'));
+      }
+    }, true);
+
+    // Error handling for script loading
+    window.addEventListener('error', function(e) {
+      console.error('Script loading error:', e.filename, e.message, e.lineno, e.colno);
+    }, true);
+
+    // Your web app's Firebase configuration
+  const firebaseConfig = {
+      apiKey: "AIzaSyA2uHnjmgxmfOsAy-WhoOFFnLqWsCZM95A",
+      authDomain: "ha-app-locker.firebaseapp.com",
+      projectId: "ha-app-locker",
+      storageBucket: "ha-app-locker.firebasestorage.app",
+      messagingSenderId: "192454194116",
+      appId: "1:192454194116:web:7deca409cbad5b2c84ea91",
+      measurementId: "G-DGZKRQ64PE"
+};
+    
+    // Initialize Firebase with error handling
+    try {
+      if (typeof firebase !== 'undefined') {
+        firebase.initializeApp(firebaseConfig);
+        console.log('Firebase initialized successfully');
+      } else {
+        console.error('Firebase SDK not loaded');
+      }
+    } catch (error) {
+      console.error('Firebase initialization error:', error);
+    }
+  </script>
+  
+  <!-- Web Bluetooth API for printer support -->
+  <script src="bluetooth_printer.js" onerror="console.error('Failed to load bluetooth_printer.js')"></script>
+  <!-- Web USB API for printer support -->
+  <script src="usb_printer.js" onerror="console.error('Failed to load usb_printer.js')"></script>
+  <script>
+    // Ensure functions are available on window
+    window.addEventListener('load', function() {
+      console.log('Page loaded, checking printer scripts...');
+      console.log('Bluetooth printer script loaded');
+      console.log('requestBluetoothDeviceWithCallback available:', typeof window.requestBluetoothDeviceWithCallback !== 'undefined');
+      console.log('USB printer script loaded');
+      console.log('isUsbAvailable available:', typeof window.isUsbAvailable !== 'undefined');
+    });
+  </script>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

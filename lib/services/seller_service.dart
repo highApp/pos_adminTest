@@ -344,6 +344,31 @@ class SellerService {
     await _firestore.collection('seller_history').add(data);
   }
 
+  /// Re-opens seller due when recovered cash is refunded back on item return.
+  /// This prevents losing money in outstanding due after return/refund.
+  Future<void> addRecoveryReversalDueEntry({
+    required String sellerId,
+    required String saleId,
+    required double amount,
+    DateTime? date,
+  }) async {
+    if (amount <= 0) return;
+    final when = date ?? DateTime.now();
+    final data = <String, dynamic>{
+      'sellerId': sellerId,
+      'saleId': '${saleId}_recovery_reversal_${const Uuid().v4()}',
+      'saleAmount': amount,
+      'amountPaid': 0.0,
+      'duePayment': amount,
+      'saleDate': when.toIso8601String(),
+      'createdAt': DateTime.now().toIso8601String(),
+      'recordType': 'recovery_reversal',
+      'description': 'Recovery reversed due to returned items',
+      'sourceSaleId': saleId,
+    };
+    await _firestore.collection('seller_history').add(data);
+  }
+
   // Update seller history when items are returned
   // This reduces the due payment by the return amount
   Future<void> updateSellerHistoryForReturn(String saleId, double returnAmount) async {
