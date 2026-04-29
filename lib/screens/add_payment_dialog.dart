@@ -59,7 +59,8 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
       context: context,
       initialDate: _paymentDate ?? DateTime.now(),
       firstDate: DateTime(2000),
-      lastDate: DateTime.now().add(const Duration(days: 365)),
+      // Payment date is "when buyer paid" — do not allow future dates.
+      lastDate: DateTime.now(),
     );
     if (picked != null && picked != _paymentDate) {
       setState(() {
@@ -75,6 +76,15 @@ class _AddPaymentDialogState extends State<AddPaymentDialog> {
           const SnackBar(
             content: Text('Please select payment date'),
             backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+      if (_paymentDate!.isAfter(DateTime.now())) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Payment date cannot be in the future'),
+            backgroundColor: Colors.red,
           ),
         );
         return;

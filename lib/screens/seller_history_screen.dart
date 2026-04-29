@@ -1645,9 +1645,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         final creditAmount = isRecoveryReversal ? 0.0 : saleAmount;
         netFromRangeRows += debitAmount - creditAmount;
       } else {
-        final sd = saleIdRow.isNotEmpty ? salesByIdForPdf[saleIdRow] : null;
-        final credit = _ledgerTotalCreditForSalePdf(sd, amountPaid);
-        netFromRangeRows += saleAmount - credit;
+        // Seller-facing due ledger:
+        // only the due added by this sale affects running balance.
+        netFromRangeRows += duePayment;
       }
     }
     final correctOpening = currentTotalDue - netFromRangeRows;
@@ -1682,11 +1682,11 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           ),
           pw.Padding(
             padding: const pw.EdgeInsets.all(4),
-            child: pw.Text('Debit', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+            child: pw.Text('New Due', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
             padding: const pw.EdgeInsets.all(4),
-            child: pw.Text('Credit', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
+            child: pw.Text('Payment', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9)),
           ),
           pw.Padding(
             padding: const pw.EdgeInsets.all(4),
@@ -1814,7 +1814,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
               pw.Padding(
                 padding: const pw.EdgeInsets.all(4),
                 child: pw.Text(
-                  isRecoveryReversal ? 'RV' : 'CR',
+                  isRecoveryReversal ? 'RV' : 'PAY',
                   style: pw.TextStyle(
                     fontSize: 8,
                     fontWeight: pw.FontWeight.bold,
@@ -1829,7 +1829,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
               pw.Padding(
                 padding: const pw.EdgeInsets.all(4),
                 child: pw.Text(
-                  isRecoveryReversal ? 'Recovery reversed due to return' : 'Applied to dues',
+                  isRecoveryReversal
+                      ? 'Recovery reversed due to return'
+                      : 'Manual payment applied to previous dues',
                   style: const pw.TextStyle(fontSize: 8),
                 ),
               ),
@@ -1861,16 +1863,14 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           ),
         );
       } else {
-        // Sale ledger model:
-        // - Debit = full sale amount (new charge)
-        // - Credit = full amount paid in this sale entry
-        //   (if paid > sale, extra payment naturally reduces old dues here).
+        // Seller-facing sale ledger (to avoid confusion with manual CR payments):
+        // - Debit = due created by this sale only
+        // - Credit = '-' (manual/old-due payments remain on CR rows)
+        // Sale amount + paid-to-this-bill are shown in Description.
         final balanceBeforeSale = runningDueBalance;
-        final debitAmount = saleAmount;
+        final debitAmount = duePayment;
         final saleDoc = saleId.isNotEmpty ? salesByIdForPdf[saleId] : null;
-        // Full payment reducing due: cash (minus change) + wallet; matches POS receipt.
-        final creditOnCurrentSale = _ledgerTotalCreditForSalePdf(saleDoc, amountPaid);
-        final totalOwedBeforeCash = balanceBeforeSale + saleAmount;
+        final totalOwedBeforeCash = balanceBeforeSale + duePayment;
         // "This bill" / old split: from sales doc when POS (accurate for pay 20 on bill 5).
         final fullCashIn = (saleDoc?['amountPaid'] as num?)?.toDouble() ?? 0.0;
         final changeOut = (saleDoc?['change'] as num?)?.toDouble() ?? 0.0;
@@ -1883,9 +1883,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         final descChildren = <pw.Widget>[];
         if (refCellText == '-') {
           final line1 =
-              'Prev ${balanceBeforeSale < 0 ? _currencyFormatter.format(0) : _currencyFormatter.format(balanceBeforeSale)} + Bill ${_currencyFormatter.format(saleAmount)} = Total ${_currencyFormatter.format(totalOwedBeforeCash)}';
+              'Bill ${_currencyFormatter.format(saleAmount)} | Paid this bill ${_currencyFormatter.format(amountPaid)} | New due ${_currencyFormatter.format(duePayment)}';
           descChildren.add(pw.Text(line1, style: const pw.TextStyle(fontSize: 7)));
-          if (creditOnCurrentSale > 0 || fullCashIn > 0 || creditWallet > 0) {
+          if (fullCashIn > 0 || creditWallet > 0 || recoveryToOld > 0) {
             final parts = <String>[];
             if (fullCashIn > 0) {
               parts.add(
@@ -1897,13 +1897,9 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             if (creditWallet > 0) {
               parts.add('Wallet ${_currencyFormatter.format(creditWallet)}');
             }
-            if (parts.isEmpty && toThisBill > 0) {
-              parts.add('To this bill ${_currencyFormatter.format(toThisBill)}');
-            }
             final head = parts.isNotEmpty ? parts.join(' | ') : '';
-            final split = recoveryToOld > 0
-                ? 'This bill: ${_currencyFormatter.format(toThisBill)} | Old dues: ${_currencyFormatter.format(recoveryToOld)}'
-                : 'This bill: ${_currencyFormatter.format(toThisBill)}';
+            final split = 'This bill: ${_currencyFormatter.format(toThisBill)}'
+                '${recoveryToOld > 0 ? ' | Old dues: ${_currencyFormatter.format(recoveryToOld)}' : ''}';
             descChildren.add(
               pw.Text(
                 head.isNotEmpty ? '$head - $split' : split,
@@ -1912,7 +1908,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
             );
           }
         } else {
-          final extra = creditOnCurrentSale > 0
+          final extra = (fullCashIn > 0 || creditWallet > 0 || recoveryToOld > 0)
               ? (fullCashIn > 0
                   ? 'Cash ${_currencyFormatter.format(fullCashIn)} (this bill ${_currencyFormatter.format(toThisBill)}'
                       '${recoveryToOld > 0 ? ' | old ${_currencyFormatter.format(recoveryToOld)}' : ''})'
@@ -1920,17 +1916,17 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       '${recoveryToOld > 0 ? ' | old ${_currencyFormatter.format(recoveryToOld)}' : ''}')
               : '';
           descChildren.add(pw.Text(refCellText, style: const pw.TextStyle(fontSize: 7)));
-          if (creditOnCurrentSale > 0) {
+          if (extra.isNotEmpty) {
             descChildren.add(
               pw.Text(
-                'Prev+Bill Total ${_currencyFormatter.format(totalOwedBeforeCash)}. $extra',
+                'Bill ${_currencyFormatter.format(saleAmount)} | Paid ${_currencyFormatter.format(amountPaid)} | New due ${_currencyFormatter.format(duePayment)}. $extra',
                 style: const pw.TextStyle(fontSize: 6),
               ),
             );
           } else {
             descChildren.add(
               pw.Text(
-                'Prev+Bill Total ${_currencyFormatter.format(totalOwedBeforeCash)}',
+                'Bill ${_currencyFormatter.format(saleAmount)} | Paid ${_currencyFormatter.format(amountPaid)} | New due ${_currencyFormatter.format(duePayment)}',
                 style: const pw.TextStyle(fontSize: 6),
               ),
             );
@@ -1953,6 +1949,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
           children: descChildren,
         );
         totalLedgerDebit += debitAmount;
+        final creditOnCurrentSale = 0.0;
         totalLedgerCredit += creditOnCurrentSale;
         runningDueBalance += debitAmount;
         runningDueBalance -= creditOnCurrentSale;
@@ -1968,7 +1965,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
               ),
               pw.Padding(
                 padding: const pw.EdgeInsets.all(4),
-                child: pw.Text('SV', style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
+                child: pw.Text('SALE', style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
               ),
               pw.Padding(
                 padding: const pw.EdgeInsets.all(4),
@@ -2108,12 +2105,12 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                 pw.Text('Generated: ${_dateTimeFormatter.format(generatedAt)}', style: const pw.TextStyle(fontSize: 9)),
                 pw.SizedBox(height: 4),
                 pw.Text(
-                  'Ledger: Debit +, Credit -. Opening = Current Outstanding − net of rows below, so the last row matches the app total due.',
+                  'Ledger: New Due +, Payment -. Opening = Current Outstanding - net of rows below, so the last row matches the app total due.',
                   style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
                 ),
                 pw.SizedBox(height: 4),
                 pw.Text(
-                  'Legend: OB = Opening | SV = Sale (Debit = net bill after any item return) | CR = Payment | RV = Recovery reversed if return refund re-opened old due',
+                  'Legend: OB = Opening | SALE = sale entry (description shows bill/paid/new due) | PAY = manual payment for previous dues | RV = recovery reversed if return refund re-opened old due',
                   style: pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
                 ),
               ],
@@ -2789,6 +2786,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         ? DateTime.parse(record['saleDate'])
         : null;
     final saleId = record['saleId'] ?? '';
+    final recordId = record['id'] as String? ?? '';
     final referenceNumber = record['referenceNumber'] as String?;
     final saleDescriptionNote = record['description'] as String?;
     final isManual = record['isManual'] == true;
@@ -2841,6 +2839,20 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (isPaymentRecord && !isRecoveryReversalRecord)
+                        IconButton(
+                          icon: const Icon(Icons.swap_horiz,
+                              color: Colors.deepPurple, size: 18),
+                          onPressed: recordId.isNotEmpty
+                              ? () => _showReallocatePaymentDialog(
+                                    context,
+                                    paymentRecordId: recordId,
+                                  )
+                              : null,
+                          tooltip: 'Re-allocate this payment to invoice',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
                       if (!isPaymentLikeRecord) ...[
                         IconButton(
                           icon: const Icon(Icons.edit,
@@ -3065,7 +3077,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       Text(
                         isRecoveryReversalRecord
                             ? 'Return refund reversed recovered cash: ${_currencyFormatter.format(duePayment)} re-opened in outstanding due.'
-                            : 'Payment of ${_currencyFormatter.format(amountPaid)} applied to previous unpaid sales (oldest first).',
+                            : 'Payment of ${_currencyFormatter.format(amountPaid)} applied to previous unpaid sales (latest sale first by default).',
                         style: const TextStyle(fontSize: 14),
                       ),
                       if (referenceNumber != null && referenceNumber.isNotEmpty)
@@ -4279,6 +4291,8 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
 
                     double remainingPayment = amount;
                     double amountAppliedToDues = 0.0;
+                    final appliedAllocations = <Map<String, dynamic>>[];
+                    String? selectedInvoiceSaleId;
 
                     if (paySpecificInvoice && selectedOpenDueDocId != null) {
                       final targetRef = FirebaseFirestore.instance
@@ -4300,10 +4314,16 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       amountAppliedToDues =
                           amount < currentDue ? amount : currentDue;
                       remainingPayment = amount - amountAppliedToDues;
+                      selectedInvoiceSaleId = target['saleId'] as String?;
                       await targetRef.update({
                         'duePayment': currentDue - amountAppliedToDues,
                         'amountPaid':
                             (target['amountPaid'] ?? 0).toDouble() + amountAppliedToDues,
+                      });
+                      appliedAllocations.add({
+                        'historyId': selectedOpenDueDocId,
+                        'saleId': selectedInvoiceSaleId ?? '',
+                        'amount': amountAppliedToDues,
                       });
                     } else {
                       // One seller_history read + batched due updates (avoids N sequential writes).
@@ -4315,6 +4335,7 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                       );
                       remainingPayment = applyResult.remainingPayment;
                       amountAppliedToDues = amount - remainingPayment;
+                      appliedAllocations.addAll(applyResult.allocations);
                     }
                     
                     // If there's remaining payment after clearing all dues, it becomes credit
@@ -4369,6 +4390,8 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
                           : null,
                       'isManual': true,
                       'recordType': 'payment', // Due payment received (not a sale)
+                      'appliedAllocations': appliedAllocations,
+                      'selectedInvoiceSaleId': selectedInvoiceSaleId,
                     });
 
                     if (context.mounted) {
@@ -5410,6 +5433,267 @@ class _SellerHistoryScreenState extends State<SellerHistoryScreen> with SingleTi
         ],
       ),
     );
+  }
+
+  Future<void> _showReallocatePaymentDialog(
+    BuildContext context, {
+    required String paymentRecordId,
+  }) async {
+    try {
+      final paymentRef =
+          FirebaseFirestore.instance.collection('seller_history').doc(paymentRecordId);
+      final paymentSnap = await paymentRef.get();
+      if (!paymentSnap.exists || paymentSnap.data() == null) return;
+
+      final paymentData = paymentSnap.data()!;
+      final isPayment = paymentData['recordType'] == 'payment';
+      if (!isPayment) return;
+
+      final allocationsRaw =
+          (paymentData['appliedAllocations'] as List<dynamic>?) ?? const [];
+      final allocations = allocationsRaw
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList(growable: false);
+      if (allocations.isEmpty) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'This payment was saved before allocation tracking. Delete and re-add it with invoice selection.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> openRows;
+      try {
+        final openDueSnapshot = await FirebaseFirestore.instance
+            .collection('seller_history')
+            .where('sellerId', isEqualTo: widget.seller.id)
+            .where('duePayment', isGreaterThan: 0)
+            .orderBy('duePayment')
+            .get();
+        openRows = openDueSnapshot.docs;
+      } catch (_) {
+        final fallback = await FirebaseFirestore.instance
+            .collection('seller_history')
+            .where('sellerId', isEqualTo: widget.seller.id)
+            .get();
+        openRows = fallback.docs
+            .where((d) => (d.data()['duePayment'] ?? 0).toDouble() > 0)
+            .toList(growable: false);
+      }
+      if (openRows.isEmpty) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No open invoices found for re-allocation.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      String? selectedOpenDueDocId = openRows.first.id;
+
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          bool isSaving = false;
+          return StatefulBuilder(
+            builder: (context, setState) {
+              return AlertDialog(
+                title: const Text('Re-allocate Payment'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Choose invoice to receive this payment: ${_currencyFormatter.format((paymentData['amountPaid'] ?? 0).toDouble())}',
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      isExpanded: true,
+                      value: selectedOpenDueDocId,
+                      decoration: const InputDecoration(
+                        labelText: 'Target invoice',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: openRows.map((doc) {
+                        final d = doc.data();
+                        final sid = (d['saleId'] as String? ?? '').toUpperCase();
+                        final due = (d['duePayment'] ?? 0).toDouble();
+                        return DropdownMenuItem<String>(
+                          value: doc.id,
+                          child: Text(
+                            'Sale #${sid.isNotEmpty ? sid.substring(0, sid.length > 8 ? 8 : sid.length) : doc.id.substring(0, 8)}  | Due ${_currencyFormatter.format(due)}',
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      }).toList(growable: false),
+                      onChanged: isSaving
+                          ? null
+                          : (v) => setState(() {
+                                selectedOpenDueDocId = v;
+                              }),
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: isSaving ? null : () => Navigator.pop(dialogContext),
+                    child: const Text('Cancel'),
+                  ),
+                  ElevatedButton(
+                    onPressed: isSaving || selectedOpenDueDocId == null
+                        ? null
+                        : () async {
+                            setState(() => isSaving = true);
+                            try {
+                              await _reallocatePaymentToInvoice(
+                                paymentRecordId: paymentRecordId,
+                                targetHistoryDocId: selectedOpenDueDocId!,
+                              );
+                              if (dialogContext.mounted) {
+                                Navigator.pop(dialogContext);
+                              }
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Payment re-allocated successfully.'),
+                                    backgroundColor: Colors.green,
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Re-allocation failed: $e'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            } finally {
+                              if (dialogContext.mounted) {
+                                setState(() => isSaving = false);
+                              }
+                            }
+                          },
+                    child: const Text('Save'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error opening re-allocation: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _reallocatePaymentToInvoice({
+    required String paymentRecordId,
+    required String targetHistoryDocId,
+  }) async {
+    final firestore = FirebaseFirestore.instance;
+    final paymentRef = firestore.collection('seller_history').doc(paymentRecordId);
+
+    await firestore.runTransaction((txn) async {
+      final paymentSnap = await txn.get(paymentRef);
+      if (!paymentSnap.exists || paymentSnap.data() == null) {
+        throw Exception('Payment record not found');
+      }
+      final paymentData = paymentSnap.data()!;
+      final allocationsRaw =
+          (paymentData['appliedAllocations'] as List<dynamic>?) ?? const [];
+      final allocations = allocationsRaw
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList(growable: false);
+      if (allocations.isEmpty) {
+        throw Exception('Allocation data missing on this payment');
+      }
+
+      double totalToReallocate = 0.0;
+      final adjusted = <String, ({double due, double paid, String saleId})>{};
+
+      // Step 1: undo previous tracked allocation.
+      for (final alloc in allocations) {
+        final historyId = alloc['historyId'] as String? ?? '';
+        final amount = (alloc['amount'] ?? 0).toDouble();
+        if (historyId.isEmpty || amount <= 0) continue;
+        totalToReallocate += amount;
+
+        final ref = firestore.collection('seller_history').doc(historyId);
+        final snap = await txn.get(ref);
+        if (!snap.exists || snap.data() == null) continue;
+        final d = snap.data()!;
+        final currentDue = (d['duePayment'] ?? 0).toDouble();
+        final currentPaid = (d['amountPaid'] ?? 0).toDouble();
+        final saleId = d['saleId'] as String? ?? '';
+
+        final newDue = currentDue + amount;
+        final newPaid = (currentPaid - amount).clamp(0.0, double.infinity);
+        txn.update(ref, {
+          'duePayment': newDue,
+          'amountPaid': newPaid,
+        });
+        adjusted[historyId] = (due: newDue, paid: newPaid, saleId: saleId);
+      }
+
+      if (totalToReallocate <= 0) {
+        throw Exception('Nothing to re-allocate');
+      }
+
+      // Step 2: apply all to selected invoice.
+      final targetRef = firestore.collection('seller_history').doc(targetHistoryDocId);
+      final targetSnap = await txn.get(targetRef);
+      if (!targetSnap.exists || targetSnap.data() == null) {
+        throw Exception('Target invoice not found');
+      }
+      final targetData = targetSnap.data()!;
+      final targetCurrentDue = adjusted[targetHistoryDocId]?.due ??
+          (targetData['duePayment'] ?? 0).toDouble();
+      final targetCurrentPaid = adjusted[targetHistoryDocId]?.paid ??
+          (targetData['amountPaid'] ?? 0).toDouble();
+      final targetSaleId = adjusted[targetHistoryDocId]?.saleId ??
+          (targetData['saleId'] as String? ?? '');
+
+      if (targetCurrentDue < totalToReallocate) {
+        throw Exception(
+          'Selected invoice due is ${targetCurrentDue.toStringAsFixed(2)}, but payment to allocate is ${totalToReallocate.toStringAsFixed(2)}',
+        );
+      }
+
+      txn.update(targetRef, {
+        'duePayment': targetCurrentDue - totalToReallocate,
+        'amountPaid': targetCurrentPaid + totalToReallocate,
+      });
+
+      txn.update(paymentRef, {
+        'appliedAllocations': [
+          {
+            'historyId': targetHistoryDocId,
+            'saleId': targetSaleId,
+            'amount': totalToReallocate,
+          },
+        ],
+        'selectedInvoiceSaleId': targetSaleId,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+    });
   }
 }
 

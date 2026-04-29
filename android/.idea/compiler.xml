@@ -2,8 +2,8 @@
 <project version="4">
   <component name="CompilerConfiguration">
     <bytecodeTargetLevel target="21">
-      <module name="dev.flutter.plugin.gradle.main" target="11" />
-      <module name="dev.flutter.plugin.gradle.test" target="11" />
+      <module name="gradle.main" target="11" />
+      <module name="gradle.test" target="11" />
     </bytecodeTargetLevel>
   </component>
 </project>

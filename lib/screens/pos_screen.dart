@@ -628,15 +628,30 @@ class _POSScreenState extends State<POSScreen> {
       context: context,
       builder: (dialogContext) => _PaymentDialog(
         cart: cart,
-        onComplete: (amountPaid, sellerId, existingDueTotal, description) async {
+        onComplete:
+            (amountPaid, sellerId, existingDueTotal, description, selectedDueHistoryIds) async {
           Navigator.pop(dialogContext);
-          await _processSale(context, amountPaid, sellerId, existingDueTotal, description);
+          await _processSale(
+            context,
+            amountPaid,
+            sellerId,
+            existingDueTotal,
+            description,
+            selectedDueHistoryIds: selectedDueHistoryIds,
+          );
         },
       ),
     );
   }
 
-  Future<void> _processSale(BuildContext context, double amountPaid, String? sellerId, double existingDueTotal, String? description) async {
+  Future<void> _processSale(
+    BuildContext context,
+    double amountPaid,
+    String? sellerId,
+    double existingDueTotal,
+    String? description, {
+    List<String>? selectedDueHistoryIds,
+  }) async {
     final cart = context.read<CartProvider>();
     final productService = ProductService();
     final syncCoordinator =
@@ -836,15 +851,32 @@ class _POSScreenState extends State<POSScreen> {
         // Apply cash payment to existing due payments (if any)
         if (cashForExistingDues > 0 && effectiveExistingDueTotal > 0) {
           debugPrint('Applying $cashForExistingDues to existing due payments...');
-          // Same Firestore updates as Seller history → Add manual due payment. On failure we abort
-          // checkout so the sale is not saved while old dues are still wrong on the server.
-          final remainingAfterDues = await sellerService
-              .applyPaymentToDuePayments(
-                sellerId,
-                cashForExistingDues,
-                prioritizeBillsWithSaleDateSameDayAs: sale.createdAt,
-              )
-              .timeout(_applySellerDuesTimeout);
+          double remainingAfterDues = cashForExistingDues;
+          // Optional: apply to selected invoice first.
+          final selected = selectedDueHistoryIds ?? const <String>[];
+          if (selected.isNotEmpty) {
+            for (final historyId in selected) {
+              if (remainingAfterDues <= 0) break;
+              final specific = await sellerService
+                  .applyPaymentToSpecificDueHistoryRecord(
+                    sellerId: sellerId,
+                    historyDocId: historyId,
+                    paymentAmount: remainingAfterDues,
+                  )
+                  .timeout(_applySellerDuesTimeout);
+              remainingAfterDues = specific.remainingPayment;
+            }
+          }
+          // Then apply leftover to other dues (latest-first).
+          if (remainingAfterDues > 0) {
+            remainingAfterDues = await sellerService
+                .applyPaymentToDuePayments(
+                  sellerId,
+                  remainingAfterDues,
+                  prioritizeBillsWithSaleDateSameDayAs: sale.createdAt,
+                )
+                .timeout(_applySellerDuesTimeout);
+          }
           actualRecoveryBalance = cashForExistingDues - remainingAfterDues;
           // If there's remaining after paying dues, it should be returned as change (not added to credit)
           if (remainingAfterDues > 0) {
@@ -996,6 +1028,16 @@ class _POSScreenState extends State<POSScreen> {
   void _showReceiptDialog(BuildContext context, Sale sale, double existingDueTotal) async {
     final formatter = NumberFormat.currency(symbol: 'Rs. ');
     final dateFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
+    double? remainingCreditAfterSale;
+    if (sale.sellerId != null && sale.creditUsed > 0) {
+      try {
+        final sellerService = SellerService();
+        remainingCreditAfterSale =
+            await sellerService.getCreditBalance(sale.sellerId!);
+      } catch (e) {
+        debugPrint('Could not load remaining seller credit for receipt: $e');
+      }
+    }
     
     // Load current language preference
     final printerService = PrinterService();
@@ -1066,12 +1108,35 @@ class _POSScreenState extends State<POSScreen> {
                     ),
                     if (sale.creditUsed > 0) ...[
                       const Divider(height: 24),
+                      if (remainingCreditAfterSale != null) ...[
+                        _ReceiptRow(
+                          label: 'Previous Credit',
+                          value: formatter.format(
+                            (remainingCreditAfterSale + sale.creditUsed)
+                                .clamp(0.0, double.infinity),
+                          ),
+                          isTotal: false,
+                        ),
+                        const Divider(height: 24),
+                      ],
                       _ReceiptRow(
-                        label: 'Credit Applied',
+                        label: 'Credit Used',
                         value: formatter.format(sale.creditUsed),
                         isTotal: false,
                         color: Colors.blue,
                       ),
+                      if (remainingCreditAfterSale != null) ...[
+                        const Divider(height: 24),
+                        _ReceiptRow(
+                          label: 'Remaining Credit',
+                          value: formatter.format(
+                            remainingCreditAfterSale
+                                .clamp(0.0, double.infinity),
+                          ),
+                          isTotal: false,
+                          color: Colors.green,
+                        ),
+                      ],
                     ],
                     if (sale.recoveryBalance > 0) ...[
                       const Divider(height: 24),
@@ -4026,7 +4091,13 @@ class _CartSummary extends StatelessWidget {
 
 class _PaymentDialog extends StatefulWidget {
   final CartProvider cart;
-  final Function(double amountPaid, String? sellerId, double existingDueTotal, String? description) onComplete;
+  final Function(
+    double amountPaid,
+    String? sellerId,
+    double existingDueTotal,
+    String? description,
+    List<String>? selectedDueHistoryIds,
+  ) onComplete;
 
   const _PaymentDialog({
     required this.cart,
@@ -4049,6 +4120,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   StateSetter? _dialogStateSetter;
   List<DuePayment> _duePayments = [];
   bool _isLoadingDuePayments = false;
+  List<String> _selectedDueHistoryIds = [];
 
   @override
   void initState() {
@@ -4707,6 +4779,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                               _isDropdownOpen = false;
                                               _isLoadingDuePayments = true;
                                               _duePayments = [];
+                                              _selectedDueHistoryIds = [];
                                             });
                                             
                                             // Fetch due payments for selected seller
@@ -4715,6 +4788,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                               _dialogStateSetter!(() {
                                                 _duePayments = duePayments;
                                                 _isLoadingDuePayments = false;
+                                                _selectedDueHistoryIds = [];
                                               });
                                               debugPrint('Fetched ${duePayments.length} due payments for seller: ${seller.name}');
                                             } catch (e) {
@@ -4722,6 +4796,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                               _dialogStateSetter!(() {
                                                 _duePayments = [];
                                                 _isLoadingDuePayments = false;
+                                                _selectedDueHistoryIds = [];
                                               });
                                             }
                                             
@@ -4736,6 +4811,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                               _isDropdownOpen = false;
                                               _isLoadingDuePayments = true;
                                               _duePayments = [];
+                                              _selectedDueHistoryIds = [];
                                             });
                                             
                                             // Fetch due payments for selected seller
@@ -4744,6 +4820,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                               setState(() {
                                                 _duePayments = duePayments;
                                                 _isLoadingDuePayments = false;
+                                                _selectedDueHistoryIds = [];
                                               });
                                               debugPrint('Fetched ${duePayments.length} due payments for seller: ${seller.name}');
                                             } catch (e) {
@@ -4751,6 +4828,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                                               setState(() {
                                                 _duePayments = [];
                                                 _isLoadingDuePayments = false;
+                                                _selectedDueHistoryIds = [];
                                               });
                                             }
                                           }
@@ -4840,6 +4918,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                               _isDropdownOpen = false;
                               _duePayments = [];
                               _isLoadingDuePayments = false;
+                              _selectedDueHistoryIds = [];
                             });
                           } else {
                             setState(() {
@@ -4848,6 +4927,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                               _isDropdownOpen = false;
                               _duePayments = [];
                               _isLoadingDuePayments = false;
+                              _selectedDueHistoryIds = [];
                             });
                           }
                         },
@@ -4882,6 +4962,109 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   setState(() {});
                 },
               ),
+              if (_selectedSeller != null &&
+                  !_isLoadingDuePayments &&
+                  _duePayments.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                InkWell(
+                  onTap: () async {
+                    final initial = _selectedDueHistoryIds.toSet();
+                    final selected = Set<String>.from(initial);
+                    await showDialog<void>(
+                      context: context,
+                      builder: (ctx) => StatefulBuilder(
+                        builder: (ctx, setPickState) => AlertDialog(
+                          title: const Text('Select Invoice(s) For Previous Due'),
+                          content: SizedBox(
+                            width: 420,
+                            height: 360,
+                            child: ListView.builder(
+                              itemCount: _duePayments.length + 1,
+                              itemBuilder: (context, index) {
+                                if (index == 0) {
+                                  return CheckboxListTile(
+                                    value: selected.isEmpty,
+                                    onChanged: (v) {
+                                      if (v == true) {
+                                        selected.clear();
+                                        setPickState(() {});
+                                      }
+                                    },
+                                    title: const Text('Auto (latest sale first)'),
+                                  );
+                                }
+                                final p = _duePayments[index - 1];
+                                final saleShort = p.saleId.isNotEmpty
+                                    ? p.saleId
+                                        .substring(0, p.saleId.length > 8 ? 8 : p.saleId.length)
+                                        .toUpperCase()
+                                    : p.id.substring(0, p.id.length > 8 ? 8 : p.id.length).toUpperCase();
+                                return CheckboxListTile(
+                                  value: selected.contains(p.id),
+                                  onChanged: (v) {
+                                    if (v == true) {
+                                      selected.add(p.id);
+                                    } else {
+                                      selected.remove(p.id);
+                                    }
+                                    setPickState(() {});
+                                  },
+                                  title: Text('Sale #$saleShort'),
+                                  subtitle: Text('Due: ${formatter.format(p.dueAmount)}'),
+                                );
+                              },
+                            ),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              child: const Text('Cancel'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                setState(() {
+                                  _selectedDueHistoryIds = selected.toList(growable: false);
+                                });
+                                Navigator.pop(ctx);
+                              },
+                              child: const Text('Apply'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(12),
+                  child: InputDecorator(
+                    decoration: InputDecoration(
+                      labelText: 'Apply previous due to invoice(s) (optional)',
+                      helperText: _selectedDueHistoryIds.isEmpty
+                          ? 'Auto mode: latest sale first'
+                          : '${_selectedDueHistoryIds.length} invoice(s) selected',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      filled: true,
+                      fillColor: Colors.grey[50],
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.list_alt, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _selectedDueHistoryIds.isEmpty
+                                ? 'Auto (latest sale first)'
+                                : 'Selected: ${_selectedDueHistoryIds.length} invoice(s)',
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const Icon(Icons.arrow_drop_down),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               // Quick amount buttons
               Wrap(
@@ -5170,7 +5353,15 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                             ? null
                             : _descriptionController.text.trim();
                         
-                        widget.onComplete(amountPaid, _selectedSeller?.id, existingDueTotal, description);
+                        widget.onComplete(
+                          amountPaid,
+                          _selectedSeller?.id,
+                          existingDueTotal,
+                          description,
+                          _selectedDueHistoryIds.isEmpty
+                              ? null
+                              : List<String>.from(_selectedDueHistoryIds),
+                        );
                       },
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),

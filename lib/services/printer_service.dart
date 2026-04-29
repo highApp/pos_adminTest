@@ -1293,17 +1293,39 @@ class PrinterService {
       final creditRestored = sale.creditUsed * creditRestoreRatio;
       netCreditUsed = (sale.creditUsed - creditRestored).clamp(0.0, sale.creditUsed);
     }
-    final saleAmount = (sale.netTotal - netCreditUsed).clamp(0.0, double.infinity);
-    _addText(commands, _formatLine(_receiptLabel('saleAmount', labelsLanguage), saleAmount.toStringAsFixed(2)));
+    final billedSaleAmount = sale.netTotal.clamp(0.0, double.infinity);
+    final saleAmountAfterCredit =
+        (sale.netTotal - netCreditUsed).clamp(0.0, double.infinity);
+    _addText(commands, _formatLine(_receiptLabel('saleAmount', labelsLanguage), billedSaleAmount.toStringAsFixed(2)));
     if (netCreditUsed > 0) {
-      _addText(commands, _formatLine(_receiptLabel('creditUsed', labelsLanguage), netCreditUsed.toStringAsFixed(2)));
+      double? remainingCredit;
       if (seller != null) {
         try {
-          final remainingCredit = await sellerService.getCreditBalance(seller.id);
-          _addText(commands, _formatLine(_receiptLabel('remainingCredit', labelsLanguage), remainingCredit.toStringAsFixed(2)));
+          remainingCredit = await sellerService.getCreditBalance(seller.id);
         } catch (e) {
           debugPrint('Error fetching remaining credit for receipt: $e');
         }
+      }
+      if (remainingCredit != null) {
+        final previousCredit = (remainingCredit + netCreditUsed)
+            .clamp(0.0, double.infinity);
+        _addText(
+          commands,
+          _formatLine(
+            _receiptLabel('previousCredit', labelsLanguage),
+            previousCredit.toStringAsFixed(2),
+          ),
+        );
+      }
+      _addText(commands, _formatLine(_receiptLabel('creditUsed', labelsLanguage), netCreditUsed.toStringAsFixed(2)));
+      if (remainingCredit != null) {
+        _addText(
+          commands,
+          _formatLine(
+            _receiptLabel('remainingCredit', labelsLanguage),
+            remainingCredit.toStringAsFixed(2),
+          ),
+        );
       }
     }
     if (existingDueTotal > 0.01) {
@@ -1329,7 +1351,7 @@ class PrinterService {
         _addText(commands, _formatLine(_receiptLabel('dueThisSale', labelsLanguage), dueThisSale.toStringAsFixed(2)));
       }
     }
-    final totalOwedBeforePayment = existingDueTotal + saleAmount;
+    final totalOwedBeforePayment = existingDueTotal + saleAmountAfterCredit;
     final dueBalance = (totalOwedBeforePayment - sale.amountPaid).clamp(0.0, double.infinity);
     if (dueBalance > 0.01) {
       _addText(commands, '${_repeatChar('-', 32)}\n');
@@ -1389,6 +1411,7 @@ class PrinterService {
           case 'phone': return 'فون';
           case 'totalItems': return 'کل اشیا';
           case 'saleAmount': return 'فروخت کی رقم';
+          case 'previousCredit': return 'پچھلا کریڈٹ';
           case 'creditUsed': return 'کریڈٹ استعمال';
           case 'remainingCredit': return 'باقی کریڈٹ';
           case 'existingDue': return 'پہلے سے واجب';
@@ -1413,6 +1436,7 @@ class PrinterService {
           case 'phone': return 'الهاتف';
           case 'totalItems': return 'إجمالي القطع';
           case 'saleAmount': return 'مبلغ البيع';
+          case 'previousCredit': return 'الرصيد السابق';
           case 'creditUsed': return 'الائتمان المستخدم';
           case 'remainingCredit': return 'الرصيد المتبقي';
           case 'existingDue': return 'المبلغ المستحق السابق';
@@ -1437,6 +1461,7 @@ class PrinterService {
           case 'phone': return 'Phone';
           case 'totalItems': return 'Total Items';
           case 'saleAmount': return 'Sale Amount';
+          case 'previousCredit': return 'Previous Credit';
           case 'creditUsed': return 'Credit Used';
           case 'remainingCredit': return 'Remaining Credit';
           case 'existingDue': return 'Existing Due';

@@ -15,6 +15,7 @@ import 'admin_seller_orders_screen.dart';
 import 'create_manager_screen.dart';
 import 'settings_screen.dart';
 import 'zakat_screen.dart';
+import 'business_report_screen.dart';
 import '../services/auth_service.dart';
 import '../models/user.dart';
 import '../widgets/reminder_alert_listener.dart';
@@ -79,6 +80,7 @@ class _HomeScreenState extends State<HomeScreen> {
     const POSScreen(),
     const BuyersScreen(),
     const SalesHistoryScreen(),
+    const BusinessReportScreen(),
   ];
 
   List<DrawerItem> get _drawerItems {
@@ -118,6 +120,11 @@ class _HomeScreenState extends State<HomeScreen> {
         icon: Icons.history,
         title: 'Sales History',
         index: 4,
+      ),
+      DrawerItem(
+        icon: Icons.description,
+        title: 'Business Report',
+        index: 5,
       ),
     ];
   }

@@ -32,6 +32,47 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
   final DateFormat _dateTimeFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
   final NumberFormat _currencyFormatter = NumberFormat.currency(symbol: 'Rs. ');
 
+  Future<void> _editPaymentDateForGroup(
+    BuildContext context,
+    List<Map<String, dynamic>> group,
+  ) async {
+    final payments =
+        group.map((e) => e['payment'] as BuyerPayment).toList(growable: false);
+    if (payments.isEmpty) return;
+
+    final current = payments.first.paymentDate;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      helpText: 'Correct payment date',
+      confirmText: 'Save',
+      cancelText: 'Cancel',
+    );
+    if (picked == null) return;
+
+    try {
+      final ids = payments.map((p) => p.id).where((id) => id.isNotEmpty).toList();
+      await _paymentService.updatePaymentDatesBatch(ids, picked);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Payment date updated to ${_dateFormatter.format(picked)}'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error updating payment date: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -816,6 +857,11 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                               if (isGrouped)
                                 Icon(Icons.expand_more, color: Colors.grey[600]),
                               IconButton(
+                                icon: Icon(Icons.edit_calendar, color: Colors.grey.shade700),
+                                onPressed: () => _editPaymentDateForGroup(context, group),
+                                tooltip: 'Edit payment date',
+                              ),
+                              IconButton(
                                 icon: const Icon(Icons.delete, color: Colors.red),
                                 onPressed: () => _deletePaymentGroup(context, group),
                                 tooltip: 'Delete Payment${isGrouped ? 's' : ''}',
@@ -941,10 +987,20 @@ class _BuyerPaymentHistoryScreenState extends State<BuyerPaymentHistoryScreen> {
                                     ],
                                   ],
                                 ),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.delete, color: Colors.red),
-                                  onPressed: () => _deletePaymentGroup(context, group),
-                                  tooltip: 'Delete Payment',
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: Icon(Icons.edit_calendar, color: Colors.grey.shade700),
+                                      onPressed: () => _editPaymentDateForGroup(context, group),
+                                      tooltip: 'Edit payment date',
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                      onPressed: () => _deletePaymentGroup(context, group),
+                                      tooltip: 'Delete Payment',
+                                    ),
+                                  ],
                                 ),
                               ),
                       );

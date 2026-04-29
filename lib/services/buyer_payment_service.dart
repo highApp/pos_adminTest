@@ -40,6 +40,32 @@ class BuyerPaymentService {
     await _firestore.collection(_collection).doc(payment.id).set(payment.toMap());
   }
 
+  /// Updates [paymentDate] for multiple payment docs (e.g. correcting the entered date).
+  /// Uses batched writes (max 500 ops each).
+  Future<void> updatePaymentDatesBatch(
+    List<String> paymentIds,
+    DateTime paymentDate,
+  ) async {
+    if (paymentIds.isEmpty) return;
+    final dateIso = paymentDate.toIso8601String();
+    var batch = _firestore.batch();
+    var ops = 0;
+    for (final id in paymentIds) {
+      batch.update(_firestore.collection(_collection).doc(id), {
+        'paymentDate': dateIso,
+      });
+      ops++;
+      if (ops >= 500) {
+        await batch.commit();
+        batch = _firestore.batch();
+        ops = 0;
+      }
+    }
+    if (ops > 0) {
+      await batch.commit();
+    }
+  }
+
   /// Commits multiple payments in one or few round trips (Firestore batches, max 500 ops each).
   Future<void> addPaymentsBatch(List<BuyerPayment> payments) async {
     if (payments.isEmpty) return;
@@ -109,12 +135,8 @@ class BuyerPaymentService {
     DateTime startDate,
     DateTime endDate,
   ) {
-    final start = DateTime(
-      startDate.year,
-      startDate.month,
-      startDate.day,
-    ).toIso8601String();
-    final end = DateTime(
+    final startOnly = DateTime(startDate.year, startDate.month, startDate.day);
+    final endOnly = DateTime(
       endDate.year,
       endDate.month,
       endDate.day,
@@ -122,7 +144,10 @@ class BuyerPaymentService {
       59,
       59,
       999,
-    ).toIso8601String();
+    );
+
+    final start = startOnly.toIso8601String();
+    final end = endOnly.toIso8601String();
 
     return _firestore
         .collection(_collection)
@@ -132,6 +157,10 @@ class BuyerPaymentService {
         .map((snapshot) {
       return snapshot.docs.fold<double>(0.0, (sum, doc) {
         final payment = BuyerPayment.fromMap(doc.data());
+        // Defensive: in case legacy/mixed data formats slip through the query,
+        // re-check by parsed DateTime so "Today" is always accurate.
+        final d = payment.paymentDate;
+        if (d.isBefore(startOnly) || d.isAfter(endOnly)) return sum;
         return sum + payment.amount;
       });
     });
@@ -142,12 +171,8 @@ class BuyerPaymentService {
     DateTime startDate,
     DateTime endDate,
   ) async {
-    final start = DateTime(
-      startDate.year,
-      startDate.month,
-      startDate.day,
-    ).toIso8601String();
-    final end = DateTime(
+    final startOnly = DateTime(startDate.year, startDate.month, startDate.day);
+    final endOnly = DateTime(
       endDate.year,
       endDate.month,
       endDate.day,
@@ -155,7 +180,10 @@ class BuyerPaymentService {
       59,
       59,
       999,
-    ).toIso8601String();
+    );
+
+    final start = startOnly.toIso8601String();
+    final end = endOnly.toIso8601String();
 
     final paymentsSnap = await _firestore
         .collection(_collection)
@@ -166,10 +194,24 @@ class BuyerPaymentService {
     if (paymentsSnap.docs.isEmpty) return [];
 
     final paidByBillId = <String, double>{};
+    final lastCreatedAtByBillId = <String, DateTime>{};
+    final lastPaymentDateByBillId = <String, DateTime>{};
     var totalPaymentsCount = 0;
     for (final doc in paymentsSnap.docs) {
       final payment = BuyerPayment.fromMap(doc.data());
+      final d = payment.paymentDate;
+      if (d.isBefore(startOnly) || d.isAfter(endOnly)) {
+        continue;
+      }
       paidByBillId[payment.billId] = (paidByBillId[payment.billId] ?? 0.0) + payment.amount;
+      final prevCreated = lastCreatedAtByBillId[payment.billId];
+      if (prevCreated == null || payment.createdAt.isAfter(prevCreated)) {
+        lastCreatedAtByBillId[payment.billId] = payment.createdAt;
+      }
+      final prevPay = lastPaymentDateByBillId[payment.billId];
+      if (prevPay == null || payment.paymentDate.isAfter(prevPay)) {
+        lastPaymentDateByBillId[payment.billId] = payment.paymentDate;
+      }
       totalPaymentsCount++;
     }
 
@@ -199,6 +241,8 @@ class BuyerPaymentService {
       final amount = entry.value;
       final buyerId = buyerIdByBillId[billId] ?? billId;
       final buyerName = buyerNameByBillId[billId] ?? 'Unknown buyer';
+      final billLastCreatedAt = lastCreatedAtByBillId[billId];
+      final billLastPaymentDate = lastPaymentDateByBillId[billId];
 
       final existing = byBuyer[buyerId];
       if (existing == null) {
@@ -206,9 +250,21 @@ class BuyerPaymentService {
           'buyerId': buyerId,
           'buyerName': buyerName,
           'amount': amount,
+          if (billLastCreatedAt != null) 'lastCreatedAt': billLastCreatedAt,
+          if (billLastPaymentDate != null) 'lastPaymentDate': billLastPaymentDate,
         };
       } else {
         existing['amount'] = (existing['amount'] as double) + amount;
+        final prevCreated = existing['lastCreatedAt'] as DateTime?;
+        if (billLastCreatedAt != null &&
+            (prevCreated == null || billLastCreatedAt.isAfter(prevCreated))) {
+          existing['lastCreatedAt'] = billLastCreatedAt;
+        }
+        final prevPay = existing['lastPaymentDate'] as DateTime?;
+        if (billLastPaymentDate != null &&
+            (prevPay == null || billLastPaymentDate.isAfter(prevPay))) {
+          existing['lastPaymentDate'] = billLastPaymentDate;
+        }
       }
     }
 

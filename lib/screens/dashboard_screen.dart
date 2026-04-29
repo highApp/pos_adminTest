@@ -626,17 +626,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               ? row['buyerName'] as String
                               : 'Unknown buyer';
                       final amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+                      final lastCreatedAt = row['lastCreatedAt'] is DateTime
+                          ? row['lastCreatedAt'] as DateTime
+                          : null;
+                      final lastPaymentDate = row['lastPaymentDate'] is DateTime
+                          ? row['lastPaymentDate'] as DateTime
+                          : null;
+                      final dtFmt = DateFormat('MMM d, yyyy - h:mm a');
+                      final dFmt = DateFormat('MMM d, yyyy');
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: Row(
                           children: [
                             Expanded(
-                              child: Text(
-                                buyerName,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w500,
-                                  fontSize: 14,
-                                ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    buyerName,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w500,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  if (lastCreatedAt != null || lastPaymentDate != null) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      [
+                                        if (lastPaymentDate != null)
+                                          'Payment date: ${dFmt.format(lastPaymentDate)}',
+                                        if (lastCreatedAt != null)
+                                          'Added: ${dtFmt.format(lastCreatedAt)}',
+                                      ].join(' | '),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey.shade600,
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
                             ),
                             const SizedBox(width: 12),

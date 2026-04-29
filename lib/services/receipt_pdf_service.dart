@@ -11,10 +11,12 @@ import '../constants/receipt_branding.dart';
 import '../utils/receipt_text_to_image.dart';
 import '../utils/receipt_urdu_widget_render.dart';
 import 'product_service.dart';
+import 'seller_service.dart';
 
 /// Generates a sale receipt PDF for viewing or downloading.
 class ReceiptPdfService {
   static final ProductService _productService = ProductService();
+  static final SellerService _sellerService = SellerService();
 
   /// Generates PDF bytes for the given sale. Optional [seller] is shown as customer when present.
   /// [existingDueTotal] is the seller's due balance before this sale (shown as "Existing Due" on receipt).
@@ -34,6 +36,15 @@ class ReceiptPdfService {
       final printableItems = sale.items
           .where((item) => item.remainingQuantity > 0)
           .toList();
+      double? remainingCreditAfterSale;
+      if (seller != null && sale.creditUsed > 0) {
+        try {
+          remainingCreditAfterSale =
+              await _sellerService.getCreditBalance(seller.id);
+        } catch (e) {
+          debugPrint('Could not fetch remaining seller credit for PDF: $e');
+        }
+      }
 
       final productNamesMap = await _getProductNames(sale, languageCode);
       // English names for fallback when Urdu image fails or for non-Urdu display.
@@ -324,12 +335,33 @@ class ReceiptPdfService {
                   ),
                 ],
                 if (sale.creditUsed > 0) ...[
+                  if (remainingCreditAfterSale != null) ...[
+                    pw.SizedBox(height: 4),
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                      children: [
+                        pw.Text(
+                          'Previous Credit:',
+                          style: textStyle(
+                              fontSize: 6, fontWeight: pw.FontWeight.bold),
+                        ),
+                        pw.Text(
+                          formatter.format(
+                            (remainingCreditAfterSale + sale.creditUsed)
+                                .clamp(0.0, double.infinity),
+                          ),
+                          style: textStyle(
+                              fontSize: 6, fontWeight: pw.FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ],
                   pw.SizedBox(height: 4),
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
                       pw.Text(
-                        'Credit Applied:',
+                        'Credit Used:',
                         style: textStyle(
                             fontSize: 6, fontWeight: pw.FontWeight.bold),
                       ),
@@ -340,6 +372,27 @@ class ReceiptPdfService {
                       ),
                     ],
                   ),
+                  if (remainingCreditAfterSale != null) ...[
+                    pw.SizedBox(height: 4),
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                      children: [
+                        pw.Text(
+                          'Remaining Credit:',
+                          style: textStyle(
+                              fontSize: 6, fontWeight: pw.FontWeight.bold),
+                        ),
+                        pw.Text(
+                          formatter.format(
+                            remainingCreditAfterSale
+                                .clamp(0.0, double.infinity),
+                          ),
+                          style: textStyle(
+                              fontSize: 6, fontWeight: pw.FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
                 if (sale.recoveryBalance > 0) ...[
                   pw.SizedBox(height: 4),
