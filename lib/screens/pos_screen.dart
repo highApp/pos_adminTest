@@ -4122,6 +4122,13 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   bool _isLoadingDuePayments = false;
   List<String> _selectedDueHistoryIds = [];
 
+  double _parseAmount(String raw) {
+    // Users may type commas or currency, e.g. "1,000", "Rs. 1000".
+    // Keep only digits, dot, and minus.
+    final cleaned = raw.replaceAll(RegExp(r'[^0-9.\-]'), '');
+    return double.tryParse(cleaned) ?? 0.0;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -4360,10 +4367,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                             final totalExistingDue = _duePayments.fold(0.0, (sum, p) => sum + p.dueAmount);
                             
                             // Only calculate remaining due if amount is actually entered
-                            final hasAmountEntered = _amountController.text.isNotEmpty && 
-                                double.tryParse(_amountController.text) != null;
+                            final hasAmountEntered = _amountController.text.trim().isNotEmpty;
                             final amountPaid = hasAmountEntered
-                                ? double.tryParse(_amountController.text)!
+                                ? _parseAmount(_amountController.text)
                                 : 0.0;
                             
                             final currentSaleAmount = widget.cart.totalAmount;
@@ -4431,10 +4437,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                     final creditBalance = creditSnapshot.data ?? 0.0;
                     
                     // Only calculate new due if amount is actually entered
-                    final hasAmountEntered = _amountController.text.isNotEmpty && 
-                        double.tryParse(_amountController.text) != null;
+                    final hasAmountEntered = _amountController.text.trim().isNotEmpty;
                     final amountPaid = hasAmountEntered
-                        ? double.tryParse(_amountController.text)!
+                        ? _parseAmount(_amountController.text)
                         : 0.0;
                     
                     final existingDueTotal = _isLoadingDuePayments
@@ -5097,10 +5102,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                     // Get credit balance that will be automatically applied
                     final creditBalance = creditSnapshot.data ?? 0.0;
                     
-                    final hasAmountEntered = _amountController.text.isNotEmpty && 
-                        double.tryParse(_amountController.text) != null;
+                    final hasAmountEntered = _amountController.text.trim().isNotEmpty;
                     final amountPaid = hasAmountEntered
-                        ? double.tryParse(_amountController.text)!
+                        ? _parseAmount(_amountController.text)
                         : 0.0;
                     
                     // Calculate existing due total
@@ -5321,7 +5325,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                     flex: 2,
                     child: ElevatedButton(
                       onPressed: () async {
-                        final amountPaid = double.tryParse(_amountController.text) ?? 0;
+                        final amountPaid = _parseAmount(_amountController.text);
                         
                         // Allow partial payment only if seller is selected
                         if (amountPaid < widget.cart.totalAmount && _selectedSeller == null) {

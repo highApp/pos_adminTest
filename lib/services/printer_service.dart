@@ -1215,7 +1215,7 @@ class PrinterService {
     commands.addAll([gs, 0x21, 0x00]); // Normal size
     commands.addAll([esc, 0x21, 0x01]); // Condensed mode
     _addText(commands, ReceiptBranding.storeNameLine);
-    _addText(commands, '${_repeatChar('-', 32)}\n');
+    _addText(commands, '${_repeatChar('-', _receiptLineWidth)}\n');
 
     // UTF-8 for Urdu/Arabic product names and labels that need it.
     commands.addAll([fs, 0x28, 0x43, 0x02, 0x00, 0x30, 0x32]);
@@ -1234,7 +1234,7 @@ class PrinterService {
       }
     }
     
-    _addText(commands, '${_repeatChar('-', 32)}\n');
+    _addText(commands, '${_repeatChar('-', _receiptLineWidth)}\n');
 
     final bool manualPaymentReceipt = sale.items.isEmpty &&
         sale.total < 0.01 &&
@@ -1252,7 +1252,12 @@ class PrinterService {
         .where((item) => item.remainingQuantity > 0)
         .toList();
 
-    int itemNumber = 1;
+    // Items table header (fixed-width columns for the printer line width).
+    if (printableItems.isNotEmpty) {
+      _addText(commands, _formatItemsHeader(labelsLanguage));
+      _addText(commands, '${_repeatChar('-', _receiptLineWidth)}\n');
+    }
+
     for (var item in printableItems) {
       String productName = (productNamesMap[item.productId] ?? item.productName ?? '').trim();
       if (productName.isEmpty) productName = 'Item'; // ensure name always prints
@@ -1261,31 +1266,32 @@ class PrinterService {
       final qty = lineQty % 1 == 0
           ? lineQty.toStringAsFixed(0)
           : lineQty.toStringAsFixed(3);
-      final price = item.price.toStringAsFixed(2);
-      final subtotal = lineSubtotal.toStringAsFixed(2);
+      final price = _formatCompactMoney(item.price);
+      final subtotal = _formatCompactMoney(lineSubtotal);
       if (containsNonAscii(productName)) {
         final raster = await textToEscPosRaster(productName, maxWidthPixels: 256, fontSize: 14);
         if (raster != null) {
-          _addText(commands, '$itemNumber. ');
+          // For Urdu/Arabic/etc., print the name via raster, then numeric columns below.
+          // (Most ESC/POS printers can't align raster + text in one fixed-width row reliably.)
+          _addText(commands, '');
           commands.addAll(raster);
-          _addText(commands, '\n    $qty*$price = $subtotal\n');
+          _addText(commands, '\n${_formatItemRow('', qty, price, subtotal)}');
         } else {
           // Raster failed (e.g. on web) or unsupported – print as text so name still shows
-          _addText(commands, '$itemNumber. $productName $qty*$price = $subtotal\n');
+          _addText(commands, _formatItemRow(productName, qty, price, subtotal));
         }
       } else {
-        _addText(commands, '$itemNumber. $productName $qty*$price = $subtotal\n');
+        _addText(commands, _formatItemRow(productName, qty, price, subtotal));
       }
-      itemNumber++;
     }
 
-    _addText(commands, '${_repeatChar('-', 32)}\n');
+    _addText(commands, '${_repeatChar('-', _receiptLineWidth)}\n');
     if (printableItems.isNotEmpty) {
       _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', printableItems.length.toString()));
     } else if (manualSaleNoItems) {
       _addText(commands, _formatLine('${_receiptLabel('totalItems', labelsLanguage)}:', 'N/A'));
     }
-    _addText(commands, '${_repeatChar('-', 32)}\n');
+    _addText(commands, '${_repeatChar('-', _receiptLineWidth)}\n');
 
     double netCreditUsed = sale.creditUsed;
     if (sale.returnedAmount > 0 && sale.total > 0 && sale.creditUsed > 0) {
@@ -1354,11 +1360,11 @@ class PrinterService {
     final totalOwedBeforePayment = existingDueTotal + saleAmountAfterCredit;
     final dueBalance = (totalOwedBeforePayment - sale.amountPaid).clamp(0.0, double.infinity);
     if (dueBalance > 0.01) {
-      _addText(commands, '${_repeatChar('-', 32)}\n');
+      _addText(commands, '${_repeatChar('-', _receiptLineWidth)}\n');
       _addText(commands, _formatLine(_receiptLabel('dueBalance', labelsLanguage), dueBalance.toStringAsFixed(2)));
     }
 
-    _addText(commands, '${_repeatChar('-', 32)}\n');
+    _addText(commands, '${_repeatChar('-', _receiptLineWidth)}\n');
     
     commands.addAll([esc, 0x61, 0x01]); // Center align
     _addText(commands, '${_receiptLabel('thankYou', labelsLanguage)}\n');
@@ -1381,13 +1387,54 @@ class PrinterService {
     return Uint8List.fromList(commands);
   }
 
+  // 80mm thermal printers print wider than 32 chars in condensed mode.
+  // Using 48 chars lets item names use the visible right-side space.
+  static const int _receiptLineWidth = 48;
+
   // Helper method to format a line with label and value (right-aligned value)
   String _formatLine(String label, String value) {
-    const lineWidth = 32;
+    const lineWidth = _receiptLineWidth;
     final labelLength = label.length;
     final valueLength = value.length;
     final spaces = lineWidth - labelLength - valueLength;
     return '$label${_repeatChar(' ', spaces > 0 ? spaces : 1)}$value\n';
+  }
+
+  // 48-char thermal line (condensed): 26 + 4 + 7 + 8 + 3 spaces = 48
+  static const int _itemColNameWidth = 26;
+  static const int _itemColQtyWidth = 4;
+  static const int _itemColPriceWidth = 7;
+  static const int _itemColTotalWidth = 8;
+
+  String _formatItemsHeader(String labelsLanguage) {
+    final itemLabel = _receiptLabel('item', labelsLanguage);
+    final qtyLabel = _receiptLabel('qty', labelsLanguage);
+    final priceLabel = _receiptLabel('price', labelsLanguage);
+    final totalLabel = _receiptLabel('total', labelsLanguage);
+    return _formatItemRow(itemLabel, qtyLabel, priceLabel, totalLabel);
+  }
+
+  String _formatItemRow(String name, String qty, String price, String total) {
+    String clamp(String s, int width) {
+      if (s.length <= width) return s;
+      // Avoid unicode ellipsis on thermal printers (often prints as garbage).
+      return s.substring(0, width);
+    }
+
+    final n = clamp(name.trim(), _itemColNameWidth).padRight(_itemColNameWidth);
+    final q = clamp(qty.trim(), _itemColQtyWidth).padLeft(_itemColQtyWidth);
+    final p = clamp(price.trim(), _itemColPriceWidth).padLeft(_itemColPriceWidth);
+    final t = clamp(total.trim(), _itemColTotalWidth).padLeft(_itemColTotalWidth);
+    return '$n $q $p $t\n';
+  }
+
+  String _formatCompactMoney(double value) {
+    var s = value.toStringAsFixed(2);
+    if (s.contains('.')) {
+      s = s.replaceFirst(RegExp(r'0+$'), '');
+      s = s.replaceFirst(RegExp(r'\.$'), '');
+    }
+    return s;
   }
 
   // Helper method to repeat a character
@@ -1405,6 +1452,10 @@ class PrinterService {
     switch (languageCode) {
       case 'ur':
         switch (key) {
+          case 'item': return 'آئٹم';
+          case 'qty': return 'Qty';
+          case 'price': return 'Price';
+          case 'total': return 'Total';
           case 'date': return 'تاریخ';
           case 'billNo': return 'بل نمبر';
           case 'customer': return 'گاہک';
@@ -1430,6 +1481,10 @@ class PrinterService {
         }
       case 'ar':
         switch (key) {
+          case 'item': return 'صنف';
+          case 'qty': return 'Qty';
+          case 'price': return 'Price';
+          case 'total': return 'Total';
           case 'date': return 'التاريخ';
           case 'billNo': return 'رقم الفاتورة';
           case 'customer': return 'العميل';
@@ -1455,6 +1510,10 @@ class PrinterService {
         }
       default:
         switch (key) {
+          case 'item': return 'Item';
+          case 'qty': return 'Qty';
+          case 'price': return 'Price';
+          case 'total': return 'Total';
           case 'date': return 'Date';
           case 'billNo': return 'Bill No';
           case 'customer': return 'Customer';

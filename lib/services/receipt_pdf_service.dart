@@ -33,6 +33,14 @@ class ReceiptPdfService {
       final pdf = pw.Document();
       final formatter = NumberFormat.currency(symbol: 'Rs. ', decimalDigits: 2);
       final dateFormatter = DateFormat('MMM dd, yyyy - hh:mm a');
+      String compactMoney(double value) {
+        var s = value.toStringAsFixed(2);
+        if (s.contains('.')) {
+          s = s.replaceFirst(RegExp(r'0+$'), '');
+          s = s.replaceFirst(RegExp(r'\.$'), '');
+        }
+        return s;
+      }
       final printableItems = sale.items
           .where((item) => item.remainingQuantity > 0)
           .toList();
@@ -173,16 +181,7 @@ class ReceiptPdfService {
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
                     pw.Expanded(
-                      flex: 1,
-                      child: pw.Text(
-                        'No.',
-                        style: textStyle(
-                            fontSize: 6, fontWeight: pw.FontWeight.bold),
-                        textAlign: pw.TextAlign.left,
-                      ),
-                    ),
-                    pw.Expanded(
-                      flex: 4,
+                      flex: 5,
                       child: pw.Text(
                         'Item',
                         style: textStyle(
@@ -211,7 +210,7 @@ class ReceiptPdfService {
                     pw.Expanded(
                       flex: 2,
                       child: pw.Text(
-                        'Amount',
+                        'Total',
                         style: textStyle(
                             fontSize: 6, fontWeight: pw.FontWeight.bold),
                         textAlign: pw.TextAlign.right,
@@ -225,7 +224,6 @@ class ReceiptPdfService {
                 ...printableItems.asMap().entries.map((entry) {
                   final index = entry.key;
                   final item = entry.value;
-                  final itemNumber = (index + 1).toString().padLeft(2, '0');
                   return pw.Column(
                     children: [
                       pw.Row(
@@ -233,15 +231,7 @@ class ReceiptPdfService {
                         crossAxisAlignment: pw.CrossAxisAlignment.start,
                         children: [
                           pw.Expanded(
-                            flex: 1,
-                            child: pw.Text(
-                              itemNumber,
-                              style: textStyle(fontSize: 6),
-                              textAlign: pw.TextAlign.left,
-                            ),
-                          ),
-                          pw.Expanded(
-                            flex: 4,
+                            flex: 5,
                             child: _productNameWidget(
                               productNamesMap: productNamesMap,
                               productNamesMapEn: productNamesMapEn,
@@ -262,7 +252,7 @@ class ReceiptPdfService {
                           pw.Expanded(
                             flex: 2,
                             child: pw.Text(
-                              formatter.format(item.price),
+                              compactMoney(item.price),
                               style: textStyle(fontSize: 6),
                               textAlign: pw.TextAlign.right,
                             ),
@@ -270,7 +260,7 @@ class ReceiptPdfService {
                           pw.Expanded(
                             flex: 2,
                             child: pw.Text(
-                              formatter.format(item.remainingSubtotal),
+                              compactMoney(item.remainingSubtotal),
                               style: textStyle(fontSize: 6),
                               textAlign: pw.TextAlign.right,
                             ),

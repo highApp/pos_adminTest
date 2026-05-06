@@ -253,12 +253,19 @@ class CartProvider with ChangeNotifier {
   void _snapQuantityToStep(CartItem item, double step) {
     if (step <= 0) return;
     final stock = item.product.stock;
+    // If stock can't satisfy even one full step (dozen/bundle), drop the line.
+    // This prevents cases like stock=11 but dozen requires 12.
+    if (stock + 1e-9 < step) {
+      item.quantity = 0;
+      return;
+    }
     var q = item.quantity;
     var snapped = (q / step).ceil() * step;
     if (snapped < step) snapped = step;
     if (snapped > stock) {
       final maxFull = (stock / step).floor() * step;
-      snapped = maxFull >= step ? maxFull : stock;
+      // Stock is guaranteed >= step here, so maxFull will be >= step.
+      snapped = maxFull;
     }
     item.quantity = snapped;
   }
@@ -280,6 +287,19 @@ class CartProvider with ChangeNotifier {
         product.dozenPrice == null &&
         !hasBundle) {
       return;
+    }
+
+    // Wholesale dozen/bundle must have enough stock for at least one full unit.
+    // Do NOT "downgrade" a dozen/bundle line to partial pieces.
+    if (_saleType == SaleType.wholesale) {
+      if (product.dozenPrice != null && product.stock + 1e-9 < 12.0) {
+        return;
+      }
+      if (hasBundle &&
+          product.bundleSize != null &&
+          product.stock + 1e-9 < product.bundleSize!.toDouble()) {
+        return;
+      }
     }
 
     if (_items.containsKey(product.id)) {
@@ -311,9 +331,9 @@ class CartProvider with ChangeNotifier {
             ? CartItem.smallFractionDefaultCartQuantity
             : CartItem.smallFractionUnitStep;
       }
-      if (initialQuantity > product.stock) {
-        initialQuantity = product.stock;
-      }
+      // For dozen/bundle wholesale, we already guaranteed stock >= initialQuantity above.
+      // For regular/fractional lines, cap to stock.
+      if (initialQuantity > product.stock) initialQuantity = product.stock;
       _items[product.id] =
           CartItem(product: product, quantity: initialQuantity, saleType: _saleType);
       notifyListeners();
